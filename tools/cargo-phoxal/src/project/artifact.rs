@@ -6,7 +6,7 @@
 //!
 //! The inert record family (`ArtifactSummary`, `DescriptorSummary`,
 //! `RuntimeRecord`, `InputRecord`, `OutputRecord`, `PortKind`, `InputKind`,
-//! `OutputKind`, `PortSignature`) is owned by `phoxal-artifact-format` and
+//! `OutputKind`, `PortSignature`) is owned by `phoxal::artifact` and
 //! re-exported here so internal call sites continue to compile unchanged.
 
 #[cfg(test)]
@@ -22,13 +22,15 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use crate::project::document::RobotDocument;
 
-// Re-exports from the shared artifact format crate. The format crate is the
-// source of truth; this module re-exports the inert record family so
+// Re-exports from the framework artifact module. The module is the source of
+// truth; this module re-exports the inert record family so
 // existing internal references continue to use `crate::project::artifact::*`.
-pub use phoxal_artifact_format::artifact::{
-    ARTIFACT_SCHEMA, ArtifactSummary, DescriptorSummary, InputKind, InputRecord, OutputKind,
-    OutputRecord, PortKind, PortSignature, RUNTIME_RECORD, RuntimeRecord,
+pub use phoxal::artifact::{
+    ARTIFACT_SCHEMA, ArtifactSummary, DescriptorSummary, InputKind, OutputKind, OutputRecord,
+    PortKind, RUNTIME_RECORD, RuntimeRecord,
 };
+#[cfg(test)]
+pub use phoxal::artifact::{InputRecord, PortSignature};
 
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
@@ -455,14 +457,14 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)]
+pub use connections::validate_connected_endpoints;
 /// Validates all graph connections for which both endpoint artifacts exist.
 ///
 /// The validation is intentionally endpoint-first: kind and complete request /
 /// response identities are compared before any descriptor message-root
 /// filtering can remove service evidence.
-pub use connections::{
-    validate_connected_endpoints, validate_connected_endpoints_with_virtual_producers,
-};
+pub use connections::validate_connected_endpoints_with_virtual_producers;
 
 mod connections;
 
@@ -535,7 +537,7 @@ mod tests {
 
     #[test]
     fn rejects_kind_only_incompatibility_before_payload_filtering() {
-        let document = RobotDocument::parse(
+        let document: RobotDocument = serde_yaml::from_str(
             r#"
 robot:
   id: rover

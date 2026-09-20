@@ -4,7 +4,7 @@
 //! their declared DTO closure (capabilities, native targets, services,
 //! connections, port references). Reading authored YAML files,
 //! filesystem walks, source-graph validation, and Cargo resolution
-//! remain in `phoxal-project`'s tool layer.
+//! remain in `cargo-phoxal`'s tool layer.
 
 #![deny(unsafe_code)]
 
@@ -40,14 +40,6 @@ pub struct RobotDocument {
 }
 
 impl RobotDocument {
-    /// Parses one complete document and returns any YAML structural error.
-    ///
-    /// Validation belongs to the project tool layer; this parser is the
-    /// inert decode step.
-    pub fn parse(text: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(text)
-    }
-
     /// Returns every instance identity available to a connection source.
     #[must_use]
     pub fn instance_ids(&self) -> BTreeSet<String> {
@@ -123,13 +115,6 @@ pub struct ComponentDocument {
     /// Explicit additional package assets retained by publication tooling.
     #[serde(default)]
     pub assets: Vec<PathBuf>,
-}
-
-impl ComponentDocument {
-    /// Parses one complete component definition.
-    pub fn parse(text: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(text)
-    }
 }
 
 /// The native model entry selected by a component definition.
@@ -303,7 +288,7 @@ services:
 connections:
   navigation.imu: imu.sample
 "#;
-        let document = RobotDocument::parse(yaml).expect("parses");
+        let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let json = serde_json::to_string(&document).expect("serializes");
         let decoded: RobotDocument = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(decoded, document);
@@ -321,7 +306,7 @@ robot:
 services:
   navigation: {}
 "#;
-        let document = RobotDocument::parse(yaml).expect("parses");
+        let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let ids = document.instance_ids();
         assert!(ids.contains("brain"));
         assert!(ids.contains("navigation"));

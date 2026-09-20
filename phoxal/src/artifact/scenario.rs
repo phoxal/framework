@@ -2,10 +2,10 @@
 //!
 //! Owns `BundleScenarioProgram` and `BundleScenarioProducer`. The
 //! marker-bearing wrapper `BundleScenarioSection` lives in
-//! [`crate::bundle`] alongside the rest of the bundle manifest.
+//! [`super::bundle`] alongside the rest of the bundle manifest.
 //!
 //! Scenario discovery, harness source generation, and case-host process
-//! control remain in `phoxal-project`'s tool layer.
+//! control remain in `cargo-phoxal`'s tool layer.
 
 #![deny(unsafe_code)]
 

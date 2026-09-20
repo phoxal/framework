@@ -9,9 +9,9 @@
 //! in the supervisor's runtime.
 #![allow(unused_imports, dead_code)]
 
-pub use phoxal::communication as communication;
+pub use phoxal::communication;
 pub use phoxal::communication::{DeploymentTarget, session, simulation};
-pub use phoxal::identity as identity;
+pub use phoxal::identity;
 
 // P2.6 scenario admission policy. Lifted into the supervisor's lib
 // crate so the integration tests and any future case host binary can

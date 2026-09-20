@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use fs4::TryLockError;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
-use crate::ProjectLayout;
+use crate::project::ProjectLayout;
 use crate::project::cargo::{CargoOptions, LockMode};
 use crate::project::error::Error;
 use crate::project::file_lock::ExclusiveFileLock;
@@ -98,7 +98,7 @@ impl Drop for ManifestTransaction {
             && let Err(source) = atomic_write(&self.manifest, &self.original_manifest)
         {
             eprintln!(
-                "phoxal-project: failed to restore {} after preparation error: {source}",
+                "cargo-phoxal: failed to restore {} after preparation error: {source}",
                 self.manifest.display()
             );
             return;
@@ -121,7 +121,7 @@ impl Drop for ManifestTransaction {
             };
             if let Err(source) = outcome {
                 eprintln!(
-                    "phoxal-project: failed to restore {} after preparation error: {source}",
+                    "cargo-phoxal: failed to restore {} after preparation error: {source}",
                     snapshot.path.display()
                 );
             }
@@ -381,8 +381,8 @@ pub(crate) fn compute_scenario_change_plan(
     let add_test_target = !has_managed_test_target;
     let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
     let harness_changed = harness_needs_write(robot_root, &discovered, has_managed_test_target);
-    let needs_persistent_setup = (add_test_target || add_scenario_feature)
-        && !discovered.is_empty();
+    let needs_persistent_setup =
+        (add_test_target || add_scenario_feature) && !discovered.is_empty();
     Ok(ScenarioChangePlan {
         discovered,
         add_test_target,
@@ -526,6 +526,7 @@ pub(crate) fn prepare_scenario_target_in_transaction(
         &mut document,
         &mut scenario_changes,
     )?;
+    let manifest_changed = !scenario_changes.is_empty();
     // Plan the harness write up front so its `HarnessWritten`
     // change is recorded before any disk write. The Drop-based
     // rollback path then restores the manifest regardless of which
@@ -536,8 +537,8 @@ pub(crate) fn prepare_scenario_target_in_transaction(
         });
     }
     transaction.extend_with_scenario_changes(scenario_changes);
-    let prepared = document.to_string().into_bytes();
-    if prepared != manifest_text.as_bytes() {
+    if manifest_changed {
+        let prepared = document.to_string().into_bytes();
         atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
             path: manifest.to_owned(),
             message: format!("cannot persist manifest: {source}"),

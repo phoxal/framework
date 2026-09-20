@@ -1,7 +1,6 @@
-//! Typed scenario results. P3.
+//! Typed scenario results.
 //!
-//! The P1 placeholder `ScenarioRun` (a marker struct) is replaced
-//! with a typed run record that captures every observable the
+//! `ScenarioRun` captures every observable the
 //! scenario author declared plus the per-action command replies.
 //! Captures are filled in by the case host once the simulation
 //! finishes; command replies include the correlation label so the
@@ -15,10 +14,36 @@
 
 use std::collections::BTreeMap;
 
-use crate::scenario::participant::StepOutcome;
 use crate::scenario::program::Program;
 #[cfg(test)]
 use crate::scenario::program::ProgramError;
+
+/// One quantum-aligned outcome observed during scenario execution.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StepOutcome {
+    /// Setpoint payload was delivered to the documented consumer boundary.
+    SetpointDelivered {
+        /// Boundary at which the producer recorded the value.
+        production: u64,
+        /// First boundary at which the consumer accepted the value.
+        eligibility: u64,
+    },
+    /// Withdraw request was accepted by the controlled boundary.
+    WithdrawAccepted,
+    /// Command request was published and correlated with its authored label.
+    CommandIssued {
+        /// Authored command correlation label.
+        label: String,
+        /// Whether the terminal evidence still lacked a reply.
+        reply_pending: bool,
+        /// Simulated boundary by which the command must complete.
+        simulated_deadline_boundary: u64,
+    },
+    /// The controlled boundary rejected the step.
+    Rejected { reason: String },
+    /// The scenario driver was lost before the step completed.
+    FixtureLost { reason: String },
+}
 
 /// Why a `ScenarioRun` cannot be sealed. The collector is exhaustive
 /// because sealing must fail closed on missing required evidence —
@@ -115,8 +140,7 @@ pub enum SealError {
     /// exceed `MAX_RUN_BYTES`.
     RunByteOverflow { bytes: usize, cap: usize },
     /// The seal was called without terminal evidence recorded by
-    /// the actual execution lifecycle. See Gate P1 #2 of
-    /// the scenario acceptance review.
+    /// the actual execution lifecycle.
     MissingTerminalEvidence,
     /// The seal refused to record a second terminal-evidence call.
     DuplicateTerminalEvidence,
@@ -273,10 +297,8 @@ pub struct ScenarioRun {
     /// Sealed command-reply records keyed by declared correlation label.
     command_replies: BTreeMap<String, CommandReply>,
     /// Terminal evidence recorded by the actual execution lifecycle.
-    /// `seal` refuses to finalize without it; the four collector
-    /// reproduction probes from the scenario acceptance review all fail
-    /// because they cannot synthesize this surface. See Gate P1 #2
-    /// of that review.
+    /// `seal` refuses to finalize without it because the collector cannot
+    /// synthesize this surface.
     terminal_evidence: Option<TerminalEvidence>,
     /// Whether the host considers the run successful. Computed by
     /// `seal`; the `verify` callback may reject on top of this.
@@ -610,8 +632,7 @@ pub struct EvidenceCollector {
     record_bytes_total: usize,
     /// Terminal evidence recorded by the actual execution lifecycle.
     /// `seal` refuses without it; `record_terminal_evidence` is the
-    /// only path that can install this field. See Gate P1 #2 of
-    /// the scenario acceptance review.
+    /// only path that can install this field.
     terminal_evidence: Option<TerminalEvidence>,
 }
 
@@ -828,11 +849,8 @@ impl EvidenceCollector {
 
     /// Record one command-reply acknowledgement. The collector
     /// rejects duplicate recordings, replies for undeclared command
-    /// labels, and reply payloads that exceed the per-record or
-    /// cumulative run byte caps. See Gate B3 of
-    /// the scenario acceptance review: "Account for every retained payload,
-    /// including command replies, step error details, capture
-    /// metadata, and nested interval entries."
+    /// labels, and reply payloads that exceed the per-record or cumulative
+    /// run byte caps.
     pub fn record_command_reply(
         &mut self,
         label: String,
@@ -891,10 +909,7 @@ impl EvidenceCollector {
     /// after every owned child was reaped and every borrowed
     /// simulator released.
     ///
-    /// `seal` will refuse without terminal evidence. The four
-    /// collector reproduction probes from the scenario acceptance review all
-    /// fail because they cannot call this method. See Gate P1 #2
-    /// of that review.
+    /// `seal` will refuse without terminal evidence.
     pub fn record_terminal_evidence(
         &mut self,
         evidence: TerminalEvidence,
@@ -923,8 +938,7 @@ impl EvidenceCollector {
     /// `with_terminal_quantum_ns` / `with_completed_transitions`.
     /// The builder is the only path that constructs
     /// [`TerminalEvidence`]; external code cannot assemble the
-    /// surface from arbitrary fields. See Gate P1 #2 of
-    /// the scenario acceptance review.
+    /// surface from arbitrary fields.
     pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {
             execution_identity: String::new(),
@@ -998,9 +1012,7 @@ impl EvidenceCollector {
         // Terminal evidence gate: the actual execution lifecycle owns this
         // surface. The collector cannot synthesize it; tests that call
         // the existing record_* helpers without going through the
-        // lifecycle will seal as failed. See Gate P1 #2 of
-        // the scenario acceptance review: the four collector reproduction probes
-        // fail here.
+        // lifecycle will seal as failed.
         let terminal = self
             .terminal_evidence
             .take()
@@ -1103,7 +1115,6 @@ fn capture_name(capture: &crate::scenario::plan::Capture) -> &str {
 mod tests {
     use super::*;
     use crate::port::PortSignature;
-    use crate::scenario::participant::FixtureParticipant;
     use crate::scenario::plan::{Action, Capture, Validity};
     use crate::scenario::program::{Program, ScheduleEntry};
 
@@ -1204,35 +1215,8 @@ mod tests {
     }
 
     #[test]
-    fn run_records_outcomes_captures_and_replies() {
-        // Gate B1 of the scenario acceptance review removed the synthetic step
-        // emitter and `FixtureTrace`. The collector-only construction
-        // path is exercised by the sealed scenario run path elsewhere
-        // in this module; this test now asserts the typed correlation
-        // registry invariant (no run was performed, so the correlation
-        // map is empty for a freshly-prepared participant).
-        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
-        let program = Program::normalize(
-            "scenarios/First",
-            quantum,
-            std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(0, setpoint_action(1))],
-            vec![crate::scenario::Capture::state("motion", state_sig()).expect("motion capture")],
-        )
-        .unwrap();
-        let mut participant = FixtureParticipant::from_program(program).unwrap();
-        // Setpoint-only participant: no commands issued, so mark_command_reply
-        // returns false for every label.
-        assert!(!participant.mark_command_reply("s00000000"));
-        assert!(participant.expire_pending_commands().is_empty());
-    }
-
-    #[test]
     fn seal_rejects_missing_required_capture() {
-        // Finding 3 regression: the old `from_trace` accepted an empty
-        // captures map and marked the run PASS even when a declared
-        // capture was missing. The new `EvidenceCollector::seal` must
-        // refuse the same input.
+        // A declared capture must be present before the collector can seal.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Seal",
@@ -1276,7 +1260,6 @@ mod tests {
                     label: "do_thing".to_owned(),
                     reply_pending: true,
                     simulated_deadline_boundary: 0,
-                    host_deadline_unix_micros: 0,
                 },
             )
             .expect("record step");
@@ -1304,8 +1287,7 @@ mod tests {
             "scenarios/SealOk",
             quantum,
             // 6 ms at the 2 ms quantum = 3 transitions; the setpoint
-            // acknowledgement at boundary 0 is the only authored
-            // action. See Gate B2 and Gate P1 #2.
+            // acknowledgement at boundary 0 is the only authored action.
             std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
@@ -1386,7 +1368,6 @@ mod tests {
                     label: "spurious".to_owned(),
                     reply_pending: true,
                     simulated_deadline_boundary: 0,
-                    host_deadline_unix_micros: 0,
                 },
             )
             .unwrap_err();
@@ -1563,7 +1544,6 @@ mod tests {
                     label: "do_thing".to_owned(),
                     reply_pending: true,
                     simulated_deadline_boundary: 0,
-                    host_deadline_unix_micros: 0,
                 },
             )
             .expect("record command");
@@ -1759,7 +1739,6 @@ mod tests {
                     label: "do_thing".to_owned(),
                     reply_pending: true,
                     simulated_deadline_boundary: 0,
-                    host_deadline_unix_micros: 0,
                 },
             )
             .expect("record step");
@@ -1810,14 +1789,9 @@ mod tests {
         assert!(matches!(result, Err(ProgramError::Other(_))));
     }
 
-    // ----------------------------------------------------------------
-    // Gate P1 #2 of the scenario acceptance review: the four reproduction probes
-    // from lines 166-173 plus the boundary / interruption / mismatch
-    // / sparse-valid regressions required by line 195. These tests
-    // exercise the public collector API directly, without going
-    // through the case-host lifecycle, so terminal evidence is not
-    // recorded and the seal must refuse.
-    // ----------------------------------------------------------------
+    // Boundary, interruption, mismatch, and sparse-valid regressions exercise
+    // the public collector API directly. Without the case-host lifecycle there
+    // is no terminal evidence, so the seal must refuse.
 
     #[test]
     fn reproduction_no_action_3000_transition_run_refuses_without_terminal_evidence() {
@@ -1959,7 +1933,6 @@ mod tests {
                     label: "do_thing".to_owned(),
                     reply_pending: true,
                     simulated_deadline_boundary: 0,
-                    host_deadline_unix_micros: 0,
                 },
             )
             .expect("record command");

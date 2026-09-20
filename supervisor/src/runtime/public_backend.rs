@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 
+use phoxal::communication::PublicOperation;
 use phoxal::communication::session::{
     PortKind, PortMetadata, RecordKind, SubscriptionRecord, SubscriptionRequest,
 };
@@ -30,7 +31,6 @@ use phoxal::communication::simulation::{
     PrepareBoundaryResponse, ProgressRequest, ProgressResponse, ReleaseAuthorityRequest,
     ResetRequest,
 };
-use phoxal::communication::PublicOperation;
 
 use crate::runtime::adapter::{
     ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,

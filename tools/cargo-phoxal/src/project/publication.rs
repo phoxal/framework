@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-use crate::ProjectLayout;
+use crate::project::ProjectLayout;
 use crate::project::error::{Error, PublicationError};
 use crate::project::preparation;
 
@@ -62,6 +62,7 @@ pub enum PublicationKind {
     /// Any explicitly classified package, used by owner release automation.
     #[doc(hidden)]
     #[serde(skip)]
+    #[cfg(test)]
     Package,
 }
 
@@ -78,6 +79,7 @@ impl PublicationKind {
             Self::SimulatorApplication => "simulator",
             Self::Application => "application",
             Self::Tool => "tool",
+            #[cfg(test)]
             Self::Package => "package",
         }
     }
@@ -86,6 +88,7 @@ impl PublicationKind {
         match self {
             Self::Component => matches!(actual, Self::Component),
             Self::Service => matches!(actual, Self::Service | Self::Preset),
+            #[cfg(test)]
             Self::Package => !matches!(actual, Self::Package),
             Self::Preset => matches!(actual, Self::Preset),
             Self::Library => matches!(actual, Self::Library),
@@ -157,13 +160,10 @@ pub struct PublicationResult {
     kind: PublicationKind,
     package: String,
     version: String,
-    source_root: PathBuf,
-    staging_root: PathBuf,
     archive: PathBuf,
     inventory: PathBuf,
     checksum_file: PathBuf,
     checksum: String,
-    source_digest: String,
     source_provenance: PublicationSourceProvenance,
     registry_kind: String,
     bytes: u64,
@@ -189,18 +189,6 @@ impl PublicationResult {
         &self.version
     }
 
-    /// Returns the selected authored source directory.
-    #[must_use]
-    pub fn source_root(&self) -> &Path {
-        &self.source_root
-    }
-
-    /// Returns the retained isolated staging directory.
-    #[must_use]
-    pub fn staging_root(&self) -> &Path {
-        &self.staging_root
-    }
-
     /// Returns the verified `.crate` archive path.
     #[must_use]
     pub fn archive(&self) -> &Path {
@@ -223,12 +211,6 @@ impl PublicationResult {
     #[must_use]
     pub fn checksum(&self) -> &str {
         &self.checksum
-    }
-
-    /// Returns the deterministic digest of the authored source tree.
-    #[must_use]
-    pub fn source_digest(&self) -> &str {
-        &self.source_digest
     }
 
     /// Returns the authored source and derived-carrier provenance.
@@ -340,13 +322,10 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
         kind: selected.role.publication_kind(),
         package: selected.package,
         version: selected.version,
-        source_root: selected.source_root,
-        staging_root: retained_root,
         archive,
         inventory: inventory_path,
         checksum_file,
         checksum: verified.checksum,
-        source_digest,
         source_provenance,
         registry_kind: selected.role.registry_kind().to_owned(),
         bytes: verified.bytes,

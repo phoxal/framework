@@ -1,11 +1,11 @@
-//! P1 acceptance: the production scenario preparation persists the
-//! manifest, writes the generated harness, and the harness itself
-//! compiles against the framework's `phoxal` crate.
+//! Production scenario preparation persists the manifest, writes the
+//! generated harness, and compiles the harness against the framework's
+//! `phoxal` crate.
 //!
 //! Unlike the structural assertions in `preparation::tests`, this
 //! integration test exercises the full `Project::prepare_scenarios`
-//! pipeline that `cargo phoxal simulation scenario list/run` will call
-//! in P4. It does not attempt to compile the harness via `cargo build`
+//! pipeline used by `cargo phoxal simulation scenario list/run`.
+//! It does not attempt to compile the harness via `cargo build`
 //! (which would require the phoxal registry); instead it locates the
 //! already-built `libphoxal*.rlib` in `target/debug/deps` and compiles
 //! the generated `main.rs` directly via `rustc --extern`, then runs the
@@ -27,7 +27,7 @@ fn prepare_scenarios_persists_manifest_and_writes_harness() {
                         publish = false\n\
                         \n\
                         [dependencies]\n\
-                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n";
+                        phoxal = { path = \"../framework/phoxal\", version = \"=0.0.0-dev.1\", registry = \"phoxal\" }\n";
     fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
@@ -72,11 +72,6 @@ fn prepare_scenarios_persists_manifest_and_writes_harness() {
         persisted.contains("scenario"),
         "scenario feature missing from dev-dep:\n{persisted}"
     );
-    assert!(
-        !persisted.contains("phoxal-project"),
-        "scenario preparation must not inject `phoxal-project` into the manifest; the generated harness depends on the SDK only:\n{persisted}"
-    );
-
     let harness_path = robot_root.join(".phoxal/generated/scenarios/main.rs");
     assert!(harness_path.is_file(), "harness not generated");
     let harness = fs::read_to_string(&harness_path).expect("read harness");
@@ -107,7 +102,7 @@ fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing()
                                               version = \"0.1.0\"\n\
                                               edition = \"2024\"\n\n\
                                               [dependencies]\n\
-                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
+                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.0.0-dev.1\", registry = \"phoxal\" }\n")
         .expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
@@ -144,7 +139,7 @@ fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing()
                                               version = \"0.1.0\"\n\
                                               edition = \"2024\"\n\n\
                                               [dependencies]\n\
-                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
+                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.0.0-dev.1\", registry = \"phoxal\" }\n")
         .expect("manifest with supervisor");
     let layout2 = crate::project::ProjectLayout::discover(&robot_root).expect("layout2");
     let project2 = crate::project::Project::from_layout(layout2).expect("project2");
@@ -174,7 +169,7 @@ fn prepare_scenarios_retains_persistent_setup_when_last_scenario_removed() {
                         edition = \"2024\"\n\
                         publish = false\n\n\
                         [dependencies]\n\
-                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n";
+                        phoxal = { path = \"../framework/phoxal\", version = \"=0.0.0-dev.1\", registry = \"phoxal\" }\n";
     fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
@@ -461,7 +456,7 @@ fn prepare_scenarios_byte_identical_on_unchanged_repeat() {
                         edition = \"2024\"\n\
                         publish = false\n\n\
                         [dependencies]\n\
-                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }";
+                        phoxal = { path = \"../framework/phoxal\", version = \"=0.0.0-dev.1\", registry = \"phoxal\" }";
     fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
@@ -480,6 +475,12 @@ fn prepare_scenarios_byte_identical_on_unchanged_repeat() {
         .prepare_scenarios(&CargoOptions::default())
         .expect("first");
     let first_cargo = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read first");
+    let first_cargo = first_cargo
+        .strip_suffix('\n')
+        .expect("prepared manifest ends with a newline")
+        .to_owned();
+    fs::write(robot_root.join("Cargo.toml"), &first_cargo)
+        .expect("remove final newline before no-op preparation");
     let first_lock_path = robot_root.join("Cargo.lock");
     let first_lock = fs::read_to_string(&first_lock_path).ok();
 
@@ -603,143 +604,6 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
     );
 }
 
-/// Acceptance: after scenario preparation, a clean robot containing
-/// scenarios must end with **no `phoxal-project` entry in either
-/// `[dependencies]` or `[dev-dependencies]`**. The generated harness
-/// depends only on `phoxal[scenario]`; the tool no longer pulls the
-/// compiler crate into user manifests. This is the regression guard
-/// for Unit 3.0 of the SDK-ownership migration.
-#[test]
-fn prepare_scenarios_does_not_inject_phoxal_project_dependency() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let robot_root = directory.path().to_path_buf();
-    let manifest_text = "[package]\n\
-                        name = \"u3-robot\"\n\
-                        version = \"0.1.0\"\n\
-                        edition = \"2024\"\n\
-                        publish = false\n\n\
-                        [dependencies]\n\
-                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n";
-    fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
-    fs::write(
-        robot_root.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot:\n  id: u3-robot\n  components: {}\nservices: {}\n",
-    )
-    .expect("robot.yaml");
-    fs::create_dir_all(robot_root.join("src")).expect("src");
-    fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
-
-    let scenarios = robot_root.join("scenarios");
-    fs::create_dir_all(&scenarios).expect("scenarios dir");
-    fs::write(scenarios.join("forward.rs"), "// stub\n").expect("scenario");
-
-    let layout = crate::project::ProjectLayout::discover(&robot_root).expect("layout");
-    let project = crate::project::Project::from_layout(layout).expect("project");
-
-    let changes = project
-        .prepare_scenarios(&CargoOptions::default())
-        .expect("prepare_scenarios");
-
-    // The only persistent setup the tool is allowed to add is the
-    // managed `[[test]]` target, the `phoxal` dev-dep entry with the
-    // `scenario` feature, and the regenerated harness source. The
-    // observed `changes` vector must therefore contain no
-    // `DevDependencyAdded` entry — that variant was removed when the
-    // obsolete `phoxal-project` case-host dependency stopped being
-    // mandatory.
-    assert!(
-        !changes.iter().any(|change| matches!(
-            change,
-            crate::project::PreparationChange::DevDependencyFeatureAdded { dependency, .. }
-                if dependency == "phoxal-project"
-        )),
-        "no `phoxal-project` dev-dep feature addition may be reported; got: {changes:?}"
-    );
-
-    let persisted = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read manifest");
-    let deps_section = persisted
-        .split("[dependencies]\n")
-        .nth(1)
-        .and_then(|tail| tail.split("[dev-dependencies]")
-        .next())
-        .unwrap_or("");
-    let dev_section = persisted
-        .split("[dev-dependencies]")
-        .nth(1)
-        .and_then(|tail| tail.split("\n[").next())
-        .unwrap_or("");
-    assert!(
-        !deps_section.contains("phoxal-project"),
-        "`phoxal-project` must not appear under `[dependencies]` after preparation:\n{persisted}"
-    );
-    assert!(
-        !dev_section.contains("phoxal-project"),
-        "`phoxal-project` must not appear under `[dev-dependencies]` after preparation:\n{persisted}"
-    );
-
-    // A second preparation is a no-op and must keep that invariant
-    // (no opportunistic cleanup of an existing entry — authored
-    // entries the user wrote themselves must remain untouched).
-    let second_changes = project
-        .prepare_scenarios(&CargoOptions::default())
-        .expect("prepare_scenarios (second)");
-    assert!(
-        second_changes.is_empty(),
-        "second preparation must remain idempotent and clean: {second_changes:?}"
-    );
-    let after_second = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read manifest");
-    assert!(
-        !after_second.contains("phoxal-project"),
-        "`phoxal-project` must remain absent after the second preparation:\n{after_second}"
-    );
-}
-
-/// Acceptance: an existing user-authored `phoxal-project` entry must
-/// be left alone by preparation. The cleanup refactor only stops
-/// creating new entries; it does not rewrite authored history.
-#[test]
-fn prepare_scenarios_preserves_user_authored_phoxal_project_dependency() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let robot_root = directory.path().to_path_buf();
-    let manifest_text = "[package]\n\
-                        name = \"u3-robot\"\n\
-                        version = \"0.1.0\"\n\
-                        edition = \"2024\"\n\
-                        publish = false\n\n\
-                        [dependencies]\n\
-                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n\n\
-                        [dev-dependencies]\n\
-                        phoxal-project = { path = \"../framework/crates/project\" }\n";
-    fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
-    fs::write(
-        robot_root.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot:\n  id: u3-robot\n  components: {}\nservices: {}\n",
-    )
-    .expect("robot.yaml");
-    fs::create_dir_all(robot_root.join("src")).expect("src");
-    fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
-    let scenarios = robot_root.join("scenarios");
-    fs::create_dir_all(&scenarios).expect("scenarios dir");
-    fs::write(scenarios.join("forward.rs"), "// stub\n").expect("scenario");
-
-    let layout = crate::project::ProjectLayout::discover(&robot_root).expect("layout");
-    let project = crate::project::Project::from_layout(layout).expect("project");
-
-    let changes = project
-        .prepare_scenarios(&CargoOptions::default())
-        .expect("prepare_scenarios");
-    // No removal of an authored entry is part of the change set.
-    assert!(
-        !changes.is_empty(),
-        "expected at least the test target to be added; got: {changes:?}"
-    );
-    let persisted = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read manifest");
-    assert!(
-        persisted.contains("phoxal-project"),
-        "user-authored `phoxal-project` dev-dep must be preserved verbatim; manifest:\n{persisted}"
-    );
-}
-
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
     // The framework's `phoxal` crate publishes into the local `phoxal`
@@ -760,9 +624,8 @@ fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn framework_phoxal_dir() -> std::path::PathBuf {
-    // The framework's `phoxal` crate is a sibling of the
-    // `phoxal-project` test crate, so we can locate it directly from the
-    // manifest dir resolved at compile time.
+    // Locate the framework's `phoxal` crate from the cargo-phoxal
+    // manifest directory resolved at compile time.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .ancestors()
@@ -770,7 +633,7 @@ fn framework_phoxal_dir() -> std::path::PathBuf {
             let candidate = ancestor.join("phoxal");
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
-        .expect("phoxal crate must be a sibling of tools/cargo-phoxal/project")
+        .expect("phoxal crate must be available in the framework workspace")
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]

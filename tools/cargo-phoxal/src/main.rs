@@ -4,15 +4,13 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-mod installation;
 mod project;
 
-// Re-export the public project surface so that paths like
-// `crate::ProjectLayout` continue to work for the module's own internal
-// call sites the same way they did when phoxal-project was an external
-// crate. The project module owns its `pub use` list; this mirrors it
-// at the cargo-phoxal root.
-pub use project::*;
+use project::{
+    CargoOperation, CargoOptions, CargoSelection, LockMode, PreparedProject, Project,
+    PublicationKind, PublicationOptions, SelectedTarget, SimulationBound, SimulationPresentation,
+    SimulationRunOptions, SubmissionResult, prepare_publication, submit_publication,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse_from(cargo_arguments(std::env::args_os()));
@@ -237,7 +235,12 @@ fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), crate::project::
 }
 
 fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), crate::project::Error> {
-    let ScenarioRunArgs { scenario, options } = arguments;
+    let ScenarioRunArgs {
+        scenario,
+        simulator,
+        headless,
+        options,
+    } = arguments;
     let project = Project::discover(std::env::current_dir().map_err(|source| {
         crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
             path: ".".into(),
@@ -245,7 +248,13 @@ fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), crate::project::E
         })
     })?)?;
     let cargo_options = options.into_options(Vec::new(), Vec::new());
-    let outcome = crate::project::scenario::run_scenario(&project, &cargo_options, &scenario)?;
+    let outcome = crate::project::scenario::run_scenario(
+        &project,
+        &cargo_options,
+        &scenario,
+        simulator.as_deref(),
+        headless,
+    )?;
     println!(
         "scenario {}: {}",
         outcome.scenario_name,
@@ -274,6 +283,12 @@ fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> 
     let (kind, package) = match arguments.package {
         PublishPackage::Component(package) => (PublicationKind::Component, package),
         PublishPackage::Service(package) => (PublicationKind::Service, package),
+        PublishPackage::Preset(package) => (PublicationKind::Preset, package),
+        PublishPackage::Library(package) => (PublicationKind::Library, package),
+        PublishPackage::ProcMacro(package) => (PublicationKind::ProcMacro, package),
+        PublishPackage::Simulator(package) => (PublicationKind::SimulatorApplication, package),
+        PublishPackage::Application(package) => (PublicationKind::Application, package),
+        PublishPackage::Tool(package) => (PublicationKind::Tool, package),
     };
     let dry_run = package.dry_run;
     let result = prepare_publication(&PublicationOptions {
@@ -457,7 +472,6 @@ fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
         | crate::project::Error::BundleLock { .. }
         | crate::project::Error::BundlePublish { .. }
         | crate::project::Error::BundleCleanup { .. }
-        | crate::project::Error::InvalidExecutionIdentity { .. }
         | crate::project::Error::Publication(_) => None,
         crate::project::Error::ScenarioRun(_) => None,
     }
@@ -585,6 +599,12 @@ struct ScenarioListArgs {
 struct ScenarioRunArgs {
     /// Scenario struct identity (`<StructIdent>`, not the full `scenarios/...` prefix).
     scenario: String,
+    /// Explicit simulator executable or packaged application executable.
+    #[arg(long)]
+    simulator: Option<PathBuf>,
+    /// Run without opening the simulator desktop.
+    #[arg(long)]
+    headless: bool,
     #[command(flatten)]
     options: CommonArgs,
 }
@@ -651,6 +671,18 @@ enum PublishPackage {
     Component(PublishPackageArgs),
     /// Prepare a service implementation or configuration preset package.
     Service(PublishPackageArgs),
+    /// Prepare a configuration preset package.
+    Preset(PublishPackageArgs),
+    /// Prepare a reusable library package.
+    Library(PublishPackageArgs),
+    /// Prepare a procedural macro package.
+    ProcMacro(PublishPackageArgs),
+    /// Prepare an independently built simulator application package.
+    Simulator(PublishPackageArgs),
+    /// Prepare an independently built non-simulator application package.
+    Application(PublishPackageArgs),
+    /// Prepare a standalone developer or operator tool package.
+    Tool(PublishPackageArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1010,6 +1042,44 @@ mod tests {
     }
 
     #[test]
+    fn scenario_run_parses_explicit_simulator_and_headless_mode() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "simulation",
+            "scenario",
+            "run",
+            "ForwardTurnStop",
+            "--headless",
+            "--simulator",
+            "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator-mujoco",
+            "--locked",
+            "--release",
+        ])
+        .expect("scenario run parses");
+        let arguments = match parsed.command {
+            Command::Simulation(arguments) => match arguments.command {
+                SimulationCommand::Scenario(arguments) => match arguments.command {
+                    ScenarioCommand::Run(arguments) => arguments,
+                    ScenarioCommand::List(_) => panic!("scenario command parsed as list"),
+                },
+                SimulationCommand::Run(_) => panic!("scenario parsed as simulation run"),
+            },
+            _ => panic!("scenario parsed as a different command"),
+        };
+        assert_eq!(arguments.scenario, "ForwardTurnStop");
+        assert!(arguments.headless);
+        assert_eq!(
+            arguments.simulator,
+            Some(PathBuf::from(
+                "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator-mujoco"
+            ))
+        );
+        let options = arguments.options.into_options(Vec::new(), Vec::new());
+        assert_eq!(options.lock, LockMode::Locked);
+        assert!(options.release);
+    }
+
+    #[test]
     fn publication_supports_normal_submission_and_explicit_dry_run() {
         let parsed = Cli::try_parse_from([
             "cargo-phoxal",
@@ -1028,6 +1098,30 @@ mod tests {
         ])
         .expect("normal publication parses");
         assert!(matches!(parsed.command, Command::Publish(_)));
+    }
+
+    #[test]
+    fn publication_accepts_every_registry_package_role() {
+        for role in [
+            "component",
+            "service",
+            "preset",
+            "library",
+            "proc-macro",
+            "simulator",
+            "application",
+            "tool",
+        ] {
+            let parsed = Cli::try_parse_from([
+                "cargo-phoxal",
+                "publish",
+                role,
+                "example-package",
+                "--dry-run",
+            ])
+            .unwrap_or_else(|error| panic!("{role} publication must parse: {error}"));
+            assert!(matches!(parsed.command, Command::Publish(_)));
+        }
     }
 
     #[test]

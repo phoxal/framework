@@ -4,11 +4,12 @@ mod phases;
 mod products;
 
 use phoxal::communication_transport::{
-    cancel_session_subscriptions, DEFAULT_PUBLIC_DEADLINE,
-    PublicTransportError, bounded_error_detail,
+    DEFAULT_PUBLIC_DEADLINE, PublicTransportError, bounded_error_detail,
+    cancel_session_subscriptions,
 };
 
 use super::server::{PublicBackendError, PublicSimulationBackend, PublicSimulationContext};
+use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AcquireAuthorityResponse, AdmitInitialObservationsRequest,
     AdmitInitialObservationsResponse, AdmitObservationsRequest, AdmitObservationsResponse,
@@ -16,7 +17,6 @@ use phoxal::communication::simulation::{
     ReleaseAuthorityRequest, ReleaseAuthorityResponse, ResetRequest, ResetResponse, TransitionKey,
 };
 use phoxal::communication::{PublicOperation, PublicRoute};
-use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

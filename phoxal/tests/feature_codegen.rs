@@ -23,9 +23,9 @@ fn build_phoxal(target_dir: &Path, features: &[&str]) {
         .args(features.iter().flat_map(|f| ["--features", f]))
         .args(["--target-dir"])
         .arg(target_dir);
-    let status = command
-        .status()
-        .expect("cargo build for phoxal feature-codegen test starts");
+    let status = command.status().unwrap_or_else(|error| {
+        panic!("cargo build for phoxal feature-codegen test did not start: {error}")
+    });
     assert!(
         status.success(),
         "cargo build {:?} must succeed for feature-codegen test",
@@ -57,8 +57,7 @@ fn files_under_phoxal_out(target_dir: &Path, file_name: &str) -> Vec<PathBuf> {
 fn port_feature_does_not_generate_robotics_descriptor() {
     let target = tempfile::tempdir().expect("temp target dir for port build");
     build_phoxal(target.path(), &["port"]);
-    let descriptor =
-        files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
+    let descriptor = files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
     assert!(
         descriptor.is_empty(),
         "port feature must not generate the robotics descriptor; found {descriptor:?}"
@@ -69,8 +68,7 @@ fn port_feature_does_not_generate_robotics_descriptor() {
 fn robotics_feature_generates_robotics_descriptor() {
     let target = tempfile::tempdir().expect("temp target dir for robotics build");
     build_phoxal(target.path(), &["robotics"]);
-    let descriptor =
-        files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
+    let descriptor = files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
     assert_eq!(
         descriptor.len(),
         1,

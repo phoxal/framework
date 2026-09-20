@@ -599,14 +599,6 @@ pub enum Error {
         /// Filesystem failure.
         source: std::io::Error,
     },
-    /// A local launch identity was malformed.
-    #[error("invalid local execution identity {field} '{value}'")]
-    InvalidExecutionIdentity {
-        /// Identity field.
-        field: &'static str,
-        /// Invalid value.
-        value: String,
-    },
     /// Package publication preparation failed.
     #[error("package publication failed: {0}")]
     Publication(#[from] PublicationError),
@@ -737,12 +729,6 @@ pub enum PublicationError {
         kind: String,
         /// Required Cargo target shape.
         requirement: String,
-    },
-    /// A service package has no real Cargo target.
-    #[error("service package '{package}' has no Cargo library or binary target")]
-    ServiceWithoutTarget {
-        /// Cargo package name.
-        package: String,
     },
     /// A targetless source contains Rust code and cannot be a passive carrier.
     #[error("targetless package '{package}' contains authored Rust source {path}")]
@@ -938,10 +924,10 @@ impl std::fmt::Display for ValidationErrors {
 /// Bridge between format-side construction errors and the project's top-level error.
 ///
 /// `BundleScenarioSection::from_program_artifact` lives in
-/// `phoxal_artifact_format` and can fail with `ProgramArtifactError`.
+/// `phoxal::artifact` and can fail with `ProgramArtifactError`.
 /// Project callers still receive a `crate::project::error::Error`.
-impl From<phoxal_artifact_format::bundle::ProgramArtifactError> for Error {
-    fn from(source: phoxal_artifact_format::bundle::ProgramArtifactError) -> Self {
+impl From<phoxal::artifact::bundle::ProgramArtifactError> for Error {
+    fn from(source: phoxal::artifact::bundle::ProgramArtifactError) -> Self {
         Self::SimulationInvalid {
             message: source.to_string(),
         }

@@ -246,7 +246,14 @@ pub fn compile_protos_with_dependencies_and_output(
     descriptor_file: &str,
 ) -> Result<(), Error> {
     let out_dir = descriptor_out_dir()?;
-    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths, descriptor_file)
+    compile_to_with_dependencies(
+        protos,
+        includes,
+        &out_dir,
+        dependencies,
+        extern_paths,
+        descriptor_file,
+    )
 }
 
 fn descriptor_out_dir() -> Result<PathBuf, Error> {
@@ -926,7 +933,8 @@ mod tests {
         )
         .expect("fixture source");
 
-        compile_to(&[&proto], &[source.path()], output.path(), DESCRIPTOR_FILE).expect("contract generation");
+        compile_to(&[&proto], &[source.path()], output.path(), DESCRIPTOR_FILE)
+            .expect("contract generation");
 
         let generated = fs::read_to_string(output.path().join("example.vocabulary.v1.rs"))
             .expect("generated Rust");

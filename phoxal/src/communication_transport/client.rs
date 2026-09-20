@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use prost::Message;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zenoh::bytes::Encoding;
@@ -36,16 +36,16 @@ use crate::communication::session::{
     SupervisorStatusRequest, SupervisorStatusResponse,
 };
 use crate::communication::validation::{
-    validate_session_offers, BootstrapError, DeploymentTarget, SESSION_PROTOCOL,
+    BootstrapError, DeploymentTarget, SESSION_PROTOCOL, validate_session_offers,
 };
 
 use super::{
-    bounded_error_detail, decode_message, encode_message, malformed_client, operation_key_expression, subscription_key,
-    validate_subscription_admission, validate_subscription_request,
-    DEFAULT_MAX_DISCOVERED_SUPERVISORS, DEFAULT_PUBLIC_DEADLINE,
-    DEFAULT_PUBLIC_MAX_REQUEST_BYTES, DEFAULT_PUBLIC_MAX_RESPONSE_BYTES,
-    DEFAULT_PUBLIC_QUERY_CAPACITY, MAX_PUBLIC_DEADLINE, MAX_PUBLIC_ERROR_BYTES,
-    MAX_PUBLIC_SUBSCRIPTION_ID_BYTES, PUBLIC_PROTOBUF_ENCODING,
+    DEFAULT_MAX_DISCOVERED_SUPERVISORS, DEFAULT_PUBLIC_DEADLINE, DEFAULT_PUBLIC_MAX_REQUEST_BYTES,
+    DEFAULT_PUBLIC_MAX_RESPONSE_BYTES, DEFAULT_PUBLIC_QUERY_CAPACITY, MAX_PUBLIC_DEADLINE,
+    MAX_PUBLIC_ERROR_BYTES, MAX_PUBLIC_SUBSCRIPTION_ID_BYTES, PUBLIC_PROTOBUF_ENCODING,
+    bounded_error_detail, decode_message, encode_message, malformed_client,
+    operation_key_expression, subscription_key, validate_subscription_admission,
+    validate_subscription_request,
 };
 
 /// Upper bound for a single simulation observation cut, in bytes. The client
@@ -1798,168 +1798,168 @@ async fn query_one_attempt(
         }),
     }
 }
-    #[test]
-    fn default_limits_are_finite_and_bounded() {
-        let limits = PublicTransportLimits::default();
-        limits.validate().expect("default limits validate");
-        assert_eq!(limits.deadline(), Duration::from_secs(5));
-        assert_eq!(limits.max_reply_count(), 2);
-    }
+#[test]
+fn default_limits_are_finite_and_bounded() {
+    let limits = PublicTransportLimits::default();
+    limits.validate().expect("default limits validate");
+    assert_eq!(limits.deadline(), Duration::from_secs(5));
+    assert_eq!(limits.max_reply_count(), 2);
+}
 
-    #[test]
-    fn operation_keys_are_explicit_and_lane_separated() {
-        let target = DeploymentTarget::new("workshop", "rover-01").expect("target");
-        assert_eq!(
-            operation_key_expression(&target, PublicOperation::Open),
-            "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/control/open"
-        );
-        assert_eq!(
-            operation_key_expression(&target, PublicOperation::Status),
-            "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/inspection/status"
-        );
-        assert_eq!(
-            operation_key_expression(&target, PublicOperation::Command),
-            "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/mutation/command"
-        );
-        assert_eq!(
-            operation_key_expression(&target, PublicOperation::PrepareBoundary),
-            "phoxal/workshop/supervisors/rover-01/simulation/v1/clients/*/prepare-boundary"
-        );
-    }
-    #[test]
-    fn subscription_admission_keeps_non_state_initial_absence_out_of_data() {
-        let request = SubscriptionRequest {
-            session_id: b"session".to_vec(),
-            binding_id: b"binding".to_vec(),
-            subscription_id: b"subscription".to_vec(),
-            execution_id: "execution".to_owned(),
-            timeline_id: "timeline".to_owned(),
-            max_buffered_items: 1,
-            max_buffered_bytes: 1,
-        };
-        let admission = SubscriptionAdmission {
-            session_id: request.session_id.clone(),
-            binding_id: request.binding_id.clone(),
-            subscription_id: request.subscription_id.clone(),
-            execution_id: request.execution_id.clone(),
-            timeline_id: request.timeline_id.clone(),
-            initial: None,
-        };
-        assert_eq!(
-            validate_subscription_admission(
-                &admission,
-                &request,
-                &PublicTransportLimits::default(),
-                PublicOperation::Subscribe,
-            )
-            .expect("Subscribe admission"),
-            None
-        );
-
-        let invalid = SubscriptionAdmission {
-            initial: Some(SubscriptionRecord {
-                session_id: request.session_id.clone(),
-                binding_id: request.binding_id.clone(),
-                subscription_id: request.subscription_id.clone(),
-                execution_id: request.execution_id.clone(),
-                timeline_id: request.timeline_id.clone(),
-                revision: 0,
-                kind: RecordKind::InitialAbsent as i32,
-                payload: Vec::new(),
-                dropped: 0,
-                detail: None,
-            }),
-            ..admission
-        };
-        assert!(matches!(
-            validate_subscription_admission(
-                &invalid,
-                &request,
-                &PublicTransportLimits::default(),
-                PublicOperation::Subscribe,
-            ),
-            Err(PublicTransportError::Malformed { .. })
-        ));
-    }
-
-    #[test]
-    fn state_watch_admission_accepts_only_a_value_or_initial_absence() {
-        let request = SubscriptionRequest {
-            session_id: b"session".to_vec(),
-            binding_id: b"binding".to_vec(),
-            subscription_id: b"subscription".to_vec(),
-            execution_id: "execution".to_owned(),
-            timeline_id: "timeline".to_owned(),
-            max_buffered_items: 1,
-            max_buffered_bytes: 1,
-        };
-        let admission = SubscriptionAdmission {
-            session_id: request.session_id.clone(),
-            binding_id: request.binding_id.clone(),
-            subscription_id: request.subscription_id.clone(),
-            execution_id: request.execution_id.clone(),
-            timeline_id: request.timeline_id.clone(),
-            initial: Some(SubscriptionRecord {
-                session_id: request.session_id.clone(),
-                binding_id: request.binding_id.clone(),
-                subscription_id: request.subscription_id.clone(),
-                execution_id: request.execution_id.clone(),
-                timeline_id: request.timeline_id.clone(),
-                revision: 0,
-                kind: RecordKind::InitialAbsent as i32,
-                payload: Vec::new(),
-                dropped: 0,
-                detail: None,
-            }),
-        };
-        assert!(matches!(
-            validate_subscription_admission(
-                &admission,
-                &request,
-                &PublicTransportLimits::default(),
-                PublicOperation::Watch,
-            ),
-            Ok(Some(SubscriptionRecord {
-                kind,
-                ..
-            })) if kind == RecordKind::InitialAbsent as i32
-        ));
-    }
-    #[test]
-    fn tls_server_name_must_match_the_endpoint_host() {
-        let credentials = PublicTlsCredentials::from_files(
-            "root-ca.pem",
-            "client.pem",
-            "client-key.pem",
-            "router.example",
+#[test]
+fn operation_keys_are_explicit_and_lane_separated() {
+    let target = DeploymentTarget::new("workshop", "rover-01").expect("target");
+    assert_eq!(
+        operation_key_expression(&target, PublicOperation::Open),
+        "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/control/open"
+    );
+    assert_eq!(
+        operation_key_expression(&target, PublicOperation::Status),
+        "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/inspection/status"
+    );
+    assert_eq!(
+        operation_key_expression(&target, PublicOperation::Command),
+        "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/mutation/command"
+    );
+    assert_eq!(
+        operation_key_expression(&target, PublicOperation::PrepareBoundary),
+        "phoxal/workshop/supervisors/rover-01/simulation/v1/clients/*/prepare-boundary"
+    );
+}
+#[test]
+fn subscription_admission_keeps_non_state_initial_absence_out_of_data() {
+    let request = SubscriptionRequest {
+        session_id: b"session".to_vec(),
+        binding_id: b"binding".to_vec(),
+        subscription_id: b"subscription".to_vec(),
+        execution_id: "execution".to_owned(),
+        timeline_id: "timeline".to_owned(),
+        max_buffered_items: 1,
+        max_buffered_bytes: 1,
+    };
+    let admission = SubscriptionAdmission {
+        session_id: request.session_id.clone(),
+        binding_id: request.binding_id.clone(),
+        subscription_id: request.subscription_id.clone(),
+        execution_id: request.execution_id.clone(),
+        timeline_id: request.timeline_id.clone(),
+        initial: None,
+    };
+    assert_eq!(
+        validate_subscription_admission(
+            &admission,
+            &request,
+            &PublicTransportLimits::default(),
+            PublicOperation::Subscribe,
         )
-        .expect("TLS credentials");
-        assert!(
-            client_config_with_security(
-                "tls/other.example:7447",
-                &PublicTransportSecurity::Tls(credentials.clone()),
-            )
-            .is_err()
-        );
-        assert!(
-            client_config_with_security(
-                "tls/router.example:7447",
-                &PublicTransportSecurity::Tls(credentials),
-            )
-            .is_ok()
-        );
-        assert!(
-            client_config_with_security(
-                "tcp/router.example:7447",
-                &PublicTransportSecurity::Plaintext,
-            )
-            .is_err()
-        );
-        assert!(
-            client_config_with_security(
-                "unixsock-stream//tmp/phoxal-supervisor.sock",
-                &PublicTransportSecurity::Plaintext,
-            )
-            .is_ok()
-        );
-    }
+        .expect("Subscribe admission"),
+        None
+    );
+
+    let invalid = SubscriptionAdmission {
+        initial: Some(SubscriptionRecord {
+            session_id: request.session_id.clone(),
+            binding_id: request.binding_id.clone(),
+            subscription_id: request.subscription_id.clone(),
+            execution_id: request.execution_id.clone(),
+            timeline_id: request.timeline_id.clone(),
+            revision: 0,
+            kind: RecordKind::InitialAbsent as i32,
+            payload: Vec::new(),
+            dropped: 0,
+            detail: None,
+        }),
+        ..admission
+    };
+    assert!(matches!(
+        validate_subscription_admission(
+            &invalid,
+            &request,
+            &PublicTransportLimits::default(),
+            PublicOperation::Subscribe,
+        ),
+        Err(PublicTransportError::Malformed { .. })
+    ));
+}
+
+#[test]
+fn state_watch_admission_accepts_only_a_value_or_initial_absence() {
+    let request = SubscriptionRequest {
+        session_id: b"session".to_vec(),
+        binding_id: b"binding".to_vec(),
+        subscription_id: b"subscription".to_vec(),
+        execution_id: "execution".to_owned(),
+        timeline_id: "timeline".to_owned(),
+        max_buffered_items: 1,
+        max_buffered_bytes: 1,
+    };
+    let admission = SubscriptionAdmission {
+        session_id: request.session_id.clone(),
+        binding_id: request.binding_id.clone(),
+        subscription_id: request.subscription_id.clone(),
+        execution_id: request.execution_id.clone(),
+        timeline_id: request.timeline_id.clone(),
+        initial: Some(SubscriptionRecord {
+            session_id: request.session_id.clone(),
+            binding_id: request.binding_id.clone(),
+            subscription_id: request.subscription_id.clone(),
+            execution_id: request.execution_id.clone(),
+            timeline_id: request.timeline_id.clone(),
+            revision: 0,
+            kind: RecordKind::InitialAbsent as i32,
+            payload: Vec::new(),
+            dropped: 0,
+            detail: None,
+        }),
+    };
+    assert!(matches!(
+        validate_subscription_admission(
+            &admission,
+            &request,
+            &PublicTransportLimits::default(),
+            PublicOperation::Watch,
+        ),
+        Ok(Some(SubscriptionRecord {
+            kind,
+            ..
+        })) if kind == RecordKind::InitialAbsent as i32
+    ));
+}
+#[test]
+fn tls_server_name_must_match_the_endpoint_host() {
+    let credentials = PublicTlsCredentials::from_files(
+        "root-ca.pem",
+        "client.pem",
+        "client-key.pem",
+        "router.example",
+    )
+    .expect("TLS credentials");
+    assert!(
+        client_config_with_security(
+            "tls/other.example:7447",
+            &PublicTransportSecurity::Tls(credentials.clone()),
+        )
+        .is_err()
+    );
+    assert!(
+        client_config_with_security(
+            "tls/router.example:7447",
+            &PublicTransportSecurity::Tls(credentials),
+        )
+        .is_ok()
+    );
+    assert!(
+        client_config_with_security(
+            "tcp/router.example:7447",
+            &PublicTransportSecurity::Plaintext,
+        )
+        .is_err()
+    );
+    assert!(
+        client_config_with_security(
+            "unixsock-stream//tmp/phoxal-supervisor.sock",
+            &PublicTransportSecurity::Plaintext,
+        )
+        .is_ok()
+    );
+}

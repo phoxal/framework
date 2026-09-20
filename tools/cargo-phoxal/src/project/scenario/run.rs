@@ -1,4 +1,4 @@
-//! P4 case-host CLI entry points.
+//! Case-host CLI entry points.
 //!
 //! `cargo phoxal simulation scenario list` and
 //! `cargo phoxal simulation scenario run <name>` land here. Both
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use cargo_metadata::{Message, MetadataCommand};
 
-use crate::Project;
+use crate::project::Project;
 use crate::project::cargo::CargoOptions;
 
 /// One line in the `scenario list` output. The struct identity is
@@ -32,23 +32,21 @@ pub struct ScenarioListEntry {
 /// coarse-grained on purpose; the caller decides the rendered string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioRunError {
-    NoSuchScenario(String),
-    PreparationFailed(String),
-    HarnessCompilationFailed(String),
-    HarnessExecutionFailed(String),
+    Preparation(String),
+    Compilation(String),
+    Execution(String),
 }
 
 impl std::fmt::Display for ScenarioRunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoSuchScenario(name) => write!(f, "scenario `{name}` is not registered"),
-            Self::PreparationFailed(detail) => {
+            Self::Preparation(detail) => {
                 write!(f, "scenario preparation failed: {detail}")
             }
-            Self::HarnessCompilationFailed(detail) => {
+            Self::Compilation(detail) => {
                 write!(f, "harness compilation failed: {detail}")
             }
-            Self::HarnessExecutionFailed(detail) => write!(f, "harness execution failed: {detail}"),
+            Self::Execution(detail) => write!(f, "harness execution failed: {detail}"),
         }
     }
 }
@@ -66,7 +64,7 @@ pub fn list_scenarios(
 ) -> Result<Vec<ScenarioListEntry>, ScenarioRunError> {
     project
         .prepare_scenarios(options)
-        .map_err(|error| ScenarioRunError::PreparationFailed(error.to_string()))?;
+        .map_err(|error| ScenarioRunError::Preparation(error.to_string()))?;
     // An absent scenarios directory is a valid empty registry, not
     // an error. Without this short-circuit, listing would invoke a
     // non-existent Cargo test target and report a confusing compile
@@ -75,14 +73,14 @@ pub fn list_scenarios(
     if !scenarios_root.is_dir() {
         return Ok(Vec::new());
     }
-    let harness_binary = build_harness_binary(project, options)
-        .map_err(ScenarioRunError::HarnessCompilationFailed)?;
+    let harness_binary =
+        build_harness_binary(project, options).map_err(ScenarioRunError::Compilation)?;
     let list_output = std::process::Command::new(&harness_binary)
         .arg("list")
         .output()
-        .map_err(|error| ScenarioRunError::HarnessExecutionFailed(error.to_string()))?;
+        .map_err(|error| ScenarioRunError::Execution(error.to_string()))?;
     if !list_output.status.success() {
-        return Err(ScenarioRunError::HarnessExecutionFailed(format!(
+        return Err(ScenarioRunError::Execution(format!(
             "list command exited non-zero: {:?}\nstderr: {}",
             list_output.status,
             String::from_utf8_lossy(&list_output.stderr),
@@ -102,27 +100,28 @@ pub fn run_scenario(
     project: &Project,
     options: &CargoOptions,
     scenario_name: &str,
+    simulator_executable: Option<&std::path::Path>,
+    headless: bool,
 ) -> Result<ScenarioRunReport, ScenarioRunError> {
     project
         .prepare_scenarios(options)
-        .map_err(|error| ScenarioRunError::PreparationFailed(error.to_string()))?;
-    let harness_binary = build_harness_binary(project, options)
-        .map_err(ScenarioRunError::HarnessCompilationFailed)?;
+        .map_err(|error| ScenarioRunError::Preparation(error.to_string()))?;
+    let harness_binary =
+        build_harness_binary(project, options).map_err(ScenarioRunError::Compilation)?;
     let tool_report = crate::project::scenario::case_host::run_case_host(
         project,
         options,
         &harness_binary,
         scenario_name,
+        simulator_executable,
+        headless,
     )
-    .map_err(|error| ScenarioRunError::HarnessExecutionFailed(error.to_string()))?;
+    .map_err(|error| ScenarioRunError::Execution(error.to_string()))?;
     let detail = tool_report.detail.clone().unwrap_or_default();
     let stdout = if tool_report.passed {
         format!("scenario {}: PASSED\n{detail}", tool_report.scenario_name)
     } else {
-        format!(
-            "scenario {}: FAILED\n{detail}",
-            tool_report.scenario_name
-        )
+        format!("scenario {}: FAILED\n{detail}", tool_report.scenario_name)
     };
     Ok(ScenarioRunReport {
         scenario_name: tool_report.scenario_name,
@@ -133,9 +132,9 @@ pub fn run_scenario(
     })
 }
 
-/// One aggregated scenario run report. Mirrors
-/// [`phoxal::scenario::HarnessRun`] in shape; P5 fills in
-/// `report_artifact_path` once the case host seals a structured
+/// One aggregated scenario run report.
+/// It mirrors the SDK's private `HarnessRun` in shape.
+/// `report_artifact_path` is populated when the case host seals a structured
 /// report under `<robot>/.phoxal/reports/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioRunReport {
@@ -181,7 +180,7 @@ fn parse_list_output(stdout: &str) -> Vec<ScenarioListEntry> {
 /// diagnostic in stdout (rather than stderr) still surfaces the
 /// useful error message.
 fn build_harness_binary(
-    project: &crate::Project,
+    project: &crate::project::Project,
     options: &CargoOptions,
 ) -> Result<std::path::PathBuf, String> {
     validate_options_for_case_host(options).map_err(|error| error.to_string())?;
@@ -243,9 +242,7 @@ fn build_harness_binary(
 /// already passes the explicit `--package <root-id>` it resolved from
 /// the staged manifest; a user-supplied `--workspace`, `--package`,
 /// or `--exclude` would silently drop or override that owned
-/// selection. See Gate P2 of the scenario acceptance review: validate
-/// conflicting package/target selections before preparation writes
-/// anything.
+/// selection, so conflicts are rejected before preparation writes anything.
 fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHostOptionError> {
     if options.selection.workspace {
         return Err(CaseHostOptionError::ConflictingSelection(
@@ -339,8 +336,7 @@ impl std::fmt::Display for CaseHostOptionError {
 /// registry, lock/offline policy, and feature selection match the
 /// rest of the project. Constructing an independent `MetadataCommand`
 /// here would let the user's `cargo_path`/`offline`/`CARGO_TARGET_DIR`
-/// settings be ignored at exactly the boundary the harness build
-/// requires. See Gate P2 of the scenario acceptance review.
+/// settings be ignored at exactly the boundary the harness build requires.
 fn resolve_root_package_id(
     staged_manifest: &Path,
     current_dir: &Path,
@@ -459,7 +455,7 @@ fn parse_artifact_executable(
             Ok(_) => {}
             Err(error) => {
                 eprintln!(
-                    "phoxal-project: cargo message parse failed: {error}; \
+                    "cargo-phoxal: cargo message parse failed: {error}; \
                      accumulated diagnostics:\n{}",
                     diagnostics.join("\n")
                 );
@@ -472,7 +468,7 @@ fn parse_artifact_executable(
     }
     if found.is_none() && !diagnostics.is_empty() {
         eprintln!(
-            "phoxal-project: cargo build emitted no artifact; diagnostics:\n{}",
+            "cargo-phoxal: cargo build emitted no artifact; diagnostics:\n{}",
             diagnostics.join("\n")
         );
     }
@@ -614,14 +610,12 @@ mod parse_artifact_tests {
     /// alphabetically-sorted sibling (`a-helper`) would otherwise be
     /// picked by `packages.first()`; selecting by exact
     /// `manifest_path` must always return the package the staged
-    /// source tree owns. See Gate A2 of the scenario acceptance review.
+    /// source tree owns.
     ///
     /// The temporary directory is wired up as a real workspace at
     /// the top level so the phoxal registry config plus
     /// `--manifest-path` invocation actually exercise the resolver
-    /// rather than a sibling-only layout. See Gate P2 of
-    /// the scenario acceptance review: the resolver previously constructed an
-    /// independent `MetadataCommand` without workspace context.
+    /// rather than a sibling-only layout.
     #[test]
     fn resolver_picks_staged_manifest_not_first_package() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -660,10 +654,8 @@ mod parse_artifact_tests {
         );
     }
 
-    // ----------------------------------------------------------------
-    // Gate P2 of the scenario acceptance review: prepared-Cargo-context
-    // propagation and selection-flag validation for `list_scenarios`.
-    // ----------------------------------------------------------------
+    // Prepared Cargo-context propagation and selection-flag validation for
+    // `list_scenarios`.
 
     #[test]
     fn case_host_validates_conflicting_package_selector() {

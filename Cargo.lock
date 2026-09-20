@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-phoxal"
-version = "0.1.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "base64",
  "cargo_metadata",
@@ -315,7 +315,6 @@ dependencies = [
  "libc",
  "object",
  "phoxal",
- "phoxal-artifact-format",
  "prost-reflect",
  "reqwest",
  "serde",
@@ -2235,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2243,7 +2242,6 @@ dependencies = [
  "getrandom 0.3.4",
  "inventory",
  "jsonschema",
- "phoxal-artifact-format",
  "phoxal-build",
  "phoxal-macros",
  "prost",
@@ -2251,6 +2249,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "serde_yaml",
  "serial_test",
  "sha2",
  "tempfile",
@@ -2263,19 +2262,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-artifact-format"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "phoxal-build"
-version = "0.1.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "heck",
  "prost",
@@ -2289,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2299,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2311,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2321,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2331,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2369,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2395,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-kinematics"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2406,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2418,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2431,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2444,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-world"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2456,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-supervisor"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 dependencies = [
  "anyhow",
  "clap",

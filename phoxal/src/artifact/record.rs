@@ -7,7 +7,7 @@
 //!
 //! Native binary inspection (`ArtifactContract`, `DescriptorInfo`,
 //! `inspect_file`, `inspect_bytes`) and connection validation
-//! (`validate_connected_endpoints`) remain in `phoxal-project`'s tool
+//! (`validate_connected_endpoints`) remain in `cargo-phoxal`'s tool
 //! layer because they read native ELF/Mach-O sections, decode the
 //! descriptor pool, and consult the authored `RobotDocument`.
 
@@ -216,7 +216,7 @@ mod tests {
     //! Round-trip and discriminator tests for the artifact record family.
     //!
     //! These guarantee that the canonical wire format of `ArtifactSummary`
-    //! survives any future internal refactor of the format crate.
+    //! survives any future internal refactor of the artifact module.
 
     use super::*;
 

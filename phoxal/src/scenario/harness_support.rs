@@ -1,7 +1,6 @@
 //! Hidden SDK-side support for the generated scenario harness binary.
 //!
-//! Plan §9 splits the case-host responsibilities between the tool and
-//! the harness. The harness runs in a separate process from the tool;
+//! The harness runs in a separate process from the tool;
 //! the two communicate over a small, versioned, bounded private
 //! control channel. This module implements the harness side: it reads
 //! tool requests, constructs the SDK-side plan/program/evidence, and
@@ -48,10 +47,8 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use crate::scenario::program::{Program, Quantum, ScheduleEntry};
-use crate::scenario::results::{
-    CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun,
-};
 use crate::scenario::registry::PlannedScenario;
+use crate::scenario::results::{CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun};
 
 pub mod messages;
 
@@ -91,7 +88,9 @@ pub enum HarnessError {
     Io { message: String },
     #[error("harness control channel: malformed frame ({message})")]
     Malformed { message: String },
-    #[error("harness control channel: unsupported protocol version (got {got}, expected {expected})")]
+    #[error(
+        "harness control channel: unsupported protocol version (got {got}, expected {expected})"
+    )]
     UnsupportedVersion { got: u32, expected: u32 },
     #[error("harness control channel: frame exceeds {limit} bytes (got {got})")]
     FrameTooLarge { got: usize, limit: usize },
@@ -235,7 +234,11 @@ pub fn run_harness_case(scenario_name: &str) -> Result<(), HarnessError> {
     // the tool, validate the plan against it, normalize the program
     // once, and send the wire-stable Program envelope back.
     let probe = channel.read_message()?;
-    let HarnessRequest::Probe { quantum_ns, model_identity } = probe else {
+    let HarnessRequest::Probe {
+        quantum_ns,
+        model_identity,
+    } = probe
+    else {
         return Err(HarnessError::Protocol {
             name: planned.name.clone(),
             message: format!("expected Probe, got `{}`", request_name(&probe)),
@@ -243,9 +246,7 @@ pub fn run_harness_case(scenario_name: &str) -> Result<(), HarnessError> {
     };
     let quantum = Quantum::from_nanos(quantum_ns).ok_or_else(|| HarnessError::Protocol {
         name: planned.name.clone(),
-        message: format!(
-            "tool supplied zero or sub-microsecond quantum ({quantum_ns} ns)"
-        ),
+        message: format!("tool supplied zero or sub-microsecond quantum ({quantum_ns} ns)"),
     })?;
     let transitions = planned.plan.transition_count(quantum).ok_or_else(|| {
         HarnessError::Protocol {
@@ -314,7 +315,13 @@ pub fn run_harness_case(scenario_name: &str) -> Result<(), HarnessError> {
             message: format!("expected Evidence, got `{}`", request_name(&evidence)),
         });
     };
-    let verdict = seal_and_verify(&planned, &program, &report, cleanup_succeeded, lifecycle_passing);
+    let verdict = seal_and_verify(
+        &planned,
+        &program,
+        &report,
+        cleanup_succeeded,
+        lifecycle_passing,
+    );
     channel.write_message(&HarnessResponse::Verdict(verdict))?;
     Ok(())
 }
@@ -329,7 +336,13 @@ fn seal_and_verify(
     cleanup_succeeded: bool,
     lifecycle_passing: bool,
 ) -> messages::Verdict {
-    let run_result = build_scenario_run(planned, program, report, cleanup_succeeded, lifecycle_passing);
+    let run_result = build_scenario_run(
+        planned,
+        program,
+        report,
+        cleanup_succeeded,
+        lifecycle_passing,
+    );
     match run_result {
         Ok(run) if !lifecycle_passing || !run.passed() => {
             let detail = if run.passed() {
@@ -348,9 +361,7 @@ fn seal_and_verify(
         }
         Ok(run) => match planned.scenario.verify_box(&run) {
             Ok(()) => messages::Verdict::pass(None),
-            Err(source) => {
-                messages::Verdict::fail(Some(format!("verify_box: {source:#}")))
-            }
+            Err(source) => messages::Verdict::fail(Some(format!("verify_box: {source:#}"))),
         },
         Err(error) => {
             // The seal rejected the evidence. This is the evidence
@@ -365,8 +376,8 @@ fn seal_and_verify(
 }
 
 fn plan_scenario(name: &str) -> Result<PlannedScenario, HarnessError> {
-    let entries = crate::scenario::registry::list_scenarios()
-        .map_err(|source| HarnessError::Planning {
+    let entries =
+        crate::scenario::registry::list_scenarios().map_err(|source| HarnessError::Planning {
             name: name.to_owned(),
             source: source.into(),
         })?;
@@ -385,11 +396,7 @@ fn scenario_summary(planned: &PlannedScenario) -> ScenarioSummary {
     ScenarioSummary {
         name: planned.name.clone(),
         scene: planned.plan.scene.clone(),
-        duration_ns: planned
-            .plan
-            .duration
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64,
+        duration_ns: planned.plan.duration.as_nanos().min(u128::from(u64::MAX)) as u64,
         step_count: planned.plan.steps.len(),
         capture_count: planned.plan.captures.len(),
     }
@@ -498,7 +505,10 @@ fn build_scenario_run(
         .record_terminal_evidence(evidence)
         .map_err(|source| HarnessError::Protocol {
             name: planned.name.clone(),
-            message: format!("record terminal evidence: {source}"),
+            message: format!(
+                "record terminal evidence: {source}; {}",
+                report_summary(report, cleanup_succeeded, _lifecycle_passing)
+            ),
         })?;
     collector.seal().map_err(|source| HarnessError::Protocol {
         name: planned.name.clone(),
@@ -678,35 +688,44 @@ mod tests {
             let mut tool_read = unsafe { File::from_raw_fd(tool_read) };
             let mut tool_write = unsafe { File::from_raw_fd(tool_write) };
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Hello {
-                    version: messages::PROTOCOL_VERSION,
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Hello {
+                        version: messages::PROTOCOL_VERSION,
+                    })
+                    .unwrap(),
+                ))
                 .expect("hello");
             let _ = read_frame(&mut tool_read);
             let _ = read_frame(&mut tool_read);
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Probe {
-                    quantum_ns: 2_000_000,
-                    model_identity: "happy_model".to_owned(),
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Probe {
+                        quantum_ns: 2_000_000,
+                        model_identity: "happy_model".to_owned(),
+                    })
+                    .unwrap(),
+                ))
                 .expect("probe");
             let _ = read_frame(&mut tool_read);
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Evidence {
-                    report: messages::LifecycleReport {
-                        execution_id: "exec/happy".to_owned(),
-                        quantum_ns: 2_000_000,
-                        completed_steps: 3,
-                        final_observation_cut_observed: true,
-                        final_capture_drain_observed: true,
-                        step_outcomes: Vec::new(),
-                        capture_records: Vec::new(),
-                        command_replies: Vec::new(),
-                        native_body: None,
-                    },
-                    cleanup_succeeded: true,
-                    lifecycle_passing: true,
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Evidence {
+                        report: messages::LifecycleReport {
+                            execution_id: "exec/happy".to_owned(),
+                            quantum_ns: 2_000_000,
+                            completed_steps: 3,
+                            final_observation_cut_observed: true,
+                            final_capture_drain_observed: true,
+                            step_outcomes: Vec::new(),
+                            capture_records: Vec::new(),
+                            command_replies: Vec::new(),
+                            native_body: None,
+                        },
+                        cleanup_succeeded: true,
+                        lifecycle_passing: true,
+                    })
+                    .unwrap(),
+                ))
                 .expect("evidence");
             read_frame(&mut tool_read)
         });
@@ -776,10 +795,9 @@ mod tests {
         let harness_read_file = unsafe { File::from_raw_fd(harness_read) };
         // Drop the tool write side so the harness reads EOF.
         let _ = tool_write;
-        let mut channel = Channel::from_fds(
-            OwnedFd::from(harness_read_file),
-            unsafe { OwnedFd::from(File::from_raw_fd(harness_write)) },
-        );
+        let mut channel = Channel::from_fds(OwnedFd::from(harness_read_file), unsafe {
+            OwnedFd::from(File::from_raw_fd(harness_write))
+        });
         let err = channel.read_message().expect_err("EOF must fail");
         match err {
             HarnessError::Io { .. } => {}
@@ -888,17 +906,23 @@ mod tests {
             let mut tool_read = unsafe { File::from_raw_fd(tool_read) };
             let mut tool_write = unsafe { File::from_raw_fd(tool_write) };
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Hello {
-                    version: messages::PROTOCOL_VERSION,
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Hello {
+                        version: messages::PROTOCOL_VERSION,
+                    })
+                    .unwrap(),
+                ))
                 .expect("hello");
             let _ = read_frame(&mut tool_read);
             let _ = read_frame(&mut tool_read);
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Probe {
-                    quantum_ns: 2_000_000,
-                    model_identity: "outcome_model".to_owned(),
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Probe {
+                        quantum_ns: 2_000_000,
+                        model_identity: "outcome_model".to_owned(),
+                    })
+                    .unwrap(),
+                ))
                 .expect("probe");
             let _ = read_frame(&mut tool_read);
             let (lifecycle_passing, cleanup_succeeded, completed_steps) = match outcome_for_tool {
@@ -907,21 +931,24 @@ mod tests {
                 LifecycleOutcome::EvidenceMismatch => (true, true, 0),
             };
             tool_write
-                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Evidence {
-                    report: messages::LifecycleReport {
-                        execution_id: "exec/outcome".to_owned(),
-                        quantum_ns: 2_000_000,
-                        completed_steps,
-                        final_observation_cut_observed: completed_steps > 0,
-                        final_capture_drain_observed: false,
-                        step_outcomes: Vec::new(),
-                        capture_records: Vec::new(),
-                        command_replies: Vec::new(),
-                        native_body: None,
-                    },
-                    cleanup_succeeded,
-                    lifecycle_passing,
-                }).unwrap()))
+                .write_all(&frame(
+                    &serde_json::to_vec(&HarnessRequest::Evidence {
+                        report: messages::LifecycleReport {
+                            execution_id: "exec/outcome".to_owned(),
+                            quantum_ns: 2_000_000,
+                            completed_steps,
+                            final_observation_cut_observed: completed_steps > 0,
+                            final_capture_drain_observed: false,
+                            step_outcomes: Vec::new(),
+                            capture_records: Vec::new(),
+                            command_replies: Vec::new(),
+                            native_body: None,
+                        },
+                        cleanup_succeeded,
+                        lifecycle_passing,
+                    })
+                    .unwrap(),
+                ))
                 .expect("evidence");
             read_frame(&mut tool_read)
         });
@@ -950,7 +977,10 @@ mod tests {
     }
     impl crate::scenario::Scenario for HarnessHappyPath {
         fn plan(&self) -> crate::Result<crate::scenario::plan::ScenarioPlan> {
-            Ok(crate::scenario::plan::ScenarioPlan::new("happy/scene", StdDuration::from_micros(6_000)))
+            Ok(crate::scenario::plan::ScenarioPlan::new(
+                "happy/scene",
+                StdDuration::from_micros(6_000),
+            ))
         }
         fn verify(&self, run: &crate::scenario::results::ScenarioRun) -> crate::Result<()> {
             if !run.passed() {

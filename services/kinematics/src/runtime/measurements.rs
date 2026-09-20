@@ -1,8 +1,8 @@
 //! Bounded wheel evidence with source-owned capture time and calibrated SI values.
 use crate::config::KinematicsConfig;
 use crate::inputs::KinematicsInputs;
-use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
 use phoxal::robotics::EncoderSample;
+use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
 use phoxal_service_kinematics::{JointState, UnavailableReason};
 use std::collections::{BTreeMap, BTreeSet};
 

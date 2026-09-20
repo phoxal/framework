@@ -172,9 +172,7 @@ mod tests {
     /// Production `run_harness` must fail closed: it must never
     /// produce a passing [`HarnessRun`] for any registered
     /// descriptor until the supervisor-driven lifecycle lands. This
-    /// is the regression the scenario acceptance review required: a missing
-    /// driver chain is a non-pass, not a synthetic success. See Gate
-    /// P1 #1 of the scenario acceptance review.
+    /// A missing driver chain is a non-pass, not a synthetic success.
     #[test]
     fn production_run_harness_rejects_unsupported_driver_chain() {
         let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
@@ -211,9 +209,7 @@ mod tests {
     }
 
     /// Panic in `Default::default` so any eager construction at
-    /// listing or registration time would surface here. See Gate A1
-    /// of the scenario acceptance review: "Listing invokes neither Default,
-    /// plan, nor verify."
+    /// listing or registration time would surface here.
     #[derive(Debug)]
     #[allow(dead_code)]
     struct PanicOnDefault;
@@ -235,8 +231,7 @@ mod tests {
     /// produced by the user's `plan()`. The case host drives the rest
     /// of the lifecycle; the entry itself never produces a passing
     /// outcome. Returning `ScenarioOutcome { passed: true, .. }` from
-    /// the entry would be a false success path: the scenario acceptance
-    /// Gate A1 clause 3.
+    /// the entry would be a false success path.
     #[test]
     fn entry_returns_planned_scenario_for_lifecycle_to_drive() {
         use crate::scenario::Scenario;
@@ -294,8 +289,7 @@ mod tests {
     /// surface any eager construction at listing or registration
     /// time. The inventory snapshot is already sorted by short name;
     /// we look up the descriptor by exact match so the test cannot
-    /// silently accept another module's entry. See Gate P1 #6 of
-    /// the scenario acceptance review.
+    /// silently accept another module's entry.
     #[allow(dead_code)]
     #[derive(Debug)]
     struct PanicOnDefaultScenario;
@@ -563,8 +557,7 @@ mod tests {
     /// run whose `passed` flag is false must surface as a
     /// `ScenarioFailed` before `verify()` runs. The fabricator's
     /// failure mode (sealing as passing without lifecycle evidence)
-    /// must be rejected at this seam. See Gate P1 #1 of
-    /// the scenario acceptance review.
+    /// must be rejected at this seam.
     #[test]
     fn case_host_rejects_sealed_run_that_did_not_pass() {
         use crate::scenario::Scenario;
@@ -665,9 +658,8 @@ mod tests {
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence quantum does not match the program's
     /// quantum in nanoseconds. This is the regression the
-    /// scenario acceptance review required: a driver that fabricates quantum
-    /// or completed-transition counts cannot reach a passing
-    /// seal. See Gate P1 #2 of the scenario acceptance review.
+    /// A driver that fabricates quantum or completed-transition counts
+    /// cannot reach a passing seal.
     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_quantum() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
@@ -708,8 +700,7 @@ mod tests {
 
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence completed-transition count does not match
-    /// the program's transition_count. See Gate P1 #2 of
-    /// the scenario acceptance review.
+    /// the program's transition_count.
     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_completed_transitions() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");

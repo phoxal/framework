@@ -2,13 +2,12 @@
 //!
 //! The inert record family (`RobotDocument`, `ComponentDocument`,
 //! `BrainSelection`, capability declarations, etc.) lives in
-//! `phoxal_artifact_format::document`. This module re-exports those
-//! types and adds the project-side validation logic that the format
-//! crate intentionally does not own.
+//! `phoxal::artifact::document`. This module re-exports those
+//! types and adds the project-side validation logic that the inert
+//! framework module intentionally does not own.
 //!
-//! Authored YAML parsing is a free function because the format crate
-//! exposes a `parse` method on the records; tool callers use
-//! [`parse_and_validate`] to combine parsing and validation.
+//! Authored YAML parsing is owned here; tool callers use [`parse_and_validate`]
+//! to combine parsing and validation.
 
 #![deny(unsafe_code)]
 
@@ -19,18 +18,17 @@ use serde_json::Value;
 
 use crate::project::error::{ValidationError, ValidationErrors};
 
-// Re-exports from the shared artifact format crate. The format crate is
-// the source of truth for every inert record; this module keeps the
+// Re-exports from the framework artifact module. That module is the source of
+// truth for every inert record; this tool module keeps the
 // tool's validation logic and reads YAML.
-pub use phoxal_artifact_format::document::{
-    BrainSelection, CapabilityDeclaration, ComponentDocument, ComponentInstance, ComponentModel,
-    ConnectionSources, NativeTarget, NativeTargetKind, PortReference, PortReferenceError,
-    RobotDocument, RobotSection, ServiceSelection,
+pub use phoxal::artifact::document::{
+    BrainSelection, ComponentDocument, ComponentInstance, ConnectionSources, PortReference,
+    RobotDocument, ServiceSelection,
 };
 
 /// Re-export of the source-language tag for callers that still import
 /// `document::ROBOT_SCHEMA`.
-pub use phoxal_artifact_format::document::{COMPONENT_SCHEMA, ROBOT_SCHEMA};
+pub use phoxal::artifact::document::{COMPONENT_SCHEMA, ROBOT_SCHEMA};
 
 /// Parses and validates a `robot.yaml` document with its authored path
 /// attached to errors. The YAML parse and the validation belong
@@ -40,8 +38,8 @@ pub(crate) fn parse_and_validate(
     text: &str,
     path: &Path,
 ) -> Result<RobotDocument, crate::project::error::Error> {
-    let document =
-        RobotDocument::parse(text).map_err(|source| crate::project::error::Error::ParseRobot {
+    let document: RobotDocument =
+        serde_yaml::from_str(text).map_err(|source| crate::project::error::Error::ParseRobot {
             path: path.to_owned(),
             source,
         })?;
@@ -56,9 +54,8 @@ pub(crate) fn parse_and_validate(
 
 /// Validates source-language and composition rules for a `RobotDocument`.
 ///
-/// `RobotDocument::parse` already lives on the format record. We add
-/// validation as a free function on the format type via the trait
-/// below so existing callers continue to read `document.validate()?`.
+/// Validation remains tool-owned and is implemented as a trait over the inert
+/// framework record so callers can read `document.validate()?`.
 pub trait ValidateDocument {
     /// Run all source-language and composition checks and collect any
     /// validation errors into a single `Vec`.
@@ -82,7 +79,7 @@ impl ValidateDocument for RobotDocument {
 }
 
 /// Validates a single `ComponentDocument` against the project-side
-/// rules the format crate does not own.
+/// rules the framework record module does not own.
 pub trait ValidateComponentDocument {
     /// Run all component-side checks and return any errors as a single
     /// joined string for the supervisor and publication tooling.
@@ -362,12 +359,24 @@ fn push_config_errors(value: &Value, field: &str, errors: &mut Vec<ValidationErr
 }
 
 pub(crate) fn is_identifier(value: &str) -> bool {
-    phoxal_artifact_format::document::is_identifier(value)
+    phoxal::artifact::document::is_identifier(value)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    fn maintained_example(relative: &str) -> (std::path::PathBuf, String) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/runtime-rewrite")
+            .join(relative);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        (path, text)
+    }
 
     #[test]
     fn parse_and_validate_accepts_a_minimal_document() {
@@ -389,12 +398,27 @@ robot:
 "#;
         let err =
             parse_and_validate(yaml, Path::new("robot.yaml")).expect_err("invalid identifier");
-        assert!(matches!(err, crate::project::error::Error::InvalidRobot { .. }));
+        assert!(matches!(
+            err,
+            crate::project::error::Error::InvalidRobot { .. }
+        ));
+    }
+
+    #[test]
+    fn maintained_example_documents_pass_tool_owned_validation() {
+        for relative in [
+            "components/bench-motor/component.yaml",
+            "components/bench-imu/component.yaml",
+        ] {
+            let (path, text) = maintained_example(relative);
+            let document: ComponentDocument = serde_yaml::from_str(&text)
+                .unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()));
+            document
+                .validate()
+                .unwrap_or_else(|error| panic!("{} is invalid: {error}", path.display()));
+        }
+
+        let (path, text) = maintained_example("robots/workspace-robot/robot.yaml");
+        parse_and_validate(&text, &path).expect("maintained robot document is valid");
     }
 }
-
-// Suppress unused warnings for the validation error type used only inside
-// tool-side callers. Without this, the `ValidationErrors` import is flagged
-// in the no-default-features build even when it is never instantiated.
-#[allow(dead_code)]
-fn _ensure_validation_errors_used(_: ValidationErrors) {}

@@ -132,7 +132,7 @@ impl Quantum {
     /// harness-support protocol uses this constructor to bridge the
     /// simulator-probed `quantum_ns` to the SDK-side [`Quantum`].
     pub fn from_nanos(nanos: u64) -> Option<Self> {
-        if nanos == 0 || nanos % 1_000 != 0 {
+        if nanos == 0 || !nanos.is_multiple_of(1_000) {
             return None;
         }
         let micros = u32::try_from(nanos / 1_000).ok()?;
@@ -226,8 +226,7 @@ impl Program {
         // this through ScenarioPlan::with_steps; the fixture/test
         // path that calls Program::normalize directly must apply
         // the same invariant so a tampered or hand-rolled schedule
-        // cannot smuggle in two requests with the same correlation
-        // label. See Gate B3 of the scenario acceptance review.
+        // cannot smuggle in two requests with the same correlation label.
         let mut seen_command_labels: BTreeMap<String, usize> = BTreeMap::new();
         for (_, entry) in &sorted {
             if let crate::scenario::plan::Action::Command { label, .. } = &entry.action {
@@ -604,8 +603,7 @@ fn port_signature(
 ) -> Result<crate::port::PortSignature, ProgramError> {
     // `PortSignature::new_owned` owns the borrowed wire metadata and
     // delegates the lifetime promotion to the port crate. The decoder
-    // does not reach for `Box::leak` directly; see Gate P1 #4 of
-    // the scenario acceptance review.
+    // does not reach for `Box::leak` directly.
     Ok(crate::port::PortSignature::new_owned(
         name,
         service,

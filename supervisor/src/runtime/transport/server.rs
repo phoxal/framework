@@ -13,8 +13,6 @@
 //! (`PublicTransportLimits`, `PublicTransportError`) and shared helpers
 //! (`encode_message`, `decode_message`, `bounded_error_detail`, etc.) come from
 //! the parent `phoxal::communication_transport` module.
-#![allow(unused_imports)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -22,14 +20,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use prost::Message;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannel;
 use zenoh::query::{ConsolidationMode, Query, Queryable};
 
+use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 use phoxal::communication::bootstrap::SessionOffers;
 use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
 use phoxal::communication::session::{
@@ -47,19 +46,18 @@ use phoxal::communication::simulation::{
     ResetRequest,
 };
 use phoxal::communication::validation::{DeploymentTarget, SESSION_PROTOCOL};
-use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 
 use super::simulation::{
-    acquire_simulation_authority, admit_initial_observations, admit_observations, prepare_boundary,
-    progress_simulation, release_backend_authority, release_simulation, reset_simulation,
-    revoke_simulation_for_session, SimulationAuthority, MAX_SIMULATION_CUT_BYTES,
+    MAX_SIMULATION_CUT_BYTES, SimulationAuthority, acquire_simulation_authority,
+    admit_initial_observations, admit_observations, prepare_boundary, progress_simulation,
+    release_backend_authority, release_simulation, reset_simulation, revoke_simulation_for_session,
 };
 use phoxal::communication_transport::{
-    bounded_error_detail, cancel_session_subscriptions, decode_message, decode_request,
-    encode_message, hex_bytes, malformed_client, operation_key_expression, subscription_key,
-    validate_state_initial_record, validate_subscription_record, validate_subscription_request,
-    PublicTransportError, PublicTransportLimits, MAX_PUBLIC_ERROR_BYTES,
-    MAX_PUBLIC_SUBSCRIPTION_ID_BYTES, PUBLIC_PROTOBUF_ENCODING,
+    MAX_PUBLIC_ERROR_BYTES, MAX_PUBLIC_SUBSCRIPTION_ID_BYTES, PUBLIC_PROTOBUF_ENCODING,
+    PublicTransportError, PublicTransportLimits, bounded_error_detail,
+    cancel_session_subscriptions, decode_message, decode_request, encode_message, hex_bytes,
+    malformed_client, operation_key_expression, subscription_key, validate_state_initial_record,
+    validate_subscription_record, validate_subscription_request,
 };
 
 const PUBLIC_OPERATION_QUERYABLES: [PublicOperation; 19] = [

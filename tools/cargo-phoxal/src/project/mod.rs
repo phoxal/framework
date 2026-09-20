@@ -22,46 +22,27 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-pub use artifact::{
-    ArtifactContract, ArtifactSummary, DescriptorInfo, DescriptorSummary, InputKind, InputRecord,
-    OutputKind, OutputRecord, PortKind, PortSignature, RuntimeRecord, validate_connected_endpoints,
-};
-pub use bundle::{
-    BUNDLE_SCHEMA, BundleActuationBinding, BundleArtifact, BundleCargoInvocation, BundleComponent,
-    BundleEnvironment, BundleExecutable, BundleFile, BundleGitSource, BundleManifest,
-    BundleModelClosure, BundleNativeTool, BundlePackage, BundleProvenance, BundleResource,
-    BundleSimulation, BundleSimulationProvider, BundleSource, BundleSourceClosure,
-    BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain, CompiledBundle,
-    LocalIdentity, LocalRunPlan, LocalSimulationPlan, SimulationModelFacts,
-    SimulationProviderBinding, digest_source_files,
-};
+#[cfg(test)]
+pub use bundle::{BundleSourceFile, BundleSourceKind, digest_source_files};
+pub use bundle::{CompiledBundle, SimulationModelFacts};
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
-pub use document::{
-    BrainSelection, COMPONENT_SCHEMA, CapabilityDeclaration, ComponentDocument, ComponentInstance,
-    ComponentModel, ConnectionSources, NativeTarget, NativeTargetKind, PortReference,
-    PortReferenceError, ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection,
-};
-pub use error::{
-    DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
-};
+pub use document::RobotDocument;
+pub use error::{DiscoveryError, Error, PublicationError, SourceError};
 pub use preparation::PreparationChange;
 pub use publication::{
-    PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
-    PublicationSourceProvenance, prepare_publication,
+    PublicationKind, PublicationOptions, PublicationResult, prepare_publication,
 };
-pub use scenario::{DiscoveredScenario, generate_harness_source};
+#[cfg(test)]
+pub use selection::TargetRole;
 pub use selection::{
     PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,
-    SourceSelection, TargetRole, resolve_sources,
+    SourceSelection, resolve_sources,
 };
 pub use simulation::{
-    DEFAULT_SIMULATOR_BINARY, DEFAULT_SIMULATOR_PACKAGE, DEFAULT_SIMULATOR_VERSION,
-    NativeBodySample, SIMULATION_PROTOCOL, SimulationBound, SimulationCleanup,
-    SimulationPresentation, SimulationRunOptions, SimulationRunReport, SimulatorArtifactSummary,
-    SimulatorTerminalEvidence,
+    SimulationBound, SimulationPresentation, SimulationRunOptions, SimulationRunReport,
 };
-pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
+pub use submission::{SubmissionResult, submit_publication};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -114,12 +95,6 @@ impl Project {
     #[must_use]
     pub fn layout(&self) -> &ProjectLayout {
         &self.layout
-    }
-
-    /// Returns the parsed authored document.
-    #[must_use]
-    pub fn document(&self) -> &RobotDocument {
-        &self.document
     }
 
     /// Prepares the authored Cargo graph and resolves all explicit sources.
@@ -200,7 +175,7 @@ impl Project {
         {
             return rollback_preparation(preparation, error);
         }
-        let (logical_metadata, root_package, sources) = if let Some(source) = &local_source {
+        let (logical_metadata, _root_package, _sources) = if let Some(source) = &local_source {
             let logical_metadata = match source.logical_metadata(&metadata) {
                 Ok(metadata) => metadata,
                 Err(error) => return rollback_preparation(preparation, error),
@@ -234,9 +209,11 @@ impl Project {
                 document: self.document.clone(),
                 metadata: logical_metadata,
                 cargo_metadata: metadata,
-                root_package,
+                #[cfg(test)]
+                root_package: _root_package,
                 cargo_root_package,
-                sources,
+                #[cfg(test)]
+                sources: _sources,
                 cargo_sources,
                 preparation_changes,
                 local_source: local_source.map(Arc::new),
@@ -408,6 +385,7 @@ fn logical_target(
         target: target.target.clone(),
         source_path: source.logical_path(&target.source_path),
         required_features: target.required_features.clone(),
+        feature_dependency: target.feature_dependency.clone(),
     }
 }
 
@@ -438,8 +416,10 @@ pub struct PreparedProject {
     document: RobotDocument,
     metadata: cargo_metadata::Metadata,
     cargo_metadata: cargo_metadata::Metadata,
+    #[cfg(test)]
     root_package: cargo_metadata::Package,
     cargo_root_package: cargo_metadata::Package,
+    #[cfg(test)]
     sources: SourceSelection,
     cargo_sources: SourceSelection,
     preparation_changes: Vec<PreparationChange>,
@@ -460,8 +440,8 @@ impl PreparedProject {
         &self.document
     }
 
-    /// Returns Cargo's complete metadata graph.
-    #[must_use]
+    /// Returns Cargo's complete metadata graph to compiler integration tests.
+    #[cfg(test)]
     pub fn metadata(&self) -> &cargo_metadata::Metadata {
         &self.metadata
     }
@@ -483,7 +463,7 @@ impl PreparedProject {
     }
 
     /// Returns the root package selected as the mandatory brain source.
-    #[must_use]
+    #[cfg(test)]
     pub fn root_package(&self) -> &cargo_metadata::Package {
         &self.root_package
     }
@@ -493,7 +473,7 @@ impl PreparedProject {
     }
 
     /// Returns all explicit Cargo-backed source selections.
-    #[must_use]
+    #[cfg(test)]
     pub fn sources(&self) -> &SourceSelection {
         &self.sources
     }
@@ -634,34 +614,6 @@ impl PreparedProject {
             .join("phoxal")
             .join(&self.document.robot.id)
             .join("bundle")
-    }
-
-    /// Prepares a local hardware launch without claiming process readiness.
-    pub fn local_run_plan(
-        &self,
-        options: &CargoOptions,
-        output: impl AsRef<Path>,
-        scope: impl Into<String>,
-        supervisor_id: impl Into<String>,
-    ) -> Result<LocalRunPlan, Error> {
-        let identity = LocalIdentity::new(scope, supervisor_id)?;
-        let bundle = self.build_bundle(options, output)?;
-        Ok(LocalRunPlan { bundle, identity })
-    }
-
-    /// Prepares a local simulation launch from facts admitted by the
-    /// independent native application.
-    pub fn local_simulation_plan(
-        &self,
-        options: &CargoOptions,
-        output: impl AsRef<Path>,
-        scope: impl Into<String>,
-        supervisor_id: impl Into<String>,
-        facts: &SimulationModelFacts,
-    ) -> Result<LocalSimulationPlan, Error> {
-        let identity = LocalIdentity::new(scope, supervisor_id)?;
-        let bundle = self.build_simulation_bundle(options, output, facts)?;
-        Ok(LocalSimulationPlan { bundle, identity })
     }
 
     /// Builds and publishes a bundle carrying the complete controlled

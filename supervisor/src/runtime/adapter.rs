@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::runtime::session_table::{SessionId, SessionTable, SessionTableError};
 use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
 use phoxal::communication::session::{
     BindPortRequest, BindPortResponse, ExecutionState, ExecutionSummary, ListExecutionsRequest,
@@ -21,8 +22,7 @@ use phoxal::communication::session::{
     SupervisorInfoRequest, SupervisorInfoResponse, SupervisorState, SupervisorStatusRequest,
     SupervisorStatusResponse,
 };
-use crate::runtime::session_table::{SessionId, SessionTable, SessionTableError};
-use phoxal::communication::validation::{valid_identifier, DeploymentTarget};
+use phoxal::communication::validation::{DeploymentTarget, valid_identifier};
 
 /// Default maximum number of execution records retained by one adapter.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 256;
@@ -34,7 +34,8 @@ pub const DEFAULT_PAGE_SIZE: usize = 64;
 pub const DEFAULT_MAX_DETAIL_BYTES: usize = 4 * 1024;
 /// Default maximum active sessions for an adapter, named to make the adapter
 /// bound visible without requiring callers to import the session table.
-pub const DEFAULT_MAX_SESSIONS_PER_ADAPTER: usize = crate::runtime::session_table::DEFAULT_MAX_SESSIONS;
+pub const DEFAULT_MAX_SESSIONS_PER_ADAPTER: usize =
+    crate::runtime::session_table::DEFAULT_MAX_SESSIONS;
 /// The fixed byte length of an opaque binding identifier.
 pub const BINDING_ID_BYTES: usize = 32;
 /// Page tokens are one bounded big-endian `u64` offset.
@@ -557,8 +558,10 @@ impl SupervisorAdapter {
         let framework_version = framework_version.into();
         validate_version(&supervisor_version, "supervisor version")?;
         validate_version(&framework_version, "framework version")?;
-        let sessions =
-            SessionTable::with_limits(crate::runtime::session_table::DEFAULT_LEASE_MS, limits.max_sessions)?;
+        let sessions = SessionTable::with_limits(
+            crate::runtime::session_table::DEFAULT_LEASE_MS,
+            limits.max_sessions,
+        )?;
         Ok(Self {
             target,
             info: SupervisorInfoResponse {

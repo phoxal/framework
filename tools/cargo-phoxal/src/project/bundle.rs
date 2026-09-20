@@ -24,26 +24,26 @@ use crate::project::validation;
 use crate::project::{CargoOptions, Error, PreparedProject, RobotDocument};
 use phoxal::scenario::{Action, Program};
 
-// Re-exports from the shared artifact format crate. The format crate is
-// the source of truth for every record the bundle exchanges; this module
-// keeps the tool-only types (`CompiledBundle`, `LocalIdentity`,
-// `LocalRunPlan`, `LocalSimulationPlan`) and the assembly functions.
-pub use phoxal_artifact_format::bundle::{
-    BundleActuationBinding, BundleArtifact, BundleCargoInvocation, BundleComponent,
-    BundleEnvironment, BundleExecutable, BundleFile, BundleGitSource, BundleManifest,
-    BundleModelClosure, BundleNativeTool, BundlePackage, BundleProvenance, BundleResource,
-    BundleScenarioProducer, BundleScenarioSection, BundleSimulation, BundleSimulationProvider,
-    BundleSource, BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleSupervisor,
-    BundleToolchain, DEFAULT_SCENARIO_PROGRAM_PATH, SimulationModelFacts,
-    SimulationProviderBinding, digest_source_files,
+// Re-exports from the framework artifact module. The module is the source of
+// truth for every record the bundle exchanges; this module
+// keeps the tool-only compiled bundle and assembly functions.
+#[cfg(test)]
+use phoxal::artifact::bundle::{BundleActuationBinding, SimulationProviderBinding};
+pub use phoxal::artifact::bundle::{
+    BundleCargoInvocation, BundleComponent, BundleEnvironment, BundleExecutable, BundleFile,
+    BundleGitSource, BundleManifest, BundleModelClosure, BundleNativeTool, BundlePackage,
+    BundleProvenance, BundleResource, BundleScenarioProducer, BundleScenarioSection,
+    BundleSimulation, BundleSimulationProvider, BundleSource, BundleSourceClosure,
+    BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
+    DEFAULT_SCENARIO_PROGRAM_PATH, SimulationModelFacts, digest_source_files,
 };
 
-/// Tool-side wrapper for [`SimulationModelFacts::new`].
+/// Test helper for constructing validated simulation model facts.
 ///
-/// The format crate owns the inert record, so the constructor must not
+/// The framework artifact module owns the inert record, so the constructor must not
 /// produce a tool-owned `Error`. Validation that depends on tool error
 /// types stays here.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn simulation_model_facts(
     model_identity: impl Into<String>,
     quantum_ns: u64,
@@ -61,7 +61,7 @@ pub(crate) fn simulation_model_facts(
 }
 
 /// The compiled project-bundle schema emitted by this source compiler.
-pub use phoxal_artifact_format::bundle::BUNDLE_SCHEMA;
+pub use phoxal::artifact::bundle::BUNDLE_SCHEMA;
 
 const BIN_DIR: &str = "bin";
 const ASSET_DIR: &str = "assets";
@@ -73,7 +73,9 @@ const PROVENANCE_FILE: &str = "provenance.json";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledBundle {
     root: PathBuf,
+    #[cfg(test)]
     manifest: BundleManifest,
+    #[cfg(test)]
     provenance: BundleProvenance,
 }
 
@@ -85,13 +87,13 @@ impl CompiledBundle {
     }
 
     /// The parsed manifest written at manifest.json.
-    #[must_use]
+    #[cfg(test)]
     pub fn manifest(&self) -> &BundleManifest {
         &self.manifest
     }
 
     /// The parsed provenance written at provenance.json.
-    #[must_use]
+    #[cfg(test)]
     pub fn provenance(&self) -> &BundleProvenance {
         &self.provenance
     }
@@ -103,7 +105,7 @@ impl CompiledBundle {
     }
 
     /// Resolve the immutable local source closure carried by the bundle.
-    #[must_use]
+    #[cfg(test)]
     pub fn source_root(&self) -> PathBuf {
         self.root.join(SOURCE_DIR)
     }
@@ -127,63 +129,6 @@ struct StagedModel {
 struct StagedResource {
     name: String,
     bytes: Vec<u8>,
-}
-
-/// A local identity used by the explicit run and simulation boundaries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalIdentity {
-    scope: String,
-    supervisor_id: String,
-}
-
-impl LocalIdentity {
-    /// Construct a bounded local namespace identity.
-    pub fn new(scope: impl Into<String>, supervisor_id: impl Into<String>) -> Result<Self, Error> {
-        let scope = scope.into();
-        let supervisor_id = supervisor_id.into();
-        validate_identity_part("scope", &scope)?;
-        validate_identity_part("supervisor_id", &supervisor_id)?;
-        Ok(Self {
-            scope,
-            supervisor_id,
-        })
-    }
-
-    /// Router namespace.
-    #[must_use]
-    pub fn scope(&self) -> &str {
-        &self.scope
-    }
-
-    /// Supervisor identity within that namespace.
-    #[must_use]
-    pub fn supervisor_id(&self) -> &str {
-        &self.supervisor_id
-    }
-}
-
-/// A locally prepared hardware launch.
-///
-/// The plan contains no process handle and no readiness claim. The supervisor
-/// host owns actual process startup and admission in a later slice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalRunPlan {
-    /// Compiled bundle selected for launch.
-    pub bundle: CompiledBundle,
-    /// Local router namespace.
-    pub identity: LocalIdentity,
-}
-
-/// A locally prepared simulation launch.
-///
-/// The independent simulator application is intentionally not provisioned or
-/// launched by this first project-delivery slice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalSimulationPlan {
-    /// Compiled robot bundle selected for the simulation.
-    pub bundle: CompiledBundle,
-    /// Local router namespace.
-    pub identity: LocalIdentity,
 }
 
 pub(crate) fn assemble_with_inputs(
@@ -444,7 +389,9 @@ pub(crate) fn assemble_with_inputs(
     publish_directory(&staged, output)?;
     Ok(CompiledBundle {
         root: output.to_owned(),
+        #[cfg(test)]
         manifest,
+        #[cfg(test)]
         provenance,
     })
 }
@@ -828,7 +775,9 @@ fn public_output<'a>(
     public_outputs(contract).find(|output| output.port.as_deref() == Some(port))
 }
 
-fn output_port_kind(output: &crate::project::artifact::OutputRecord) -> Option<crate::project::artifact::PortKind> {
+fn output_port_kind(
+    output: &crate::project::artifact::OutputRecord,
+) -> Option<crate::project::artifact::PortKind> {
     Some(match output.kind {
         crate::project::artifact::OutputKind::State => crate::project::artifact::PortKind::State,
         crate::project::artifact::OutputKind::Sample => crate::project::artifact::PortKind::Sample,
@@ -1337,11 +1286,12 @@ pub(crate) fn capture_build_inputs(prepared: &PreparedProject) -> Result<BuildIn
             add_file(label, &path)?;
         }
     }
+    let resolved = resolved_package_ids(prepared);
     for package in prepared
         .cargo_metadata()
         .packages
         .iter()
-        .filter(|package| resolved_package_ids(prepared).contains(&package.id.to_string()))
+        .filter(|package| resolved.contains(&package.id.to_string()))
     {
         let package_root = package_root(package)?;
         for file in source_files_with(&package_root, package.source.is_some())? {
@@ -2031,12 +1981,10 @@ fn write_source_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         path: path.to_owned(),
         source,
     })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| Error::BundleWrite {
-            path: path.to_owned(),
-            source,
-        })
+    file.write_all(bytes).map_err(|source| Error::BundleWrite {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 fn copy_source_tree(source: &Path, destination: &Path) -> Result<(), Error> {
@@ -2559,8 +2507,8 @@ fn validate_cargo_config(root: &Path) -> Result<(), Error> {
 
 /// Compute the canonical digest of a source closure, independent of file order.
 ///
-/// Re-exported from `phoxal_artifact_format::bundle::digest_source_files`.
-/// The format crate is the source of truth.
+/// Re-exported from `phoxal::artifact::bundle::digest_source_files`.
+/// The framework artifact module is the source of truth.
 fn lock_checksums(path: &Path) -> Result<BTreeMap<(String, String, String), String>, Error> {
     let Ok(bytes) = fs::read(path) else {
         return Ok(BTreeMap::new());
@@ -3125,11 +3073,6 @@ fn digest_file(path: &Path) -> Result<FileDigest, Error> {
     })
 }
 
-/// Lowercase SHA-256 of an in-memory byte slice. Re-exported from
-/// `phoxal_artifact_format::bundle::digest_bytes`. Used for the
-/// scenario program identity, where the supervisor re-hashes the
-/// bundle-shipped artifact and must agree to the byte.
-
 fn ensure_regular_executable(path: &Path, target: &str) -> Result<(), Error> {
     let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
         path: path.to_owned(),
@@ -3466,26 +3409,6 @@ fn safe_source_file(root: &Path, relative: &Path) -> Result<PathBuf, Error> {
     Ok(canonical)
 }
 
-fn validate_identity_part(field: &'static str, value: &str) -> Result<(), Error> {
-    let valid = (1..=64).contains(&value.len())
-        && value.is_ascii()
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && value.bytes().skip(1).all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-        });
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::InvalidExecutionIdentity {
-            field,
-            value: value.to_owned(),
-        })
-    }
-}
-
 fn source_identity(source: &PackageSource) -> Result<String, Error> {
     match source {
         PackageSource::Local { .. } => Ok("local".to_owned()),
@@ -3497,13 +3420,6 @@ fn source_identity(source: &PackageSource) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn local_identity_uses_bounded_key_segments() {
-        let identity = LocalIdentity::new("local", "local").expect("local identity is valid");
-        assert_eq!(identity.scope(), "local");
-        assert!(LocalIdentity::new("../outside", "local").is_err());
-    }
 
     fn simulation_facts() -> SimulationModelFacts {
         simulation_model_facts(
@@ -3834,7 +3750,7 @@ mod tests {
             bytes,
         )
         .expect("scenario section");
-        assert_eq!(section.marker, crate::project::scenario::SCENARIO_NONDEPLOYABLE);
+        assert_eq!(section.marker, "phoxal/scenario/nondeployable@1");
         assert_eq!(section.program.scenario_name, "scenarios/Demo");
         assert_eq!(section.program.program_path, "program.bin");
         assert_eq!(section.program.program_byte_length, bytes.len() as u32);

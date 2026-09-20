@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use phoxal::communication::validation::valid_identifier;
 use phoxal::communication::SESSION_PROTOCOL;
+use phoxal::communication::validation::valid_identifier;
 
 /// Baseline public-session lease accepted by the server.
 pub const DEFAULT_LEASE_MS: u32 = 30_000;

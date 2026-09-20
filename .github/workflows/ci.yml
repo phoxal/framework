@@ -163,9 +163,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Test registry dependency ordering
-        run: python3 -m unittest discover -s .github/scripts -p 'test_registry_package_order.py'
-
       - name: Check the workspace policy
         shell: bash
         run: |

@@ -2,7 +2,8 @@
 
 The Phoxal framework runtime, protocol contracts, typed ports, and public session client live in this crate.
 
-Source preparation, Cargo orchestration, native model composition, and immutable bundle assembly belong to the independent `phoxal-project` and simulator packages.
+Source preparation, Cargo orchestration, and immutable bundle assembly belong to the framework-owned `cargo-phoxal` package.
+Native model composition belongs to the independent simulator application.
 The runtime consumes the completed bundle manifest and never parses `robot.yaml`, `component.yaml`, or native model source files.
 
 ## Consumer profiles
@@ -27,7 +28,7 @@ The supervisor executable owns its host implementation privately and consumes th
 The `port` and `protocol` profiles provide independent descriptor and protocol contracts without a runner or host implementation.
 
 The project compiler is the only owner of authored source parsing and project validation.
-It is exposed through `cargo phoxal` and is implemented in `phoxal-project` plus the `cargo-phoxal` executable.
+It is implemented inside the `cargo-phoxal` package and exposed through `cargo phoxal`.
 
 Use <https://docs.rs/phoxal> as the authority for the published Rust API.
 Visit <https://phoxal.com> for the project vision and public introduction.

@@ -8,7 +8,7 @@
 //!
 //! Process orchestration (`SimulationRunOptions`, `SimulationRunReport`,
 //! `SimulationCleanup`, simulator provisioning, child-process management)
-//! stays with the simulator tool in `phoxal-project`.
+//! stays with the simulator integration in `cargo-phoxal`.
 
 #![deny(unsafe_code)]
 

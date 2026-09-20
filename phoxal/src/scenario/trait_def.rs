@@ -1,6 +1,4 @@
-//! Public [`Scenario`] trait (P1 shape, P2/P3 fill in body semantics).
-//!
-//! Per the plan:
+//! Public [`Scenario`] trait.
 //!
 //! ```text
 //! pub trait Scenario: Default + 'static {
@@ -16,7 +14,7 @@
 //! companion trait; the [`#[phoxal::scenario]`](../macro@phoxal)
 //! attribute generates a `Box<dyn ScenarioBox>` per registered
 //! type so `plan()` and `verify()` observe the same instance's
-//! state. See Gate P1 #3 of the scenario acceptance review.
+//! state.
 
 use crate::scenario::plan::ScenarioPlan;
 use crate::scenario::results::ScenarioRun;
@@ -26,12 +24,11 @@ use crate::scenario::results::ScenarioRun;
 /// attribute registers the impl into the static
 /// [`ScenarioRegistry`](crate::scenario::ScenarioRegistry).
 ///
-/// `plan()` declares one finite simulated experiment. P2 replaces the
-/// placeholder `ScenarioPlan` with the typed action schedule and capture
-/// declarations.
+/// `plan()` declares one finite simulated experiment with a typed action
+/// schedule and capture declarations.
 ///
 /// `verify()` returns `Ok(())` on success or `Err(...)` explaining the
-/// failure. P3 supplies the immutable `ScenarioRun` evidence.
+/// failure from the immutable `ScenarioRun` evidence.
 pub trait Scenario: Default + 'static {
     fn plan(&self) -> crate::Result<ScenarioPlan>;
     fn verify(&self, run: &ScenarioRun) -> crate::Result<()>;

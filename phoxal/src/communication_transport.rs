@@ -7,16 +7,16 @@
 //!
 //! Submodule layout (both currently in the SDK):
 //!
-//! - [`client`] — bounded, principal-bound, target-bound client transport.
+//! - `client` - bounded, principal-bound, target-bound client transport.
 //!   Public types: `PublicSessionTransport`, `PublicSessionConfig`,
 //!   `PublicSessionConnection`, `PublicSubscription`, `DiscoveryEvent`,
 //!   `SupervisorWatch`, `PublicTlsCredentials`, `PublicTransportSecurity`,
 //!   `PublicTransportLimits`, `PublicTransportError`.
-//! - [`server`] — queryables, dispatch, backend invocation, simulation
+//! - `server` - queryables, dispatch, backend invocation, simulation
 //!   authority. Public types: `PublicSessionServer`, `PrincipalPolicy`,
 //!   `PublicSessionBackend`, `PublicSimulationBackend`,
 //!   `PublicSimulationContext`, `PublicBindingContext`.
-//! - [`simulation`] — simulation authority state machine (server-only
+//! - `simulation` - simulation authority state machine (server-only
 //!   authoritative ownership of grants; client consumes the typed protobuf
 //!   messages in [`crate::communication::simulation`]).
 //!
@@ -34,7 +34,9 @@ use prost::Message;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::communication::route::{PublicOperation, PublicOperation as _, PublicRoute, PublicRouteKind};
+use crate::communication::route::{
+    PublicOperation, PublicOperation as _, PublicRoute, PublicRouteKind,
+};
 use crate::communication::session::{
     RecordKind, SubscriptionAdmission, SubscriptionRecord, SubscriptionRequest,
 };
@@ -71,10 +73,7 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
     text
 }
 
-pub fn operation_key_expression(
-    target: &DeploymentTarget,
-    operation: PublicOperation,
-) -> String {
+pub fn operation_key_expression(target: &DeploymentTarget, operation: PublicOperation) -> String {
     if operation.kind() == PublicRouteKind::Simulation {
         format!(
             "{}/clients/*/{}",
@@ -328,10 +327,7 @@ pub async fn cancel_session_subscriptions(
     }
 }
 
-pub fn malformed_client(
-    operation: &str,
-    error: impl std::fmt::Display,
-) -> PublicTransportError {
+pub fn malformed_client(operation: &str, error: impl std::fmt::Display) -> PublicTransportError {
     PublicTransportError::Malformed {
         operation: operation.to_owned(),
         detail: error.to_string(),

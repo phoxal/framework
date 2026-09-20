@@ -3,6 +3,7 @@
 //! A generic `tests` bucket hides which boundary a large suite proves.
 //! Test modules must instead be named for the behavior or boundary they own.
 
+use std::ffi::OsStr;
 use std::path::Path;
 
 use anyhow::Result;
@@ -19,12 +20,14 @@ fn is_generic_source_test_module(path: &Path) -> bool {
         return false;
     };
     let below_source = &components[source_index + 1..];
-    below_source.last().is_some_and(|name| *name == "tests.rs")
-        || below_source.ends_with(&["tests".as_ref(), "mod.rs".as_ref()])
+    below_source == [OsStr::new("tests.rs")]
+        || below_source == [OsStr::new("tests"), OsStr::new("mod.rs")]
 }
 
-/// Every generic unit-test module is named for the boundary it proves, so
-/// ownership remains visible when the crate grows.
+/// A crate-root generic unit-test module must be named for the boundary it
+/// proves.
+/// A `tests` module nested beneath a named owner such as `runtime` or `project`
+/// already has an explicit boundary.
 pub(super) fn unit_test_modules_have_an_explicit_owner(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {

@@ -1,7 +1,7 @@
-//! Tool-side case host (plan §9).
+//! Tool-side case host.
 //!
 //! The case host owns the simulator/supervisor lifecycle. It runs in
-//! the *tool* process (this crate, `phoxal-project`), not in the
+//! the *tool* process (`cargo-phoxal`), not in the
 //! harness binary. The two communicate over the private control
 //! channel implemented in
 //! [`phoxal::scenario::harness_support`].
@@ -32,13 +32,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use phoxal::artifact::simulation::{
+    ScenarioExecutionReport, ScenarioStepEvidence, SimulatorTerminalEvidence,
+};
 use phoxal::scenario::harness_support::messages::{
     self, HarnessRequest, HarnessResponse, LifecycleReport, PROTOCOL_VERSION, ScenarioSummary,
 };
-use phoxal::scenario::{CaptureRecord, Program, Quantum, StepOutcome};
-use phoxal_artifact_format::simulation::{ScenarioExecutionReport, SimulatorTerminalEvidence};
+use phoxal::scenario::{Action, CaptureRecord, Program, Quantum, StepOutcome};
 
 use crate::project::cargo::CargoOptions;
 use crate::project::simulation::{
@@ -61,6 +63,8 @@ pub fn run_case_host(
     cargo_options: &CargoOptions,
     harness_binary: &Path,
     scenario_name: &str,
+    simulator_executable: Option<&Path>,
+    headless: bool,
 ) -> Result<ToolCaseReport, Error> {
     let mut session = CaseHostSession::spawn(harness_binary, scenario_name).map_err(|detail| {
         Error::SimulationInvalid {
@@ -70,14 +74,11 @@ pub fn run_case_host(
     // The harness sends Open with its scenario summary, including the
     // scene the user's plan declared.
     let summary = session.read_open()?;
-    let probe_request = build_probe_request(&summary)?;
+    let probe_request = build_probe_request(&summary, simulator_executable)?;
     let facts = project
         .probe_simulation_scene(cargo_options, &probe_request)
         .map_err(|error| Error::SimulationInvalid {
-            message: format!(
-                "scenario `{}` scene probe failed: {error}",
-                summary.name
-            ),
+            message: format!("scenario `{}` scene probe failed: {error}", summary.name),
         })?;
     session.send_probe(&facts)?;
 
@@ -103,20 +104,23 @@ pub fn run_case_host(
         &summary,
         &facts,
         &harness_program,
+        simulator_executable,
+        headless,
     );
 
-    let (evidence, lifecycle_passing, cleanup_succeeded) = match lifecycle {
+    let (evidence, lifecycle_passing, cleanup_succeeded, performance) = match lifecycle {
         Ok(report) => {
             let passing = report.simulator_exit_code == Some(0)
                 && report.cleanup.error.is_none()
                 && report.supervisor_ready
                 && report.provider_contract_verified;
-            let evidence = build_lifecycle_report(&summary, &facts, &harness_program, &report);
+            let evidence = build_lifecycle_report(&facts, &harness_program, &report);
             let cleanup_succeeded = report.cleanup.error.is_none();
-            (evidence, passing, cleanup_succeeded)
+            let performance = headless.then(|| performance_summary(&report)).flatten();
+            (evidence, passing, cleanup_succeeded, performance)
         }
-        Err(error) => (
-            LifecycleReport {
+        Err(error) => {
+            let evidence = LifecycleReport {
                 execution_id: format!("exec/{}/failed", summary.name),
                 quantum_ns: facts.quantum_ns,
                 completed_steps: 0,
@@ -126,25 +130,50 @@ pub fn run_case_host(
                 capture_records: Vec::new(),
                 command_replies: Vec::new(),
                 native_body: None,
-            },
-            false,
-            false,
-        )
-        .with_detail(format!("lifecycle error: {error:#}")),
+            };
+            (
+                evidence,
+                false,
+                false,
+                Some(format!("lifecycle error: {error:#}")),
+            )
+        }
     };
     session.send_evidence(&evidence, lifecycle_passing, cleanup_succeeded)?;
 
     let verdict = session.read_verdict()?;
     let _ = session.reap();
+    let detail = [verdict.detail, performance]
+        .into_iter()
+        .flatten()
+        .filter(|detail| !detail.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(ToolCaseReport {
         scenario_name: summary.name.clone(),
         passed: verdict.passed,
-        detail: verdict.detail,
+        detail: (!detail.is_empty()).then_some(detail),
     })
 }
 
-fn build_probe_request(summary: &ScenarioSummary) -> Result<SimulationRunOptions, Error> {
-    SimulationRunOptions::new(
+fn performance_summary(report: &SimulationRunReport) -> Option<String> {
+    let terminal = report.terminal.as_ref()?;
+    if terminal.quantum_ns == 0 || report.simulator_wall_time_ns == 0 {
+        return None;
+    }
+    let simulated_seconds = terminal.completed_steps as f64 * terminal.quantum_ns as f64 / 1e9;
+    let wall_seconds = report.simulator_wall_time_ns as f64 / 1e9;
+    Some(format!(
+        "performance: {simulated_seconds:.3} simulated seconds in {wall_seconds:.3} wall seconds ({:.2}x)",
+        simulated_seconds / wall_seconds
+    ))
+}
+
+fn build_probe_request(
+    summary: &ScenarioSummary,
+    simulator_executable: Option<&Path>,
+) -> Result<SimulationRunOptions, Error> {
+    let mut request = SimulationRunOptions::new(
         summary.scene.clone(),
         SimulationPresentation::Desktop,
         // The probe does not size a run; the bound just has to pass
@@ -156,7 +185,11 @@ fn build_probe_request(summary: &ScenarioSummary) -> Result<SimulationRunOptions
             "scenario `{}` cannot build probe SimulationRunOptions: {error}",
             summary.name
         ),
-    })
+    })?;
+    if let Some(executable) = simulator_executable {
+        request = request.with_simulator_executable(executable);
+    }
+    Ok(request)
 }
 
 fn drive_lifecycle(
@@ -165,34 +198,39 @@ fn drive_lifecycle(
     summary: &ScenarioSummary,
     facts: &SimulationModelFacts,
     program: &Program,
+    simulator_executable: Option<&Path>,
+    headless: bool,
 ) -> Result<SimulationRunReport, Error> {
     let bound_steps = u64::from(program.transition_count());
     let scene_path = summary.scene.clone();
-    let presentation = if std::env::var_os("PHOXAL_SCENARIO_HEADLESS").is_some() {
+    let presentation = if headless {
         SimulationPresentation::Headless
     } else {
         SimulationPresentation::Desktop
     };
-    let mut request = SimulationRunOptions::new(scene_path, presentation, SimulationBound::Steps(bound_steps))
-        .map_err(|error| Error::SimulationInvalid {
-            message: format!(
-                "scenario `{}` cannot construct SimulationRunOptions: {error}",
-                summary.name
-            ),
-        })?
-        .with_identity("scenarios", "case-host", sanitize_run_id(&summary.name))
-        .with_auto_run();
-    if let Some(executable) = std::env::var_os("PHOXAL_SIMULATOR_EXECUTABLE") {
+    let mut request = SimulationRunOptions::new(
+        scene_path,
+        presentation,
+        SimulationBound::Steps(bound_steps),
+    )
+    .map_err(|error| Error::SimulationInvalid {
+        message: format!(
+            "scenario `{}` cannot construct SimulationRunOptions: {error}",
+            summary.name
+        ),
+    })?
+    .with_identity("scenarios", "case-host", sanitize_run_id(&summary.name))
+    .with_auto_run();
+    if let Some(executable) = simulator_executable {
         request = request.with_simulator_executable(executable);
     }
     let _ = facts; // The lifecycle will re-probe and validate; the
-                   // facts already constrained the harness-side
-                   // program so they must agree.
+    // facts already constrained the harness-side
+    // program so they must agree.
     project.run_scenario_simulation(cargo_options, &request, program)
 }
 
 fn build_lifecycle_report(
-    summary: &ScenarioSummary,
     facts: &SimulationModelFacts,
     program: &Program,
     report: &SimulationRunReport,
@@ -200,9 +238,7 @@ fn build_lifecycle_report(
     let terminal: Option<&SimulatorTerminalEvidence> = report.terminal.as_ref();
     let scenario: Option<&ScenarioExecutionReport> = report.scenario.as_ref();
     let program_quantum_ns = terminal.map(|t| t.quantum_ns).unwrap_or(facts.quantum_ns);
-    let program_transition_count = terminal
-        .map(|t| t.completed_steps)
-        .unwrap_or(u64::from(program.transition_count()));
+    let program_transition_count = terminal.map_or(0, |t| t.completed_steps);
     let final_observation_cut = terminal
         .map(|t| t.completed_steps == t.requested_steps)
         .unwrap_or(false);
@@ -221,17 +257,14 @@ fn build_lifecycle_report(
             // tests without a real supervisor.
             step_outcomes.push(messages::StepOutcomeRecord {
                 label: observed.label.clone(),
-                outcome: StepOutcome::SetpointDelivered {
-                    production: observed.production_boundary,
-                    eligibility: observed.eligible_boundary,
-                },
+                outcome: observed_step_outcome(program, scenario, observed),
             });
         }
         for capture in &scenario.captures {
             let record = match capture.kind.as_str() {
-                "state" => CaptureRecord::State(
-                    capture.payloads.last().cloned().unwrap_or_default(),
-                ),
+                "state" => {
+                    CaptureRecord::State(capture.payloads.last().cloned().unwrap_or_default())
+                }
                 "sample" => CaptureRecord::Samples(capture.payloads.clone()),
                 "event" => CaptureRecord::Events(capture.payloads.clone()),
                 _ => continue,
@@ -248,20 +281,21 @@ fn build_lifecycle_report(
             });
         }
     }
-    if let Some(terminal) = terminal {
-        if let Some(sample) = terminal.native_body.first() {
-            if let Ok(payload) = serde_json::to_vec(sample) {
-                native_body = Some(messages::NativeBodyRef {
-                    capture_name: format!("{}/native", summary.name),
-                    payload,
-                });
-            }
-        }
+    if let Some(terminal) = terminal
+        && !terminal.native_body.is_empty()
+        && let Some(phoxal::scenario::Capture::NativeBody { name, .. }) = program
+            .captures()
+            .iter()
+            .find(|capture| matches!(capture, phoxal::scenario::Capture::NativeBody { .. }))
+        && let Ok(payload) = serde_json::to_vec(&terminal.native_body)
+    {
+        native_body = Some(messages::NativeBodyRef {
+            capture_name: name.clone(),
+            payload,
+        });
     }
     LifecycleReport {
-        execution_id: terminal
-            .map(|t| t.execution_id.clone())
-            .unwrap_or_else(|| format!("exec/{}/completed", summary.name)),
+        execution_id: terminal.map(|t| t.execution_id.clone()).unwrap_or_default(),
         quantum_ns: program_quantum_ns,
         completed_steps: program_transition_count,
         final_observation_cut_observed: final_observation_cut,
@@ -273,15 +307,68 @@ fn build_lifecycle_report(
     }
 }
 
+fn observed_step_outcome(
+    program: &Program,
+    report: &ScenarioExecutionReport,
+    observed: &ScenarioStepEvidence,
+) -> StepOutcome {
+    let Some(step) = program
+        .steps()
+        .iter()
+        .find(|step| step.label == observed.label)
+    else {
+        return StepOutcome::Rejected {
+            reason: format!("supervisor reported undeclared step `{}`", observed.label),
+        };
+    };
+    match (observed.kind.as_str(), &step.action) {
+        ("setpoint", Action::Setpoint { .. }) => StepOutcome::SetpointDelivered {
+            production: observed.production_boundary,
+            eligibility: observed.eligible_boundary,
+        },
+        ("withdraw", Action::Withdraw { .. }) => StepOutcome::WithdrawAccepted,
+        (
+            "command",
+            Action::Command {
+                label,
+                simulated_deadline,
+                ..
+            },
+        ) => {
+            let quantum_micros = u64::from(program.quantum().micros());
+            let simulated_budget = u64::try_from(simulated_deadline.as_micros())
+                .unwrap_or(u64::MAX)
+                .div_ceil(quantum_micros);
+            StepOutcome::CommandIssued {
+                label: label.clone(),
+                reply_pending: !report.command_replies.contains_key(label),
+                simulated_deadline_boundary: observed
+                    .production_boundary
+                    .saturating_add(simulated_budget),
+            }
+        }
+        (actual, expected) => StepOutcome::Rejected {
+            reason: format!(
+                "supervisor reported step `{}` as {actual}, but the program declares {}",
+                observed.label,
+                match expected {
+                    Action::Setpoint { .. } => "setpoint",
+                    Action::Withdraw { .. } => "withdraw",
+                    Action::Command { .. } => "command",
+                }
+            ),
+        },
+    }
+}
+
 /// Compose a `run_id` identifier for the supervisor identity. The
 /// supervisor validates `run_id` against the lowercase / digit /
 /// `-` / `_` rule, so any non-conforming characters are stripped.
 fn sanitize_run_id(scenario_name: &str) -> String {
     let mut out = String::with_capacity(scenario_name.len());
     for byte in scenario_name.bytes() {
-        let accept = byte.is_ascii_lowercase()
-            || byte.is_ascii_digit()
-            || matches!(byte, b'-' | b'_');
+        let accept =
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_');
         out.push(if accept { byte as char } else { '-' });
     }
     out
@@ -353,7 +440,9 @@ impl CaseHostSession {
         // Keep the parent's copies alive across the spawn.
         let _tool_read_keep = unsafe { OwnedFd::from_raw_fd(tool_read) };
         let _tool_write_keep = unsafe { OwnedFd::from_raw_fd(tool_write) };
-        let child = command.spawn().map_err(|source| SessionError::Spawn(format!("{source}")))?;
+        let child = command
+            .spawn()
+            .map_err(|source| SessionError::Spawn(format!("{source}")))?;
         // SAFETY: the harness inherited these fds; the parent no longer
         // needs the harness-side ends.
         unsafe { libc_close(harness_read) };
@@ -389,7 +478,10 @@ impl CaseHostSession {
         let open_bytes = read_frame(&mut self.reader, self.frame_budget)?;
         let open: HarnessResponse = serde_json::from_slice(&open_bytes)
             .map_err(|source| SessionError::Protocol(format!("decode Open: {source}")))?;
-        let HarnessResponse::Open { scenario: open_summary } = open else {
+        let HarnessResponse::Open {
+            scenario: open_summary,
+        } = open
+        else {
             return Err(SessionError::Protocol(format!(
                 "expected Open, got `{}`",
                 response_name(&open)
@@ -454,7 +546,10 @@ impl CaseHostSession {
     }
 
     fn reap(mut self) -> Result<(), SessionError> {
-        let status = self.child.wait().map_err(|source| SessionError::Io(source.to_string()))?;
+        let status = self
+            .child
+            .wait()
+            .map_err(|source| SessionError::Io(source.to_string()))?;
         // A clean exit (status code 0) is the happy path. A non-zero
         // exit means the harness rejected the case at the protocol
         // layer (already reported via the verdict) or crashed.
@@ -580,19 +675,6 @@ unsafe fn libc_close(fd: i32) {
 /// names here.
 mod messages_internal {
     pub const ENV_CTL: &str = "PHOXAL_HARNESS_CTL";
-}
-
-trait LifecycleReportExt {
-    fn with_detail(self, _detail: String) -> Self;
-}
-
-impl LifecycleReportExt for (LifecycleReport, bool, bool) {
-    fn with_detail(self, _detail: String) -> Self {
-        // The detail lives on the tool-side verdict detail, not on
-        // the lifecycle report. This shim keeps the call site
-        // readable without leaking the detail into the wire format.
-        self
-    }
 }
 
 // `Quantum` is currently unused here; the lifecycle path uses the

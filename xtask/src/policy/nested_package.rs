@@ -32,10 +32,8 @@ pub(crate) fn no_nested_private_cargo_package_under_a_tool(
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(violations),
         Err(error) => {
-            return Err(anyhow::Error::from(error).context(format!(
-                "cannot enumerate {}",
-                tools_root.display()
-            )));
+            return Err(anyhow::Error::from(error)
+                .context(format!("cannot enumerate {}", tools_root.display())));
         }
     };
     for entry in entries {
@@ -47,10 +45,8 @@ pub(crate) fn no_nested_private_cargo_package_under_a_tool(
         let children = match std::fs::read_dir(&path) {
             Ok(children) => children,
             Err(error) => {
-                return Err(anyhow::Error::from(error).context(format!(
-                    "cannot enumerate {}",
-                    path.display()
-                )));
+                return Err(anyhow::Error::from(error)
+                    .context(format!("cannot enumerate {}", path.display())));
             }
         };
         for child in children {

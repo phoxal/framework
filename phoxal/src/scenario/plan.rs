@@ -1,8 +1,6 @@
-//! Typed scenario plan: finite quantum conversion, deterministic
-//! ordering, explicit validity, and bounded occurrences. P1 stub:
-//! a scene path and duration. P2 fills the action schedule, capture
-//! declarations, and validation that the schedule fits inside the
-//! requested duration.
+//! Typed scenario plan with finite quantum conversion, deterministic
+//! ordering, explicit validity, bounded occurrences, and validation that
+//! the schedule fits inside the requested duration.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,9 +21,7 @@ pub struct ScenarioPlan {
 }
 
 impl ScenarioPlan {
-    /// Construct a minimal plan with no actions or captures. P1 tests
-    /// use this form so the trait stays compile-stable while P2
-    /// lands the richer builders.
+    /// Construct a minimal plan with no actions or captures.
     pub fn new(scene: impl Into<PathBuf>, duration: Duration) -> Self {
         Self {
             scene: scene.into(),
@@ -178,7 +174,7 @@ impl Step {
     }
 }
 
-/// The action vocabulary enforced by P2.
+/// The action vocabulary accepted by a scenario plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Replace the targeted setpoint consumer's current intent with
@@ -223,8 +219,8 @@ pub enum Action {
     },
 }
 
-/// Authoritative validity of a setpoint's resulting intent. P2 ships
-/// only the persistent variant; finite-lifetime intent (timeout-bound
+/// Authoritative validity of a setpoint's resulting intent.
+/// Only the persistent variant is currently supported; finite-lifetime intent (timeout-bound
 /// intents that revert on expiry) is a future expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Validity {
@@ -611,8 +607,7 @@ pub enum PlanValidationError {
     /// The plan's duration is not an exact multiple of the
     /// simulator-probed quantum. Authoring schedules that don't
     /// align to the quantum cannot be admitted: a 1 ns slippage
-    /// could truncate to a whole-microsecond boundary that looks
-    /// aligned. See Gate B4.
+    /// could truncate to a whole-microsecond boundary that looks aligned.
     DurationNotAligned {
         nanos: u128,
         quantum_nanos: u128,

@@ -27,13 +27,13 @@ use zenoh::key_expr::OwnedKeyExpr;
 use super::bundle::SourceBundle;
 use super::public_backend::RuntimeBoundaryHook;
 use super::state::{ExecutionState, TimeMode};
+use crate::runtime::transport::server::PublicSimulationContext;
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
     AdmitObservationsRequest, AdmitObservationsResponse, CutReceipt, PrepareBoundaryRequest,
     PrepareBoundaryResponse, ProgressRequest, ProgressResponse, ReleaseAuthorityRequest,
     ResetRequest, TransitionKey,
 };
-use crate::runtime::transport::server::PublicSimulationContext;
 use phoxal::runtime::ExecutionTime;
 use phoxal::runtime::connection::Connection;
 use phoxal::runtime::execution_protocol::{self, wire};
@@ -856,6 +856,19 @@ impl RuntimeExecutionProtocol {
         }
     }
 
+    async fn reset_scenario_evidence(&self) {
+        let Some(scenario) = self.inner.scenario.as_ref() else {
+            return;
+        };
+        for capture in scenario.captures.values() {
+            while let Ok(Some(_)) = capture.subscriber.try_recv() {}
+        }
+        for subscriber in scenario.command_replies.values() {
+            while let Ok(Some(_)) = subscriber.try_recv() {}
+        }
+        *scenario.state.lock().await = ScenarioDriverState::default();
+    }
+
     async fn admit_initial_observations_inner(
         &self,
         context: PublicSimulationContext,
@@ -1250,6 +1263,7 @@ impl RuntimeExecutionProtocol {
             return self.fail_reset(&mut boundary, error.to_string());
         }
         self.inner.state.reset_runtime_boundary();
+        self.reset_scenario_evidence().await;
         boundary.actuations.clear();
         boundary.timeline_id = next_timeline_id;
         boundary.committed_boundary = 0;

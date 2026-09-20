@@ -11,11 +11,10 @@
 //! register the scenarios into the static
 //! [`phoxal::scenario::ScenarioRegistry`] that the harness queries.
 //!
-//! Plan §9 moves the case host orchestration out of `phoxal-project`
-//! into the tool. The generated harness binary depends only on the
+//! The generated harness binary depends only on the
 //! SDK; the tool drives the lifecycle over a private control channel
 //! that the harness speaks through `phoxal::scenario::__harness`. No
-//! `phoxal_project` import is present in the generated source.
+//! project compiler import is present in the generated source.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -50,7 +49,7 @@ pub fn generate_harness_source(
         // result without surfacing a panic path.
         let _ = writeln!(
             source,
-            "#[path = \"../../../{include_path}\"]\nmod {ident};\n",
+            "#[path = \"../../../{include_path}\"]\nmod {ident};",
             include_path = include_path,
             ident = scenario.module_identifier,
         );
@@ -60,7 +59,7 @@ pub fn generate_harness_source(
     // scenarios and forwards a `run <name>` invocation to the case
     // host over the private control channel. The case host is owned
     // by the cargo-phoxal project implementation
-    // (`tools/cargo-phoxal/project/src/scenario/case_host.rs`) and
+    // (`tools/cargo-phoxal/src/project/scenario/case_host.rs`) and
     // owns the simulation lifecycle (provisioning, supervisor
     // admission, native completion, bounded cleanup, lifecycle-owned
     // terminal evidence). The harness binary depends only on the SDK;
@@ -71,13 +70,12 @@ pub fn generate_harness_source(
     // success when lifecycle, evidence validation, and author
     // verification all succeed.
     source.push_str(
-        r#"
-fn main() -> phoxal::Result<()> {
+        r#"fn main() -> phoxal::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str).unwrap_or("list") {
         "list" => {
-            let scenarios = phoxal::scenario::list_scenarios()
-                .map_err(|e| phoxal::anyhow!("{e}"))?;
+            let scenarios =
+                phoxal::scenario::list_scenarios().map_err(|e| phoxal::anyhow!("{e}"))?;
             for s in scenarios {
                 println!("{}\t{}", s.name, s.module_path);
             }
@@ -94,7 +92,9 @@ fn main() -> phoxal::Result<()> {
             phoxal::scenario::__harness::run_harness_case(name)
                 .map_err(|e| phoxal::anyhow!("scenario `{name}` case host failed: {e:#}"))
         }
-        _ => Err(phoxal::anyhow!("usage: phoxal-scenarios [list | run <name>]")),
+        _ => Err(phoxal::anyhow!(
+            "usage: phoxal-scenarios [list | run <name>]"
+        )),
     }
 }
 "#,

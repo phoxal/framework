@@ -45,8 +45,10 @@ This example workspace keeps the same table in `.cargo/config.toml` so direct Ca
 Install the released framework tool into Cargo's user binary directory with:
 
 ```sh
-cargo install cargo-phoxal --registry phoxal --locked
+cargo install cargo-phoxal --registry phoxal --version 0.0.0-dev.1 --locked
 ```
+
+Cargo requires the explicit version because the development train is a pre-release.
 
 Ensure Cargo's install directory is on `PATH` as documented by `cargo install`.
 
@@ -171,7 +173,7 @@ The authored component directories and robot manifest remain unchanged, and the 
 
 The command is therefore a verified source-development gate for this fixture.
 
-The automated fixture test checks the real `phoxal-project` document types and exact model, target, signal, mount-site, and scene shape without pretending that native composition has passed.
+The automated fixture test checks the canonical artifact-format document types and exact model, target, signal, mount-site, and scene shape without pretending that native composition has passed.
 
 The current-runtime alpha and beta packages continue to pass `cargo phoxal check --locked` in CI.
 

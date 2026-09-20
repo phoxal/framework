@@ -4,7 +4,7 @@
 //! generated Protobuf values through the execution protocol. Applications
 //! attach through the `session` module and the supervisor owns the transport and
 //! process lifecycle. Source preparation and immutable bundle assembly are
-//! owned by `phoxal-project`; this crate only exposes the runtime and public
+//! owned by `cargo-phoxal`; this crate only exposes the runtime and public
 //! session boundaries that consume their completed products.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -27,13 +27,18 @@ pub mod identity;
 #[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod communication;
 
+/// Serialized project, bundle, scenario, and simulation contracts.
+#[cfg(feature = "artifact")]
+#[cfg_attr(docsrs, doc(cfg(feature = "artifact")))]
+pub mod artifact;
+
 /// Synchronous Runtime authoring and execution.
 #[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod runtime;
 
-/// Scenario authoring and execution surface (P1 foundation: trait, registry,
-/// case-host skeleton). Independent of `runtime` so consumer crates that
+/// Scenario authoring and execution surface.
+/// Independent of `runtime` so consumer crates that
 /// only define scenarios do not pull Zenoh/tokio/clap.
 #[cfg(feature = "scenario")]
 #[cfg_attr(docsrs, doc(cfg(feature = "scenario")))]

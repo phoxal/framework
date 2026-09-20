@@ -7,7 +7,8 @@ license = "AGPL-3.0-only"
 description = "Authoring-shape checks for the maintained MuJoCo fixture."
 
 [dependencies]
-phoxal-artifact-format = { path = "../../../internal/artifact-format", version = "0.1.0" }
+phoxal = { path = "../../../phoxal", version = "=0.0.0-dev.1", default-features = false, features = ["artifact"] }
+serde_yaml = "0.9"
 
 [lints]
 workspace = true

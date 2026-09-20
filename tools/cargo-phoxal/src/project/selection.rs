@@ -62,6 +62,9 @@ pub struct SelectedTarget {
     pub source_path: PathBuf,
     /// Features required by the target.
     pub required_features: Vec<String>,
+    /// Root dependency key used to activate required features for a selected
+    /// dependency target. Root-local targets leave this unset.
+    pub feature_dependency: Option<String>,
 }
 
 /// One selected service package and its executable/library targets.
@@ -234,8 +237,8 @@ fn load_component_definition(
         package: package.name.to_string(),
         message: format!("cannot read {}: {error}", path.display()),
     })?;
-    let definition =
-        ComponentDocument::parse(&text).map_err(|error| SourceError::InvalidPackageRole {
+    let definition: ComponentDocument =
+        serde_yaml::from_str(&text).map_err(|error| SourceError::InvalidPackageRole {
             role: TargetRole::Component,
             instance: instance.to_owned(),
             key: dependency_key.to_owned(),
@@ -303,9 +306,8 @@ fn resolve_supervisor(root: &Package, metadata: &Metadata) -> Result<SelectedTar
             package: package.name.to_string(),
             target_kind: format!("binary '{SUPERVISOR_BINARY_NAME}'"),
         })?;
-    let selected = selected_target(package, target);
-    let enabled = enabled_features(metadata, &package.id);
-    ensure_target_features(TargetRole::Supervisor, "supervisor", &selected, &enabled)?;
+    let selected = selected_dependency_target(package, target, SUPERVISOR_DEPENDENCY_KEY);
+    ensure_target_features(TargetRole::Supervisor, "supervisor", &selected, package)?;
     Ok(selected)
 }
 
@@ -352,8 +354,7 @@ fn resolve_component_driver(
         package,
         binary_name.as_deref(),
     )?;
-    let enabled = enabled_features(metadata, &package.id);
-    ensure_target_features(TargetRole::Driver, instance, &binary, &enabled)?;
+    ensure_target_features(TargetRole::Driver, instance, &binary, package)?;
     Ok(Some(SelectedDriver {
         dependency_key,
         package_id: package.id.to_string(),
@@ -410,8 +411,7 @@ fn resolve_brain(
                 binary: selection.to_owned(),
             })?;
         let selected = selected_target(root, target);
-        let enabled = enabled_features(metadata, &root.id);
-        ensure_target_features(TargetRole::Brain, "brain", &selected, &enabled)?;
+        ensure_target_features(TargetRole::Brain, "brain", &selected, root)?;
         return Ok(selected);
     }
 
@@ -487,8 +487,7 @@ fn resolve_service(
         package,
         selection.binary.as_deref(),
     )?;
-    let enabled = enabled_features(metadata, &package.id);
-    ensure_target_features(TargetRole::Service, instance, &binary, &enabled)?;
+    ensure_target_features(TargetRole::Service, instance, &binary, package)?;
     Ok(SelectedService {
         instance: instance.to_owned(),
         dependency_key: key.to_owned(),
@@ -637,7 +636,7 @@ fn select_binary(
             }
         },
     };
-    Ok(selected_target(package, target))
+    Ok(selected_dependency_target(package, target, key))
 }
 
 fn selected_target(package: &Package, target: &Target) -> SelectedTarget {
@@ -647,6 +646,18 @@ fn selected_target(package: &Package, target: &Target) -> SelectedTarget {
         target: target.name.clone(),
         source_path: PathBuf::from(target.src_path.as_std_path()),
         required_features: target.required_features.clone(),
+        feature_dependency: None,
+    }
+}
+
+fn selected_dependency_target(
+    package: &Package,
+    target: &Target,
+    dependency_key: &str,
+) -> SelectedTarget {
+    SelectedTarget {
+        feature_dependency: Some(dependency_key.to_owned()),
+        ..selected_target(package, target)
     }
 }
 
@@ -695,12 +706,12 @@ fn ensure_target_features(
     role: TargetRole,
     instance: &str,
     target: &SelectedTarget,
-    enabled: &std::collections::BTreeSet<String>,
+    package: &Package,
 ) -> Result<(), SourceError> {
     let missing = target
         .required_features
         .iter()
-        .filter(|feature| !enabled.contains(feature.as_str()))
+        .filter(|feature| !package.features.contains_key(feature.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     if missing.is_empty() {
@@ -757,7 +768,10 @@ mod tests {
             "source": null,
             "dependencies": [],
             "targets": [library, binary],
-            "features": {},
+            "features": binary_required_features
+                .iter()
+                .map(|feature| (feature.to_string(), Vec::<String>::new()))
+                .collect::<BTreeMap<_, _>>(),
             "manifest_path": format!("services/{name}/Cargo.toml"),
             "categories": [],
             "keywords": [],
@@ -866,30 +880,32 @@ mod tests {
     }
 
     #[test]
-    fn ensure_target_features_succeeds_when_required_features_are_enabled() {
+    fn ensure_target_features_accepts_declared_features_before_build_activation() {
+        let package = service_package("motion", &["runtime"]);
         let target = SelectedTarget {
             package_id: "phoxal-service-motion".to_owned(),
             package: "phoxal-service-motion".to_owned(),
             target: "phoxal-service-motion".to_owned(),
             source_path: PathBuf::from("services/motion/src/main.rs"),
             required_features: vec!["runtime".to_owned()],
+            feature_dependency: Some("motion".to_owned()),
         };
-        let enabled = std::collections::BTreeSet::from(["runtime".to_owned()]);
-        ensure_target_features(TargetRole::Service, "primary", &target, &enabled)
-            .expect("feature is enabled in metadata");
+        ensure_target_features(TargetRole::Service, "primary", &target, &package)
+            .expect("feature is declared by the selected package");
     }
 
     #[test]
     fn ensure_target_features_reports_missing_required_features() {
+        let package = service_package("motion", &["runtime"]);
         let target = SelectedTarget {
             package_id: "phoxal-service-motion".to_owned(),
             package: "phoxal-service-motion".to_owned(),
             target: "phoxal-service-motion".to_owned(),
             source_path: PathBuf::from("services/motion/src/main.rs"),
             required_features: vec!["runtime".to_owned(), "scenario".to_owned()],
+            feature_dependency: Some("motion".to_owned()),
         };
-        let enabled = std::collections::BTreeSet::from(["runtime".to_owned()]);
-        let error = ensure_target_features(TargetRole::Service, "primary", &target, &enabled)
+        let error = ensure_target_features(TargetRole::Service, "primary", &target, &package)
             .expect_err("missing required feature must surface UndefinedRequiredFeatures");
         match error {
             SourceError::UndefinedRequiredFeatures { features, .. } => {

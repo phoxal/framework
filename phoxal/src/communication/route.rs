@@ -12,7 +12,7 @@
 //! helpers are kept.
 
 use super::bootstrap::{SessionOffer, SessionOffers};
-use super::validation::{valid_identifier, DeploymentTarget, SESSION_PROTOCOL};
+use super::validation::{DeploymentTarget, SESSION_PROTOCOL, valid_identifier};
 
 // `SupervisorAdapterError` is the supervisor's error type; the route grammar
 // only needs to return a typed error, so we model it locally to keep the SDK
@@ -257,10 +257,7 @@ impl PublicRoute {
     }
 
     /// Return this route with an explicitly selected operation.
-    pub fn with_operation(
-        self,
-        operation: PublicOperation,
-    ) -> Result<Self, RouteError> {
+    pub fn with_operation(self, operation: PublicOperation) -> Result<Self, RouteError> {
         if operation.kind() != self.kind {
             return Err(RouteError::RouteKindMismatch {
                 expected: operation.kind(),
@@ -283,9 +280,7 @@ impl PublicRoute {
         let session_prefix = format!("{}/clients/", target.session_prefix());
         if let Some(suffix) = key.strip_prefix(&session_prefix) {
             let mut segments = suffix.split('/');
-            let principal = segments
-                .next()
-                .ok_or(RouteError::MalformedRoute)?;
+            let principal = segments.next().ok_or(RouteError::MalformedRoute)?;
             let kind = segments
                 .next()
                 .and_then(PublicRouteKind::from_segment)
@@ -309,9 +304,7 @@ impl PublicRoute {
             .strip_prefix(&simulation_prefix)
             .ok_or(RouteError::WrongRoute)?;
         let mut segments = suffix.split('/');
-        let principal = segments
-            .next()
-            .ok_or(RouteError::MalformedRoute)?;
+        let principal = segments.next().ok_or(RouteError::MalformedRoute)?;
         let operation = segments
             .next()
             .and_then(PublicOperation::from_segment)

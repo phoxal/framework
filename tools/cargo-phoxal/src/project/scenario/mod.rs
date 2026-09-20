@@ -11,18 +11,14 @@
 //! generated harness `#[path = "..."] mod ...;` declarations.
 //!
 //! The auto Cargo integration (test target + dev-dep) lives in
-//! `tools/cargo-phoxal/project/src/preparation.rs`; the actual
-//! `cargo metadata` / `cargo test --no-run` invocation lives in
-//! `tools/cargo-phoxal/project/src/scenario/build.rs` and `run.rs`
-//! (P4).
+//! `tools/cargo-phoxal/src/project/preparation.rs`; the actual
+//! `cargo metadata` / `cargo test --no-run` invocation lives in `run.rs`.
 
-mod bundle;
 pub mod case_host;
 mod discovery;
 mod harness;
 mod run;
 
-pub use bundle::{SCENARIO_NONDEPLOYABLE, ScenarioBundle, SubstitutedEdge};
-pub use discovery::{DiscoveredScenario, DiscoveryError, discover_scenarios, module_identifier};
+pub use discovery::{DiscoveredScenario, discover_scenarios};
 pub use harness::generate_harness_source;
-pub use run::{ScenarioListEntry, ScenarioRunError, list_scenarios, run_scenario};
+pub use run::{ScenarioRunError, list_scenarios, run_scenario};

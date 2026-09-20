@@ -2,6 +2,33 @@
 
 `cargo-phoxal` is the canonical Phoxal source-development command.
 
+It is a separately versioned Cargo package owned by the framework repository.
+The tool stays beside the SDK, artifact format, scenario protocol, and supervisor contracts it compiles against so one reviewed change can keep those private boundaries coherent.
+
+## Installation
+
+Install or update the released package from the Phoxal registry:
+
+```sh
+cargo install cargo-phoxal \
+  --index sparse+https://phoxal.github.io/registry/ \
+  --version 0.0.0-dev.1 \
+  --locked
+```
+
+Cargo requires an explicit version when installing a pre-release.
+The current development train is `0.0.0-dev.1`.
+
+Cargo exposes the installed binary as `cargo phoxal`.
+Publishing a new tool version requires its exact `phoxal` dependency to be available in the registry first.
+The complete owner-first order begins with `phoxal-build`, `phoxal-macros`, and `phoxal`, then continues through services, components, the supervisor, and `cargo-phoxal`.
+
+For framework development before those packages are released, run the workspace binary explicitly:
+
+```sh
+cargo run --locked -p cargo-phoxal -- phoxal --help
+```
+
 The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, and reviewed package publication.
 
 Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
@@ -23,7 +50,8 @@ Ordinary preparation adds the known `phoxal-supervisor` dependency with an uncon
 `--locked` and `--frozen` report an actionable initialization error before changing `Cargo.toml` or `Cargo.lock`.
 Every selected runtime executable must expose its exact compiled contract metadata, and authored configuration is checked against that metadata before a bundle is published.
 
-`cargo phoxal publish component <name> --dry-run` and `cargo phoxal publish service <name> --dry-run` select an exact local Cargo package and produce a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
+`cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
+Supported roles are `component`, `service`, `preset`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
 
 The optional `--path <source-directory>` selects a package explicitly, while omitting it selects the matching current package or a uniquely named member of the current Cargo workspace.
 

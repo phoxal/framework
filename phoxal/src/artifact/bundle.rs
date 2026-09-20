@@ -8,14 +8,14 @@
 //! Pure algorithms (`digest_source_files`, `digest_bytes`) live here
 //! because they have no filesystem, network, or process dependencies.
 //! Bundle assembly, staging, publication, Cargo execution, file
-//! copying, and locks stay with the tool layer in `phoxal-project`.
+//! copying, and locks stay with the tool layer in `cargo-phoxal`.
 
 #![deny(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::artifact::{DescriptorSummary, PortKind, RuntimeRecord};
+use super::{DescriptorSummary, PortKind, RuntimeRecord};
 
 /// The compiled project-bundle schema emitted by the project compiler.
 pub const BUNDLE_SCHEMA: &str = "phoxal/bundle/v0";
@@ -88,14 +88,14 @@ pub struct BundleScenarioSection {
 
 /// One supervisor-owned scenario producer exposed to Runtime input admission.
 ///
-/// Re-exported from [`crate::scenario`].
-pub use crate::scenario::BundleScenarioProducer;
+/// Re-exported from [`super::scenario`].
+pub use super::scenario::BundleScenarioProducer;
 
 /// Validated scenario program identity. The supervisor rejects the
 /// bundle unless every field satisfies the documented invariants.
 ///
-/// Re-exported from [`crate::scenario`].
-pub use crate::scenario::BundleScenarioProgram;
+/// Re-exported from [`super::scenario`].
+pub use super::scenario::BundleScenarioProgram;
 
 impl BundleScenarioSection {
     /// Build a scenario section from an already-normalized program
@@ -308,8 +308,8 @@ pub struct BundleArtifact {
     pub descriptors: Vec<DescriptorSummary>,
 }
 
-impl From<crate::artifact::ArtifactSummary> for BundleArtifact {
-    fn from(summary: crate::artifact::ArtifactSummary) -> Self {
+impl From<super::ArtifactSummary> for BundleArtifact {
+    fn from(summary: super::ArtifactSummary) -> Self {
         Self {
             runtime: summary.runtime,
             descriptors: summary.descriptors,
@@ -585,7 +585,8 @@ robot:
   id: rover
   components: {}
 "#;
-        let document = super::super::document::RobotDocument::parse(yaml).expect("document parses");
+        let document: super::super::document::RobotDocument =
+            serde_yaml::from_str(yaml).expect("document parses");
         BundleManifest {
             schema: BUNDLE_SCHEMA.to_owned(),
             robot_id: "rover".to_owned(),

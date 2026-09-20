@@ -13,8 +13,7 @@ use std::marker::PhantomData;
 /// owned copy. Reserved for code paths that decode bounded,
 /// finite-lifetime wire metadata into a struct field that already
 /// requires `'static`; the leak is a one-time cost at decode time.
-/// See `PortSignature::new_owned` and Gate P1 #4 of
-/// the scenario acceptance review.
+/// See `PortSignature::new_owned`.
 fn leak_str(value: &str) -> &'static str {
     Box::leak(value.to_owned().into_boxed_str())
 }
@@ -146,8 +145,7 @@ impl PortSignature {
     /// lifetimes cannot be widened to `'static`. The descriptor
     /// set is empty; an owner that already admitted a descriptor
     /// must resolve the resulting signature against it instead of
-    /// embedding an unowned byte slice. See Gate P1 #4 of
-    /// the scenario acceptance review.
+    /// embedding an unowned byte slice.
     ///
     /// The decoded wire metadata is bounded and finite; the leak is
     /// a one-time cost at decode time and is preferred over copying

@@ -1,6 +1,6 @@
 [package]
 name = "phoxal"
-version = "0.68.0"
+version = "0.0.0-dev.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -72,6 +72,7 @@ protocol = [
 # Synchronous Runtime definitions, typed input/output forms, and bounded managed
 # operations.
 runtime = [
+    "artifact",
     "protocol",
     "dep:clap",
     "dep:phoxal-macros",
@@ -88,16 +89,27 @@ runtime = [
 # case-host protocol skeleton. Independent of `runtime` so consumer crates
 # that only want to define scenarios do not pull Zenoh, tokio, or clap.
 scenario = [
+    "artifact",
     "protocol",
     "port",
     "dep:phoxal-macros",
-    "dep:phoxal-artifact-format",
     "dep:base64",
     "dep:inventory",
     "dep:serde",
     "dep:serde_json",
     "dep:sha2",
     "dep:tempfile",
+    "dep:thiserror",
+]
+
+# Serialized project, bundle, and simulation contracts shared with framework
+# tools and independent applications. This surface is inert: it owns records,
+# schema identities, validation, and deterministic digests, but no authored
+# file parsing, filesystem discovery, process control, or transport.
+artifact = [
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
     "dep:thiserror",
 ]
 
@@ -138,7 +150,6 @@ tracing = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-build = { workspace = true, optional = true }
-phoxal-artifact-format = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 
 # Scenario surface deps. `inventory` is the link-time registration mechanism
@@ -163,18 +174,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dev-dependencies]
 tempfile.workspace = true
 
-# The runtime reference example previously read its records back through
-# `phoxal_project::RuntimeRecord`, which was the old compiler re-export
-# of the serialized artifact record. The collapse of phoxal-project
-# into cargo-phoxal removes that re-export; the canonical owner is now
-# `phoxal-artifact-format::RuntimeRecord`, and the test reads it
-# directly from there.
-phoxal-artifact-format = { workspace = true }
 # The Config derive test compares the emitted schema with the independent
 # schemars oracle without making schemars a runtime dependency.
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 serial_test = { workspace = true }
+serde_yaml.workspace = true
 sha2 = { workspace = true }
 trybuild = { workspace = true }
 # `test-util` (paused/mocked virtual time) is additive to the `[dependencies]`

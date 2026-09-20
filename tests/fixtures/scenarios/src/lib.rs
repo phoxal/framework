@@ -49,6 +49,10 @@ fn motion_state_sig() -> PortSignature {
 /// One reusable plan covering both a 5 ms scene and a 10 ms scene.
 /// Two-second duration fits both quanta and exercises four authored
 /// actions whose boundaries fall within `[0, transitions)`.
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 pub fn canonical_plan() -> ScenarioPlan {
     ScenarioPlan::with_steps(
         "scene-fixture/canonical",
@@ -64,6 +68,10 @@ pub fn canonical_plan() -> ScenarioPlan {
     .expect("plan has shape-valid steps for a 2 s duration")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 fn drive_setpoint(payload: u8) -> Action {
     Action::setpoint(
         "motion",
@@ -74,6 +82,10 @@ fn drive_setpoint(payload: u8) -> Action {
     .expect("setpoint accepts a non-empty instance and a Setpoint kind")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 fn state_capture() -> Action {
     // The boundary entry is a typed capture; use an empty payload
     // because capture boundaries carry no action data here.
@@ -84,6 +96,10 @@ fn state_capture() -> Action {
 /// quanta are non-rover (the rover is 2 ms); the plan must satisfy
 /// alignment and boundary-range against either, proving the SDK no
 /// longer hard-codes the rover quantum.
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 pub fn validate_against_five_ms(plan: &ScenarioPlan) {
     let quantum = Quantum::from_micros(5_000).expect("5 ms is positive");
     // 2 s at 5 ms = 400 transitions; boundaries 0..=3 are inside.
@@ -92,6 +108,10 @@ pub fn validate_against_five_ms(plan: &ScenarioPlan) {
         .expect("canonical plan must validate at 5 ms quantum");
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 pub fn validate_against_ten_ms(plan: &ScenarioPlan) {
     let quantum = Quantum::from_micros(10_000).expect("10 ms is positive");
     assert_eq!(plan.transition_count(quantum), Some(200));
@@ -103,6 +123,10 @@ pub fn validate_against_ten_ms(plan: &ScenarioPlan) {
 /// quantum the scene probe reported. The same plan yields two distinct
 /// programs (the rover fixture vs. a 10 ms fixture) but the typed
 /// envelope survives.
+#[expect(
+    clippy::expect_used,
+    reason = "fixed fixture literals must remain valid SDK examples"
+)]
 pub fn program_at(quantum: Quantum, plan: &ScenarioPlan) -> Program {
     let schedule: Vec<ScheduleEntry> = plan
         .steps

@@ -1,6 +1,6 @@
 //! Wire types for the case-host control channel.
 //!
-//! Plan §9 specifies a small, versioned, bounded private protocol
+//! This module defines the small, versioned, bounded private protocol
 //! between the tool (case host) and the generated scenario harness.
 //! Both sides speak only the types declared here; nothing else is
 //! exchanged. The harness never sends a Program to the tool without
@@ -19,9 +19,8 @@ use std::path::PathBuf;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::scenario::participant::StepOutcome;
 use crate::scenario::program::Program;
-use crate::scenario::results::CaptureRecord;
+use crate::scenario::results::{CaptureRecord, StepOutcome};
 
 /// The current protocol version. Both sides reject any other value on
 /// the first `Hello` frame.
@@ -80,9 +79,7 @@ pub enum HarnessResponse {
     },
     /// The harness reports the planned scenario it retained. The
     /// tool uses this to drive its probe.
-    Open {
-        scenario: ScenarioSummary,
-    },
+    Open { scenario: ScenarioSummary },
     /// The harness sends the wire-stable program after validating
     /// the plan against the tool's probed quantum.
     Program {

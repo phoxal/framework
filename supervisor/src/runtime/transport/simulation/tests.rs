@@ -1,13 +1,13 @@
 use super::products::{canonical_membership_digest, observation_memberships};
 use super::*;
+use crate::runtime::adapter::{
+    ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
+};
 use phoxal::communication::DeploymentTarget;
 use phoxal::communication::session::OpenSessionRequest;
 use phoxal::communication::session::{ExecutionState, ExecutionSummary, PortKind, PortMetadata};
 use phoxal::communication::simulation::{
     CutReceipt, Observation, ProductDisposition, ProductMembership, ProviderRequirement,
-};
-use crate::runtime::adapter::{
-    ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
 };
 use std::future::Future;
 use std::pin::Pin;

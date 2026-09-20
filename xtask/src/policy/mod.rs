@@ -65,16 +65,11 @@ pub(crate) const FACADE: &str = "phoxal";
 /// a nested Cargo package underneath it. Adding `tools/cargo-phoxal/<name>`
 /// here would re-introduce the prohibited shape; the no-nested-Cargo.toml
 /// rule below guards against that pattern.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 15] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
     "phoxal",
     "supervisor",
     "phoxal/macros",
     "phoxal/build-support",
-    // The shared serialized artifact format. Owned by the framework but
-    // published through the Phoxal registry so external consumers can
-    // deserialize recorded bundles without depending on the project
-    // compiler.
-    "internal/artifact-format",
     "services/motion",
     "services/navigation",
     "services/kinematics",
@@ -97,18 +92,20 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 15] = [
 /// binary-only consumers. The hardware driver fixture is also a library-plus-
 /// binary package so its acceptance implementation cannot accidentally become
 /// an official artifact or a release candidate.
-pub(crate) const INTERNAL_CRATE_DIRS: [&str; 4] = [
+pub(crate) const INTERNAL_CRATE_DIRS: [&str; 5] = [
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/ports/consumer",
     "tests/fixtures/hardware/driver",
+    "tests/fixtures/scenarios",
 ];
 
 /// The subset of [`INTERNAL_CRATE_DIRS`] that carries a library target and is
 /// therefore checked by the library-directory completeness rule.
-pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
+pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 3] = [
     "tests/fixtures/contracts/producer",
     "tests/fixtures/hardware/driver",
+    "tests/fixtures/scenarios",
 ];
 
 /// The package a library crate directory must hold, or `None` for a directory
@@ -130,11 +127,7 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     match directory {
         "tests/fixtures/contracts/producer" => return Some("phoxal-contract-owner-fixture".into()),
         "tests/fixtures/hardware/driver" => return Some("phoxal-hardware-driver-fixture".into()),
-        // The shared serialized artifact format is owned by the framework
-        // but lives one directory deeper than `crates/<name>/` so the
-        // crate prefix rule does not match. The package name is the
-        // kebab-case mirror of the directory suffix.
-        "internal/artifact-format" => return Some("phoxal-artifact-format".into()),
+        "tests/fixtures/scenarios" => return Some("phoxal-scenario-fixture".into()),
         // Unit 6 relocated the proc-macro and code-generation helpers beneath
         // the facade (`phoxal/macros`, `phoxal/build-support`) and the native
         // MuJoCo adapter to a new top-level `simulation/` root. The package
@@ -563,8 +556,14 @@ mod tests {
         // it. The directories under `tools/cargo-phoxal/<name>/` therefore
         // carry no canonical package identity.
         assert_eq!(library_package_name("tools/cargo-phoxal/project"), None);
-        assert_eq!(library_package_name("tools/cargo-phoxal/installation"), None);
-        assert_eq!(library_package_name("tools/cargo-phoxal/project/inner"), None);
+        assert_eq!(
+            library_package_name("tools/cargo-phoxal/installation"),
+            None
+        );
+        assert_eq!(
+            library_package_name("tools/cargo-phoxal/project/inner"),
+            None
+        );
         assert_eq!(library_package_name("tools/cargo-phoxal"), None);
     }
 

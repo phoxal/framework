@@ -4,12 +4,12 @@ use crate::config::{KinematicsConfig, validate_config};
 use crate::inputs::KinematicsInputs;
 use crate::outputs::KinematicsOutputs;
 #[cfg(test)]
+use phoxal::robotics::EncoderSample;
+#[cfg(test)]
 use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-#[cfg(test)]
-use phoxal::robotics::EncoderSample;
 use phoxal_service_kinematics::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
     OdometryState, UnavailableReason, ports,

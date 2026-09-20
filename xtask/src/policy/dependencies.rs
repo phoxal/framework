@@ -33,15 +33,12 @@ use super::{Subject, Violation, is_library_package};
 /// `phoxal` is a framework library that depends on the facade's port
 /// surface plus its owned component contract crates; component crates
 /// themselves are not libraries for this rule and so are checked elsewhere.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 21] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 20] = [
     // The facade owns the typed-port macros, the internal build helper, and
     // the inert typed-port surface as its own module - those are the edges it
     // grows to its build-script-visible toolchain.
     ("phoxal", "phoxal-macros"),
     ("phoxal", "phoxal-build"),
-    // The facade re-exports the canonical native-body wire type so scenario
-    // authors never reach into the compiler or the format crate.
-    ("phoxal", "phoxal-artifact-format"),
     // Framework host binaries that own the rest of the runtime / authoring
     // graph.
     ("phoxal-supervisor", "phoxal"),
@@ -78,22 +75,15 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 21] = [
 /// library facade with no reverse reach into the CLI, the host binary, the
 /// native engine, the official services, the component packages, or the
 /// tool-owned implementation packages. The macro and code-generation helpers
-/// stay out of the SDK library they generate, and the inert format package
-/// stays out of every system that would otherwise pull registry submission,
-/// native physics, network I/O, or service implementation behind its serialised
-/// records.
-const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
+/// stay out of the SDK library they generate.
+const FORBIDDEN_EDGES: [(&str, &[&str]); 3] = [
     // The macro helper expands the SDK and the build helper compiles service
     // contracts; neither reaches back into the library they produce, nor into
     // the CLI that consumes them.
     ("phoxal-macros", &["phoxal", "phoxal-build", "phoxal-cli"]),
     (
         "phoxal-build",
-        &[
-            "phoxal",
-            "phoxal-cli",
-            "phoxal-supervisor",
-        ],
+        &["phoxal", "phoxal-cli", "phoxal-supervisor"],
     ),
     // The SDK stays a library facade. It does not reach for the CLI, the host
     // binary, the tool-owned implementation packages, or any official
@@ -106,8 +96,6 @@ const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
             "phoxal-cli",
             "cargo-phoxal",
             "phoxal-supervisor",
-            "phoxal-project",
-            "phoxal-installation",
             "phoxal-service-motion",
             "phoxal-service-navigation",
             "phoxal-service-kinematics",
@@ -118,19 +106,6 @@ const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
             "phoxal-component-oak_d_lite",
             "phoxal-component-vl53l1x",
             "phoxal-component-zed_f9p",
-        ],
-    ),
-    // The inert format package stays out of every system that would silently
-    // turn its serialised records into executable input.
-    (
-        "phoxal-artifact-format",
-        &[
-            "phoxal",
-            "phoxal-cli",
-            "cargo-phoxal",
-            "phoxal-supervisor",
-            "phoxal-project",
-            "phoxal-installation",
         ],
     ),
 ];

@@ -3,7 +3,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use phoxal_artifact_format::{ComponentDocument, NativeTargetKind, RobotDocument};
+    use phoxal::artifact::document::{ComponentDocument, NativeTargetKind, RobotDocument};
 
     fn fixture_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -27,11 +27,9 @@ mod tests {
                 .exists()
         );
 
-        let motor = ComponentDocument::parse(&read("../components/bench-motor/component.yaml"))
-            .expect("motor component definition parses");
-        motor
-            .validate()
-            .expect("motor component definition validates");
+        let motor: ComponentDocument =
+            serde_yaml::from_str(&read("../components/bench-motor/component.yaml"))
+                .expect("motor component definition parses");
         assert_eq!(motor.model.file, Path::new("model.xml"));
         assert_eq!(motor.model.root_body, "mount");
         assert_eq!(
@@ -48,9 +46,9 @@ mod tests {
             NativeTargetKind::Joint
         );
 
-        let imu = ComponentDocument::parse(&read("../components/bench-imu/component.yaml"))
-            .expect("IMU component definition parses");
-        imu.validate().expect("IMU component definition validates");
+        let imu: ComponentDocument =
+            serde_yaml::from_str(&read("../components/bench-imu/component.yaml"))
+                .expect("IMU component definition parses");
         assert_eq!(imu.model.file, Path::new("model.xml"));
         assert_eq!(imu.model.root_body, "mount");
         assert_eq!(
@@ -62,9 +60,9 @@ mod tests {
             "accelerometer"
         );
 
-        let robot = RobotDocument::parse(&read("../robots/workspace-robot/robot.yaml"))
-            .expect("robot definition parses");
-        robot.validate().expect("robot definition validates");
+        let robot: RobotDocument =
+            serde_yaml::from_str(&read("../robots/workspace-robot/robot.yaml"))
+                .expect("robot definition parses");
         assert_eq!(robot.robot.model.as_deref(), Some(Path::new("model.xml")));
         assert_eq!(robot.robot.components["left"].mount_site, "left_mount");
         assert_eq!(robot.robot.components["right"].mount_site, "right_mount");

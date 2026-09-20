@@ -4,6 +4,7 @@ use super::{ArtifactContract, Error, InputKind, PortKind};
 use crate::project::document::{PortReference, RobotDocument};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 pub fn validate_connected_endpoints(
     document: &RobotDocument,
     contracts: &BTreeMap<String, ArtifactContract>,

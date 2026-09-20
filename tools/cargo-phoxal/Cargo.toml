@@ -1,6 +1,6 @@
 [package]
 name = "cargo-phoxal"
-version = "0.1.0"
+version = "0.0.0-dev.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -41,11 +41,6 @@ tar = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
-
-# Shared serialized artifact format. The project compiler and the
-# installation helper both consume the same inert record family
-# (RuntimeRecord, BundleManifest, NativeBodySample, etc.).
-phoxal-artifact-format = { workspace = true }
 
 # The case host drives the supervised lifecycle from the harness. The
 # harness binary itself depends only on the SDK, but the case-host

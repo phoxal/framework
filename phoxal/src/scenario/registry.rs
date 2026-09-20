@@ -59,8 +59,7 @@ pub struct ScenarioOutcome {
 /// and the boxed scenario instance through execution and
 /// verification; only it may produce the final [`ScenarioOutcome`].
 ///
-/// See Gate P1 #3 of the scenario acceptance review: the macro registers a
-/// generic SDK case entry that plans and returns; the case host
+/// The macro registers a generic SDK case entry that plans and returns; the case host
 /// drives the lifecycle.
 pub struct PlannedScenario {
     /// Public identity of the scenario that produced the plan. Always
@@ -97,8 +96,7 @@ impl std::fmt::Debug for PlannedScenario {
 /// attribute emits the body which constructs the concrete type,
 /// calls `plan()`, and hands the resulting [`PlannedScenario`] to
 /// the case host. The case host drives execution and verification
-/// and only it may produce the final [`ScenarioOutcome`]. See Gate
-/// P1 #3 of the scenario acceptance review.
+/// and only it may produce the final [`ScenarioOutcome`].
 pub type ScenarioEntryFn = fn() -> crate::Result<PlannedScenario>;
 
 inventory::collect!(ScenarioDescriptor);

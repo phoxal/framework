@@ -29,9 +29,6 @@ pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator-mujoco";
 pub const DEFAULT_SIMULATOR_VERSION: &str = "0.1.0";
 /// The binary target exposed by the official simulator package.
 pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator-mujoco";
-/// The public simulation contract selected by the application.
-pub const SIMULATION_PROTOCOL: &str = "phoxal.simulation.v1";
-
 const SELECTION_FILE: &str = "selection.json";
 const PROVISION_LOCK: &str = "provision.lock";
 const SIMULATOR_MANIFEST: &str = "Cargo.toml";
@@ -157,18 +154,6 @@ impl SimulationRunOptions {
         &self.scene
     }
 
-    /// The selected presentation.
-    #[must_use]
-    pub const fn presentation(&self) -> SimulationPresentation {
-        self.presentation
-    }
-
-    /// The selected finite bound.
-    #[must_use]
-    pub const fn bound(&self) -> SimulationBound {
-        self.bound
-    }
-
     /// Use an explicitly selected simulator executable.
     ///
     /// This is the injection seam for local development and deterministic
@@ -177,20 +162,6 @@ impl SimulationRunOptions {
     #[must_use]
     pub fn with_simulator_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.simulator_executable = Some(path.into());
-        self
-    }
-
-    /// Select an exact simulator package, version, and binary target.
-    #[must_use]
-    pub fn with_simulator_package(
-        mut self,
-        package: impl Into<String>,
-        version: impl Into<String>,
-        binary: impl Into<String>,
-    ) -> Self {
-        self.simulator_package = package.into();
-        self.simulator_version = version.into();
-        self.simulator_binary = binary.into();
         self
     }
 
@@ -212,14 +183,6 @@ impl SimulationRunOptions {
         self.scope = scope.into();
         self.supervisor_id = supervisor_id.into();
         self.run_id = run_id.into();
-        self
-    }
-
-    /// Set bounded process startup and cleanup waits.
-    #[must_use]
-    pub fn with_timeouts(mut self, startup: Duration, cleanup: Duration) -> Self {
-        self.startup_timeout = startup;
-        self.cleanup_timeout = cleanup;
         self
     }
 
@@ -289,6 +252,8 @@ pub struct SimulationRunReport {
     pub provider_contract_verified: bool,
     /// Simulator exit code, or none when it terminated by signal.
     pub simulator_exit_code: Option<i32>,
+    /// Wall time spent inside the simulator process for this finite run.
+    pub simulator_wall_time_ns: u64,
     /// Complete simulator standard output.
     pub simulator_stdout: String,
     /// Complete simulator standard error.
@@ -303,22 +268,22 @@ pub struct SimulationRunReport {
 
 /// Evidence observed by the supervisor while executing one scenario program.
 ///
-/// Re-exported from `phoxal_artifact_format::simulation`. The format
-/// crate is the source of truth; this alias keeps every existing
+/// Re-exported from `phoxal::artifact::simulation`. The framework module is
+/// the source of truth; this alias keeps every existing
 /// internal call site compiling unchanged.
-pub use phoxal_artifact_format::simulation::ScenarioExecutionReport;
+pub use phoxal::artifact::simulation::ScenarioExecutionReport;
 
 /// One runtime-acknowledged scenario action.
 ///
-/// Re-exported from `phoxal_artifact_format::simulation`.
+/// Re-exported from `phoxal::artifact::simulation`.
 #[allow(unused_imports)]
-pub use phoxal_artifact_format::simulation::ScenarioStepEvidence;
+pub use phoxal::artifact::simulation::ScenarioStepEvidence;
 
 /// One typed capture stream drained by the supervisor.
 ///
-/// Re-exported from `phoxal_artifact_format::simulation`.
+/// Re-exported from `phoxal::artifact::simulation`.
 #[allow(unused_imports)]
-pub use phoxal_artifact_format::simulation::ScenarioCaptureEvidence;
+pub use phoxal::artifact::simulation::ScenarioCaptureEvidence;
 
 impl SimulationRunReport {
     /// Whether the simulator exited successfully and cleanup completed.
@@ -1110,6 +1075,7 @@ fn launch(
     if request.auto_run {
         simulator_command.arg("--auto-run");
     }
+    let simulator_started = Instant::now();
     let output = match simulator_command.output() {
         Ok(output) => output,
         Err(source) => {
@@ -1121,6 +1087,8 @@ fn launch(
             )));
         }
     };
+    let simulator_wall_time_ns =
+        u64::try_from(simulator_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let terminal = terminal_evidence(&output.stdout);
     let provider_contract_verified = terminal
         .as_ref()
@@ -1151,6 +1119,7 @@ fn launch(
         supervisor_ready,
         provider_contract_verified,
         simulator_exit_code: output.status.code(),
+        simulator_wall_time_ns,
         simulator_stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         simulator_stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         cleanup,
@@ -1161,17 +1130,9 @@ fn launch(
 
 /// Native terminal evidence emitted by the simulator application.
 ///
-/// Re-exported from `phoxal_artifact_format::simulation`. The format
-/// crate is the source of truth.
-pub use phoxal_artifact_format::simulation::SimulatorTerminalEvidence;
-
-/// One native root-body sample in world coordinates.
-///
-/// Re-exported from `phoxal_artifact_format::simulation`. The canonical
-/// wire type is also re-exported by the SDK at `phoxal::scenario::NativeBodySample`
-/// so scenario authors can construct and consume it without importing
-/// the compiler or the format crate directly.
-pub use phoxal_artifact_format::simulation::NativeBodySample;
+/// Re-exported from `phoxal::artifact::simulation`. The framework module is
+/// the source of truth.
+pub use phoxal::artifact::simulation::SimulatorTerminalEvidence;
 
 #[cfg(test)]
 fn provider_contract_verified(stdout: &[u8], presentation: SimulationPresentation) -> bool {

@@ -1,5 +1,5 @@
+use phoxal::artifact::RuntimeRecord;
 use phoxal::runtime::input::{Events, Read, ReadError, ReadStatus};
-use phoxal_artifact_format::artifact::RuntimeRecord;
 use phoxal::runtime::{
     Activation, ExecutionDuration, ExecutionTime, InitContext, ObservationStamp, Runtime,
     StepContext, initialize, invoke,

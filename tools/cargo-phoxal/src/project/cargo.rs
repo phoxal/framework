@@ -35,12 +35,6 @@ impl LockMode {
             Self::Frozen => &["--frozen"],
         }
     }
-
-    /// Whether this policy includes Cargo's offline guarantee.
-    #[must_use]
-    pub const fn is_offline(self) -> bool {
-        matches!(self, Self::Frozen)
-    }
 }
 
 /// Shared preparation and Cargo-command options.
@@ -203,8 +197,7 @@ impl CargoSelection {
     /// selector (target, example, test, bench, lib, bins). The
     /// case-host validator shares this predicate because every
     /// such selector conflicts with the owned `--package <root-id>`
-    /// selection the harness build emits. See Gate P2 of
-    /// the scenario acceptance review.
+    /// selection the harness build emits.
     pub(crate) fn has_target_selectors(&self) -> bool {
         self.all_targets
             || self.lib
@@ -317,8 +310,6 @@ impl CargoOperation {
 pub struct CargoOutput {
     /// Exact argv passed to Cargo, excluding the executable path.
     pub arguments: Vec<OsString>,
-    /// Process exit status.
-    pub status: ExitStatus,
     /// Captured standard output.
     pub stdout: Vec<u8>,
     /// Captured standard error.
@@ -591,18 +582,18 @@ fn append_target_selection(
     command.args(["--package", target.package_id.as_str()]);
     command.args(["--bin", target.target.as_str()]);
     // The selected binary's `required-features` gate makes the target
-    // eligible only when those features are already enabled. The runtime
-    // cleanup consolidated each service into a package with empty defaults,
-    // so the binary needs `runtime` (and any other declared features) to be
-    // passed to `--features` or Cargo silently skips it and the project's
-    // artifact stream records no executable. Auto-merge the gate into any
-    // `--features` already on the command so the project's selection stays
-    // the source of truth while still respecting an explicit caller list.
+    // eligible only when those features are enabled. Cargo addresses a
+    // direct dependency feature through the dependency key authored by the
+    // robot, which may differ from the package name when it is renamed.
     if !target.required_features.is_empty() {
         let mut features = collect_existing_features(command);
         for feature in &target.required_features {
-            if !features.iter().any(|existing| existing == feature) {
-                features.push(feature.clone());
+            let feature = target
+                .feature_dependency
+                .as_ref()
+                .map_or_else(|| feature.clone(), |key| format!("{key}/{feature}"));
+            if !features.iter().any(|existing| existing == &feature) {
+                features.push(feature);
             }
         }
         command.args(["--features", &features.join(",")]);
@@ -692,7 +683,6 @@ fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoO
     }
     Ok(CargoOutput {
         arguments,
-        status: output.status,
         stdout: output.stdout,
         stderr: output.stderr,
     })
