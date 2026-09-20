@@ -234,9 +234,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Er
     })?)?;
     let report = project.run_simulation(&cargo_options, &request)?;
     let SimulationRunReport::V0 {
-        simulator_stdout,
-        simulator_stderr: _,
-        ..
+        simulator_stdout, ..
     } = &report;
     if !simulator_stdout.trim().is_empty() {
         print!("{}", simulator_stdout);
