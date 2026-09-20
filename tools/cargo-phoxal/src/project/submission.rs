@@ -97,7 +97,7 @@ fn submit(
     let repository = github.get::<Repository>(&format!("/repos/{OWNER}/{REPOSITORY}"))?;
     let base = repository.default_branch;
     let index_path = index_path(publication.package())?;
-    let archive_path = format!("crates/{}/{}.crate", index_path, package_stem(publication));
+    let archive_path = archive_path(publication.package(), publication.version())?;
     let provenance_path = format!(
         "provenance/{}/{}.json",
         publication.package(),
@@ -274,6 +274,10 @@ fn index_path(name: &str) -> Result<String, Error> {
         3 => format!("3/{}/{name}", &name[..1]),
         _ => format!("{}/{}/{name}", &name[..2], &name[2..4]),
     })
+}
+
+fn archive_path(name: &str, version: &str) -> Result<String, Error> {
+    Ok(format!("crates/{}/{}.crate", index_path(name)?, version))
 }
 
 fn registry_record(archive: &[u8], publication: &PublicationResult) -> Result<Value, Error> {
@@ -1072,6 +1076,10 @@ mod tests {
         assert_eq!(
             index_path("phoxal-port").expect("long"),
             "ph/ox/phoxal-port"
+        );
+        assert_eq!(
+            archive_path("phoxal-port", "0.0.0-dev.1").expect("archive"),
+            "crates/ph/ox/phoxal-port/0.0.0-dev.1.crate"
         );
     }
 
