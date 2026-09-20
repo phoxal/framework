@@ -1257,7 +1257,7 @@ fn package_macos(
         &resources.join("MUJOCO_THIRD_PARTY_NOTICES"),
     )?;
     copy_regular(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../LICENSE"),
+        &framework_license_path()?,
         &resources.join("PHOXAL_LICENSE"),
     )?;
     let plist = format!(
@@ -1317,6 +1317,23 @@ fn package_macos(
     artifact.summary.executable = executable;
     artifact.summary.sha256 = digest.sha256;
     Ok(artifact)
+}
+
+#[cfg(target_os = "macos")]
+fn framework_license_path() -> Result<PathBuf, Error> {
+    let manifest_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let packaged = manifest_root.join("LICENSE");
+    if packaged.is_file() {
+        return Ok(packaged);
+    }
+    let workspace = manifest_root.join("../../LICENSE");
+    if workspace.is_file() {
+        return Ok(workspace);
+    }
+    Err(simulation_error(format!(
+        "cargo-phoxal package does not contain its declared license file at {}",
+        packaged.display()
+    )))
 }
 
 #[cfg(target_os = "macos")]
@@ -2060,6 +2077,12 @@ mod tests {
             simulator_registry_archive_url("abc", "1.0.0"),
             "https://phoxal.github.io/registry/crates/3/a/abc/1.0.0.crate"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn simulator_packaging_can_resolve_the_declared_framework_license() {
+        assert!(framework_license_path().is_ok());
     }
 
     #[test]
