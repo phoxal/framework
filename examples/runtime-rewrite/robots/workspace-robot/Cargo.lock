@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1957,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-build"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "heck",
  "prost",
@@ -1970,7 +1970,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-supervisor"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "clap",
