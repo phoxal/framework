@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-supervisor"
-version = "0.0.0-dev.1"
+version = "0.0.0-dev.2"
 dependencies = [
  "anyhow",
  "clap",
