@@ -17,7 +17,7 @@ cargo install cargo-phoxal \
 ```
 
 Cargo requires an explicit version when installing a pre-release.
-The current `cargo-phoxal` release is `0.0.0-dev.3`.
+The current `cargo-phoxal` release is `0.0.0-dev.4`.
 It consumes the `0.0.0-dev.1` framework package set.
 
 Cargo exposes the installed binary as `cargo phoxal`.

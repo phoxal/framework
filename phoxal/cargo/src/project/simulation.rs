@@ -29,6 +29,9 @@ pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator";
 pub const DEFAULT_SIMULATOR_VERSION: &str = "0.0.0-dev.1";
 /// The binary target exposed by the official simulator package.
 pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator";
+const DEFAULT_SIMULATOR_ARCHIVE_SHA256: &str =
+    "947eca4fa90282d6c87bf533919a8f33d0dc08dd038fa51a0732cab615372481";
+const PHOXAL_REGISTRY_DOWNLOAD_ROOT: &str = "https://phoxal.github.io/registry/crates";
 const SELECTION_FILE: &str = "selection.json";
 const PROVISION_LOCK: &str = "provision.lock";
 const SIMULATOR_MANIFEST: &str = "Cargo.toml";
@@ -1004,66 +1007,28 @@ fn build_registry_simulator(
             source,
         })?;
     let source_root = staging.path();
-    let selector_manifest = source_root.join(SIMULATOR_MANIFEST);
-    fs::write(&selector_manifest, simulator_manifest(request)).map_err(|source| {
-        Error::ArtifactFile {
-            path: selector_manifest.clone(),
-            source,
-        }
-    })?;
-    let selector_source_root = source_root.join("src");
-    let selector_source = selector_source_root.join("main.rs");
-    fs::create_dir_all(&selector_source_root).map_err(|source| Error::ArtifactFile {
-        path: selector_source_root,
-        source,
-    })?;
-    fs::write(&selector_source, "fn main() {}\n").map_err(|source| Error::ArtifactFile {
-        path: selector_source,
-        source,
-    })?;
     let target_root = root.join(BUILD_ROOT);
     fs::create_dir_all(&target_root).map_err(|source| Error::ArtifactFile {
         path: target_root.clone(),
         source,
     })?;
-    let selector_metadata = simulator_metadata(&selector_manifest, options, false)?;
-    let package = selector_metadata
-        .packages
-        .iter()
-        .find(|package| {
-            package.name == request.simulator_package
-                && package.version.to_string() == request.simulator_version
-        })
-        .ok_or_else(|| {
-            simulation_error(format!(
-                "registry did not resolve simulator package {} {}",
-                request.simulator_package, request.simulator_version
-            ))
+    let archive = simulator_registry_archive(root, options, request)?;
+    let archive_file = File::open(&archive).map_err(|source| Error::ArtifactFile {
+        path: archive.clone(),
+        source,
+    })?;
+    let decoder = flate2::read::GzDecoder::new(archive_file);
+    let mut package_archive = tar::Archive::new(decoder);
+    package_archive
+        .unpack(source_root)
+        .map_err(|source| Error::ArtifactFile {
+            path: source_root.to_owned(),
+            source,
         })?;
-    let expected_source = format!(
-        "registry+{}",
-        PHOXAL_REGISTRY_INDEX
-            .strip_prefix("sparse+")
-            .unwrap_or(PHOXAL_REGISTRY_INDEX)
-    );
-    if package.source.as_ref().map(|source| source.repr.as_str()) != Some(expected_source.as_str())
-    {
-        return Err(simulation_error(format!(
-            "simulator package {} {} did not resolve from the Phoxal registry",
-            request.simulator_package, request.simulator_version
-        )));
-    }
-    let package_root = PathBuf::from(package.manifest_path.as_std_path())
-        .parent()
-        .map(Path::to_owned)
-        .ok_or_else(|| {
-            simulation_error(format!(
-                "simulator package {} has no source root",
-                request.simulator_package
-            ))
-        })?;
-    let application_root = source_root.join("application");
-    copy_tree(&package_root, &application_root)?;
+    let application_root = source_root.join(format!(
+        "{}-{}",
+        request.simulator_package, request.simulator_version
+    ));
     let application_manifest = application_root.join(SIMULATOR_MANIFEST);
     let application_lock = application_root.join(SIMULATOR_LOCK);
     if !application_lock.is_file() {
@@ -1173,6 +1138,87 @@ fn build_registry_simulator(
         cargo_manifest: Some(retained_manifest),
         cargo_lock: Some(retained_lock),
     })
+}
+
+fn simulator_registry_archive(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+) -> Result<PathBuf, Error> {
+    if request.simulator_package != DEFAULT_SIMULATOR_PACKAGE
+        || request.simulator_version != DEFAULT_SIMULATOR_VERSION
+    {
+        return Err(simulation_error(format!(
+            "managed installation supports only {} {}",
+            DEFAULT_SIMULATOR_PACKAGE, DEFAULT_SIMULATOR_VERSION
+        )));
+    }
+    let cache_root = root
+        .parent()
+        .ok_or_else(|| simulation_error("managed simulator root has no parent"))?
+        .join("cache/registry")
+        .join(&request.simulator_package);
+    fs::create_dir_all(&cache_root).map_err(|source| Error::ArtifactFile {
+        path: cache_root.clone(),
+        source,
+    })?;
+    let archive = cache_root.join(format!("{}.crate", request.simulator_version));
+    if archive.is_file() {
+        let checksum = digest_file(&archive)?.sha256;
+        if checksum == DEFAULT_SIMULATOR_ARCHIVE_SHA256 {
+            return Ok(archive);
+        }
+        if options.offline {
+            return Err(simulation_error(format!(
+                "cached simulator archive {} has checksum {checksum}, expected {}",
+                archive.display(),
+                DEFAULT_SIMULATOR_ARCHIVE_SHA256
+            )));
+        }
+        fs::remove_file(&archive).map_err(|source| Error::ArtifactFile {
+            path: archive.clone(),
+            source,
+        })?;
+    } else if options.offline {
+        return Err(simulation_error(format!(
+            "offline simulator installation requires the verified archive at {}",
+            archive.display()
+        )));
+    }
+
+    let url =
+        simulator_registry_archive_url(&request.simulator_package, &request.simulator_version);
+    let download = download_asset(
+        &url,
+        DEFAULT_SIMULATOR_ARCHIVE_SHA256,
+        &format!(
+            "{}-{}.crate",
+            request.simulator_package, request.simulator_version
+        ),
+    )?;
+    let temporary = NamedTempFile::new_in(&cache_root).map_err(|source| Error::ArtifactFile {
+        path: cache_root,
+        source,
+    })?;
+    copy_regular(&download.path, temporary.path())?;
+    temporary
+        .persist(&archive)
+        .map_err(|error| Error::ArtifactFile {
+            path: archive.clone(),
+            source: error.error,
+        })?;
+    Ok(archive)
+}
+
+fn simulator_registry_archive_url(package: &str, version: &str) -> String {
+    let normalized = package.to_ascii_lowercase();
+    let prefix = match normalized.len() {
+        1 => "1".to_owned(),
+        2 => "2".to_owned(),
+        3 => format!("3/{}", &normalized[..1]),
+        _ => format!("{}/{}", &normalized[..2], &normalized[2..4]),
+    };
+    format!("{PHOXAL_REGISTRY_DOWNLOAD_ROOT}/{prefix}/{normalized}/{version}.crate")
 }
 
 #[cfg(target_os = "macos")]
@@ -1318,92 +1364,26 @@ fn generate_application_lock(manifest: &Path, options: &CargoOptions) -> Result<
     Ok(())
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> Result<(), Error> {
-    let metadata = fs::symlink_metadata(source).map_err(|source_error| Error::ArtifactFile {
-        path: source.to_owned(),
-        source: source_error,
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(simulation_error(format!(
-            "simulator source tree contains a symlink at {}",
-            source.display()
-        )));
-    }
-    if metadata.is_file() {
-        return copy_regular(source, destination);
-    }
-    if !metadata.is_dir() {
-        return Err(simulation_error(format!(
-            "simulator source tree entry {} is not a regular file or directory",
-            source.display()
-        )));
-    }
-    fs::create_dir_all(destination).map_err(|source_error| Error::ArtifactFile {
-        path: destination.to_owned(),
-        source: source_error,
-    })?;
-    let mut entries = fs::read_dir(source)
-        .map_err(|source_error| Error::ArtifactFile {
-            path: source.to_owned(),
-            source: source_error,
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source_error| Error::ArtifactFile {
-            path: source.to_owned(),
-            source: source_error,
-        })?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
-    }
-    Ok(())
-}
-
-fn simulator_manifest(request: &SimulationRunOptions) -> String {
-    format!(
-        "[workspace]\nresolver = \"3\"\n\n[package]\nname = \"phoxal-simulator-selection\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\n{} = {{ package = \"{}\", version = \"={}\", registry = \"phoxal\" }}\n",
-        cargo_dependency_key(&request.simulator_package),
-        request.simulator_package,
-        request.simulator_version
-    )
-}
-
-fn cargo_dependency_key(package: &str) -> String {
-    let mut key = package
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || byte == b'_' {
-                byte as char
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    if key.is_empty() || key.as_bytes()[0].is_ascii_digit() {
-        key.insert(0, '_');
-    }
-    key
-}
-
 fn simulator_metadata(
     manifest: &Path,
     options: &CargoOptions,
     locked: bool,
 ) -> Result<cargo_metadata::Metadata, Error> {
     let mut command = MetadataCommand::new();
+    let mut other_options = vec![
+        "--config".to_owned(),
+        format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
+    ];
+    if options.offline {
+        other_options.push("--offline".to_owned());
+    }
+    if locked {
+        other_options.push("--locked".to_owned());
+    }
     command
         .cargo_path(options.cargo_program())
         .manifest_path(manifest)
-        .other_options(vec![
-            "--config".to_owned(),
-            format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
-        ]);
-    if options.offline {
-        command.other_options(vec!["--offline".to_owned()]);
-    }
-    if locked {
-        command.other_options(vec!["--locked".to_owned()]);
-    }
+        .other_options(other_options);
     command.exec().map_err(|source| Error::CargoMetadata {
         manifest: manifest.to_owned(),
         source,
@@ -2071,18 +2051,15 @@ mod tests {
     }
 
     #[test]
-    fn simulator_manifest_uses_only_registry_coordinates() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let request = SimulationRunOptions::new(
-            "scene.xml",
-            SimulationPresentation::Headless,
-            SimulationBound::Steps(1),
-        )?;
-        let manifest = simulator_manifest(&request);
-        assert!(manifest.contains("registry = \"phoxal\""));
-        assert!(!manifest.contains("path ="));
-        assert!(manifest.contains("version = \"=0.0.0-dev.1\""));
-        Ok(())
+    fn simulator_archive_uses_the_pinned_sparse_registry_layout() {
+        assert_eq!(
+            simulator_registry_archive_url("phoxal-simulator", "0.0.0-dev.1"),
+            "https://phoxal.github.io/registry/crates/ph/ox/phoxal-simulator/0.0.0-dev.1.crate"
+        );
+        assert_eq!(
+            simulator_registry_archive_url("abc", "1.0.0"),
+            "https://phoxal.github.io/registry/crates/3/a/abc/1.0.0.crate"
+        );
     }
 
     #[test]

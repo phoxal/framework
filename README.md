@@ -32,7 +32,7 @@ cargo install cargo-phoxal \
 ```
 
 Pre-release tools must be selected explicitly because Cargo does not choose them for a plain `cargo install`.
-The current `cargo-phoxal` release is `0.0.0-dev.3`.
+The current `cargo-phoxal` release is `0.0.0-dev.4`.
 It consumes the `0.0.0-dev.1` framework package set.
 Later incompatible development trains increment only the final pre-release counter.
 The release order begins with `phoxal-build`, `phoxal-macros`, and `phoxal`, then continues through services, components, the supervisor, and `cargo-phoxal`.
