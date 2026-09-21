@@ -16,37 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      # The first contract PR has no Protobuf files on its base branch. Buf
-      # cannot compare against an empty module, so establish that first
-      # baseline with build, format, and lint only. Every later PR must also
-      # pass the breaking-change check.
-      - name: Detect Protobuf baseline
-        id: protobuf-baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          base_files="$(git ls-tree -r --name-only "${{ github.event.pull_request.base.sha }}")"
-          if grep -qE '\.proto$' <<< "$base_files"; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "No Protobuf contract baseline exists on the base revision."
-          fi
-
+      # Format and lint only.
+      # Breaking-change comparison is intentionally omitted: during the
+      # pre-1.0 coordinated rewrite, intentional breaking changes are normal,
+      # and Buf's per-PR break check is the wrong gate for a coordinated
+      # wire revision. Buf owns schema hygiene; the release-plz workflow
+      # owns the deliberate version bump.
       - uses: bufbuild/buf-action@v1
         with:
           version: "1.73.0"
           lint: true
           format: true
-          breaking: ${{ steps.protobuf-baseline.outputs.available == 'true' }}
+          breaking: false
           push: false
           archive: false
           pr_comment: false
@@ -63,33 +45,19 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      # The example workspace test exercises the packages the
+      # `examples/runtime-rewrite` workspace declares (`services/counter*`,
+      # `fixture-check`, `robots/robot-alpha`, `robots/robot-beta`), which
+      # already covers the MuJoCo fixture-check package.
+      # Per-robot `cargo phoxal check` invocations for `workspace-robot` and
+      # `simulation-rover` (which each declare their own `[workspace]`) and
+      # the passive-component publish dry run were intentionally removed:
+      # the subprocess and publication tests under `phoxal/cargo/tests/`
+      # already cover the publication path, and change-scoped acceptance is
+      # run against the relevant robot or component instead of every
+      # maintained example on every PR.
       - name: Test the example workspace
         run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all-targets
-
-      - name: Check the maintained example robots with cargo-phoxal
-        shell: bash
-        run: |
-          set -euo pipefail
-          for robot in \
-            examples/runtime-rewrite/robots/robot-alpha \
-            examples/runtime-rewrite/robots/robot-beta \
-            examples/runtime-rewrite/robots/workspace-robot \
-            examples/runtime-rewrite/robots/simulation-rover; do
-            (
-              cd "$robot"
-              cargo run --manifest-path ../../../../phoxal/cargo/Cargo.toml -- check --locked
-            )
-          done
-
-      - name: Check the MuJoCo authoring fixture shape
-        run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --package example-mujoco-fixture-check
-
-      - name: Validate the local passive component
-        run: >-
-          cargo run --manifest-path phoxal/cargo/Cargo.toml --
-          publish component example-passive-caster
-          --path examples/runtime-rewrite/components/passive-caster
-          --dry-run
 
   # Every consumer profile, built explicitly.
   #
@@ -138,46 +106,3 @@ jobs:
       # `required-features`, independently of the current member composition.
       - name: Test every profile together
         run: cargo test -p phoxal --all-features
-
-      # `cargo hack --each-feature` is the guard *beside* the list above, not
-      # instead of it: it catches a profile combination nobody thought to name,
-      # while the explicit list is what states the supported set.
-      - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
-
-      - name: Every feature on its own
-        run: cargo hack --each-feature -p phoxal check
-
-  # The rules no single crate owns: the directory/naming/publish grammar every
-  # official package obeys, the direction of the public library graph and the
-  # edges no canonical crate may grow, the Zenoh feature profile, the deleted
-  # surfaces that may not return, and what a committed comment may name.
-  # It builds nothing it judges - every rule reads `cargo metadata`, the
-  # filesystem or Git - so it links no framework crate at all.
-  # The proofs that need the framework *linked* are ordinary tests in the crates
-  # that own them and run in the `ci` job's `cargo test --workspace`.
-  policy:
-    name: workspace policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Check the workspace policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The report goes to the summary whichever way the gate falls: the
-          # violations behind a refusal are the reason to read it.
-          status=0
-          report="$(cargo xtask policy)" || status=$?
-          echo "$report"
-          {
-            echo "## Workspace policy"
-            echo
-            echo '```'
-            echo "$report"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"

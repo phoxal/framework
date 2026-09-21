@@ -5,6 +5,8 @@
 //! [`crate::session::Supervisor::management`] exposes lifecycle information, [`crate::session::Supervisor::execution`] selects an exact execution, and [`crate::session::Supervisor::simulation`] accesses the separately authorized simulation contract.
 //! An [`crate::session::Execution`] selects a [`crate::session::Service`], whose [`crate::session::Service::port`] method accepts generated service-owned port descriptors and returns only the operations valid for that port kind.
 //! Closing one logical supervisor session does not close its sibling sessions; [`crate::session::Connection::close`] owns the shared transport lifetime.
+//!
+//! Supervisor-owned server state is not re-exported through this client API.
 
 #[path = "public_error.rs"]
 mod error;
