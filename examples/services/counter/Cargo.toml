@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 counter-contract = { package = "example-counter-contract", path = "contract" }
-phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
+phoxal = { path = "../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
 serde = { version = "1.0.228", features = ["derive"] }
 
 [lints]

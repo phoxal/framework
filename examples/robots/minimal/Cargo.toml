@@ -1,0 +1,14 @@
+[package]
+name = "example-minimal-robot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "The smallest complete Phoxal robot Runtime example."
+
+[dependencies]
+phoxal = { path = "../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../supervisor", version = "=0.0.0-dev.2" }
+
+[lints]
+workspace = true

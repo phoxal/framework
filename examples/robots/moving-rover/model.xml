@@ -1,4 +1,4 @@
-<mujoco model="example-simulation-rover">
+<mujoco model="example-moving-rover">
   <compiler angle="radian" />
   <worldbody>
     <body name="base_footprint">

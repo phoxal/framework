@@ -11,11 +11,11 @@ name = "example_counter_contract"
 path = "src/lib.rs"
 
 [dependencies]
-phoxal = { path = "../../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["port"] }
+phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["port"] }
 prost = "0.14.4"
 
 [build-dependencies]
-phoxal = { path = "../../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["build"] }
+phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

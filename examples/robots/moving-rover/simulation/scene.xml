@@ -1,4 +1,4 @@
-<mujoco model="example-simulation-rover-scene">
+<mujoco model="example-moving-rover-scene">
   <compiler angle="radian" />
   <option
     timestep="0.01"

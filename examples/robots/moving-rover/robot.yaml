@@ -1,7 +1,7 @@
 # $schema: ./.phoxal/schemas/robot.schema.json
 schema: phoxal/robot/v0
 robot:
-  id: example-simulation-rover
+  id: example-moving-rover
   model: model.xml
   components:
     front_left_drive:

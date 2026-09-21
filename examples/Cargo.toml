@@ -2,10 +2,8 @@
 resolver = "3"
 members = [
     "services/counter/contract",
-    "fixture-check",
     "services/counter",
-    "robots/robot-alpha",
-    "robots/robot-beta",
+    "robots/minimal",
 ]
 
 [workspace.lints.rust]

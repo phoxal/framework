@@ -363,12 +363,14 @@ pub(crate) fn is_identifier(value: &str) -> bool {
 mod tests {
     use std::fs;
 
+    use phoxal::artifact::document::NativeTargetKind;
+
     use super::*;
 
     fn maintained_example(relative: &str) -> (std::path::PathBuf, String) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("examples/runtime-rewrite")
+            .join("examples")
             .join(relative);
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
@@ -416,7 +418,66 @@ robot:
                 .unwrap_or_else(|error| panic!("{} is invalid: {error}", path.display()));
         }
 
-        let (path, text) = maintained_example("robots/workspace-robot/robot.yaml");
+        let (path, text) = maintained_example("robots/composed/robot.yaml");
         parse_and_validate(&text, &path).expect("maintained robot document is valid");
+    }
+
+    #[test]
+    fn maintained_composition_example_keeps_explicit_native_bindings() {
+        let (motor_path, motor_text) = maintained_example("components/bench-motor/component.yaml");
+        let motor: ComponentDocument = serde_yaml::from_str(&motor_text)
+            .unwrap_or_else(|error| panic!("cannot parse {}: {error}", motor_path.display()));
+        let ComponentDocument::V0 {
+            model,
+            capabilities,
+            ..
+        } = motor;
+        assert_eq!(model.file, Path::new("model.xml"));
+        assert_eq!(model.root_body, "mount");
+        assert_eq!(
+            capabilities["motor"].target.kind,
+            NativeTargetKind::Actuator
+        );
+        assert_eq!(capabilities["motor"].target.id, "motor");
+        assert_eq!(capabilities["motor"].joint.as_deref(), Some("motor_joint"));
+        assert_eq!(capabilities["encoder"].target.kind, NativeTargetKind::Joint);
+
+        let (imu_path, imu_text) = maintained_example("components/bench-imu/component.yaml");
+        let imu: ComponentDocument = serde_yaml::from_str(&imu_text)
+            .unwrap_or_else(|error| panic!("cannot parse {}: {error}", imu_path.display()));
+        let ComponentDocument::V0 {
+            model,
+            capabilities,
+            ..
+        } = imu;
+        assert_eq!(model.file, Path::new("model.xml"));
+        assert_eq!(model.root_body, "mount");
+        assert_eq!(
+            capabilities["accelerometer"].target.kind,
+            NativeTargetKind::Site
+        );
+        assert_eq!(
+            capabilities["accelerometer"].signals["acceleration"],
+            "accelerometer"
+        );
+
+        let (_, robot_text) = maintained_example("robots/composed/robot.yaml");
+        let robot: RobotDocument =
+            serde_yaml::from_str(&robot_text).expect("composed robot definition parses");
+        let RobotDocument::V0 { robot, .. } = robot;
+        assert_eq!(robot.model.as_deref(), Some(Path::new("model.xml")));
+        assert_eq!(robot.components["left"].mount_site, "left_mount");
+        assert_eq!(robot.components["right"].mount_site, "right_mount");
+        assert_eq!(robot.components["imu"].mount_site, "imu_mount");
+
+        let (_, scene) = maintained_example("robots/composed/simulation/scene.xml");
+        assert_eq!(
+            scene
+                .lines()
+                .find(|line| line.contains("<option"))
+                .expect("scene has native global options")
+                .trim(),
+            "<option timestep=\"0.001\" gravity=\"0 0 -9.81\" integrator=\"implicitfast\" solver=\"Newton\"/>"
+        );
     }
 }

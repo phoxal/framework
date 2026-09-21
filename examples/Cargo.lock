@@ -728,21 +728,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-simulation-rover"
+name = "example-counter-contract"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
  "phoxal",
- "phoxal-component-ddsm115",
- "phoxal-component-vl53l1x",
- "phoxal-service-kinematics",
- "phoxal-service-motion",
- "phoxal-service-safety",
- "phoxal-service-world",
- "phoxal-supervisor",
  "prost",
- "serde_json",
+]
+
+[[package]]
+name = "example-counter-service"
+version = "0.1.0"
+dependencies = [
+ "example-counter-contract",
+ "phoxal",
+ "serde",
+]
+
+[[package]]
+name = "example-minimal-robot"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "phoxal-supervisor",
 ]
 
 [[package]]
@@ -1950,27 +1957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-component-ddsm115"
-version = "0.0.0-dev.2"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-service-motion",
- "prost",
- "serde",
-]
-
-[[package]]
-name = "phoxal-component-vl53l1x"
-version = "0.0.0-dev.2"
-dependencies = [
- "anyhow",
- "phoxal",
- "prost",
- "serde",
-]
-
-[[package]]
 name = "phoxal-macros"
 version = "0.0.0-dev.2"
 dependencies = [
@@ -1979,45 +1965,6 @@ dependencies = [
  "quote",
  "serde_derive_internals 0.29.1",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "phoxal-service-kinematics"
-version = "0.0.0-dev.2"
-dependencies = [
- "phoxal",
- "prost",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "phoxal-service-motion"
-version = "0.0.0-dev.2"
-dependencies = [
- "phoxal",
- "prost",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "phoxal-service-safety"
-version = "0.0.0-dev.2"
-dependencies = [
- "phoxal",
- "phoxal-service-motion",
- "phoxal-service-world",
- "prost",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "phoxal-service-world"
-version = "0.0.0-dev.2"
-dependencies = [
- "phoxal",
- "phoxal-service-kinematics",
- "prost",
- "thiserror 2.0.20",
 ]
 
 [[package]]

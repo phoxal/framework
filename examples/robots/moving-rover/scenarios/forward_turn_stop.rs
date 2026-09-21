@@ -5,7 +5,7 @@
 //! uses:
 //!   - `simulation/scene.xml` (the rover's authored scene).
 //!   - Real `phoxal-service-motion` types (`MotionIntent`,
-//!     `ApplyEmergencyRequest`, `MotionStatus`) — no manual protobuf
+//!     `ApplyEmergencyRequest`, `MotionStatus`) without manual protobuf
 //!     encoder and no handwritten descriptor strings.
 //!   - `Motion/Manual` setpoint port for forward / turn / stop
 //!     intents.
@@ -128,7 +128,7 @@ impl Scenario for ForwardTurnStop {
                 .map_err(|e| phoxal::anyhow!("motion status capture: {e}"))?,
             Capture::state("safety/status", safety::ports::STATUS.signature())
                 .map_err(|e| phoxal::anyhow!("safety status capture: {e}"))?,
-            Capture::native_body("example-simulation-rover", "SI", "world")
+            Capture::native_body("example-moving-rover", "SI", "world")
                 .map_err(|e| phoxal::anyhow!("native body capture: {e}"))?,
         ];
 
@@ -213,7 +213,7 @@ impl Scenario for ForwardTurnStop {
         run.capture("safety/status")
             .ok_or_else(|| phoxal::anyhow!("ForwardTurnStop: safety/status capture missing"))?;
         let body = run
-            .capture("example-simulation-rover")
+            .capture("example-moving-rover")
             .ok_or_else(|| phoxal::anyhow!("ForwardTurnStop: native body capture missing"))?;
         let phoxal::scenario::CaptureRecord::NativeBody(bytes) = body else {
             return Err(phoxal::anyhow!(
