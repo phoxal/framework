@@ -1352,7 +1352,7 @@ fn selected_hardware_fixture_driver_is_resolved_without_simulation_assets()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
     let driver_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/hardware/driver")
+        .join("../../tests/hardware/driver")
         .canonicalize()?;
     let driver_path = relative_path(&fixture.path().canonicalize()?, &driver_path);
     let root_manifest = fixture.path().join("Cargo.toml");

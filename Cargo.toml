@@ -15,12 +15,12 @@ resolver = "3"
 # private Rust modules of `phoxal/cargo`; they are not
 # independent workspace packages.
 members = [
-    "phoxal/build-support",
-    "tests/fixtures/contracts/producer",
-    "tests/fixtures/contracts/consumer",
-    "tests/fixtures/hardware/driver",
-    "tests/fixtures/robot",
-    "tests/fixtures/robot/controller",
+    "phoxal/build",
+    "tests/contracts/producer",
+    "tests/contracts/consumer",
+    "tests/hardware/driver",
+    "tests/robot",
+    "tests/robot/controller",
     "phoxal",
     "phoxal/macros",
     "supervisor",
@@ -125,7 +125,7 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # role it is. Every member below names its own.
 phoxal = { path = "phoxal", version = "=0.0.0-dev.2", registry = "phoxal", default-features = false }
 phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-build = { path = "phoxal/build-support", version = "=0.0.0-dev.2", registry = "phoxal" }
+phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.2", registry = "phoxal" }
 phoxal-service-motion = { path = "services/motion", version = "=0.0.0-dev.2", registry = "phoxal" }
 phoxal-service-kinematics = { path = "services/kinematics", version = "=0.0.0-dev.2", registry = "phoxal" }
 phoxal-service-world = { path = "services/world", version = "=0.0.0-dev.2", registry = "phoxal" }

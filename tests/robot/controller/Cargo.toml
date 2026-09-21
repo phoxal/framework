@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 phoxal = { workspace = true, features = ["robotics", "runtime"] }
-motion = { package = "phoxal-service-motion", path = "../../../../services/motion", version = "=0.0.0-dev.2" }
+motion = { package = "phoxal-service-motion", path = "../../../services/motion", version = "=0.0.0-dev.2" }
 
 [lints]
 workspace = true

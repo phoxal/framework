@@ -13,7 +13,7 @@ This repository and its source are the authority for current framework implement
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official services and drivers, with their owned contracts beside private binary implementations
 - `phoxal/cargo/` - the registry-aware project and publication command
-- `tests/fixtures/` - internal compile-contract fixtures and one four-wheel native qualification robot
+- `tests/` - internal compile-contract fixtures and one four-wheel native qualification robot
 
 Hardware-only projects and `cargo-phoxal` build and run without MuJoCo or a simulator installation.
 
@@ -66,7 +66,7 @@ It contains only four actuator/encoder components, a disarmed brain, a small rob
 Build the current framework tool and a source simulator as documented by the simulator repository, then run:
 
 ```sh
-cd tests/fixtures/robot
+cd tests/robot
 ../../../target/debug/cargo-phoxal check --locked
 ../../../target/debug/cargo-phoxal simulation scenario list --locked
 ../../../target/debug/cargo-phoxal simulation scenario run ForwardTurnStop \

@@ -370,7 +370,7 @@ mod tests {
     fn qualification_fixture(relative: &str) -> (std::path::PathBuf, String) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("tests/fixtures/robot")
+            .join("tests/robot")
             .join(relative);
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));

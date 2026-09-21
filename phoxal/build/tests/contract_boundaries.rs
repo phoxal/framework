@@ -2,7 +2,7 @@ use std::process::Command;
 
 fn dependency_tree(fixture: &str) -> String {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures")
+        .join("../../tests")
         .join(fixture)
         .join("Cargo.toml");
     let manifest_arg = manifest.to_string_lossy().into_owned();
