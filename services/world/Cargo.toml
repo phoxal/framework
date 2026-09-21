@@ -35,5 +35,12 @@ serde = { workspace = true, optional = true }
 phoxal = { workspace = true, default-features = false, features = ["build"] }
 phoxal-service-kinematics = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+zenoh = { workspace = true }
+
 [lints]
 workspace = true

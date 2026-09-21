@@ -2139,6 +2139,30 @@ mod tests {
     }
 
     #[test]
+    fn read_promotes_a_non_clone_response_into_retained_success() {
+        struct NonCloneResponse(u16);
+
+        let provenance = ObservationStamp::new("provider", ExecutionTime::from_nanos(10), Some(3));
+        let mut read = Read::<u8, (), NonCloneResponse>::pending(4);
+        read.admit(4, Ok(NonCloneResponse(12)), Some(provenance));
+        assert_eq!(
+            read.new_completion()
+                .expect("new completion")
+                .result()
+                .expect("successful response")
+                .0,
+            12
+        );
+
+        read.finish_invocation();
+
+        let retained = read.retained_success().expect("retained success");
+        assert_eq!(retained.response().0, 12);
+        assert_eq!(retained.provenance().source(), "provider");
+        assert!(read.new_completion().is_none());
+    }
+
+    #[test]
     fn request_completion_is_one_shot_without_implicit_retry() {
         let mut request = Request::<u8, (), u16>::inactive();
         request.select(4, true);

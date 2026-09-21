@@ -1332,9 +1332,9 @@ where
         self.delivery_context = None;
         self.read_workers.clear();
         let mut first_error = None;
-        for operation in self.operations.values_mut() {
+        for (field, operation) in &mut self.operations {
             if let Err(error) = operation.operation.reset() {
-                first_error.get_or_insert(anyhow::anyhow!(error));
+                first_error.get_or_insert_with(|| operation_error(field, error));
             }
             operation.keys.clear();
             operation.pending_key = None;
@@ -1392,11 +1392,11 @@ where
         self.next_command_id = 1;
         self.last_product_receipts.clear();
         self.last_actuations.clear();
-        for operation in self.operations.values_mut() {
+        for (field, operation) in &mut self.operations {
             operation
                 .operation
                 .reset()
-                .map_err(|error| anyhow::anyhow!(error))?;
+                .map_err(|error| operation_error(field, error))?;
             operation.keys.clear();
             operation.pending_key = None;
         }

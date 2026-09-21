@@ -43,7 +43,7 @@ pub(super) struct Views {
     current: Option<Arc<Snapshot>>,
     pinned: Option<(u64, Arc<Snapshot>)>,
     timeline: Option<String>,
-    generation: Arc<()>,
+    generation: CancellationToken,
 }
 
 impl Views {
@@ -88,7 +88,8 @@ impl Views {
     pub(super) fn clear(&mut self) {
         self.current = None;
         self.pinned = None;
-        self.generation = Arc::new(());
+        self.generation.cancel();
+        self.generation = CancellationToken::new();
     }
 }
 
@@ -224,7 +225,7 @@ impl Drop for QueryPermit {
 }
 
 struct ActiveQuery {
-    generation: Arc<()>,
+    generation: CancellationToken,
     sample: WireSample,
     context: StepContext,
     worker: tokio::task::JoinHandle<crate::Result<PreparedOutput>>,
@@ -246,7 +247,10 @@ impl Endpoint {
             .is_some()
     }
 
-    fn view(&self, sample: &WireSample) -> crate::Result<(Arc<()>, StepContext, Arc<ReadView>)> {
+    fn view(
+        &self,
+        sample: &WireSample,
+    ) -> crate::Result<(CancellationToken, StepContext, Arc<ReadView>)> {
         let views = self.views.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = if sample.metadata().execution_id.is_some() {
             anyhow::ensure!(
@@ -279,11 +283,7 @@ impl Endpoint {
             .views
             .get(self.field)
             .ok_or_else(|| anyhow::anyhow!("Read projection missing"))?;
-        Ok((
-            Arc::clone(&views.generation),
-            snapshot.context,
-            Arc::clone(view),
-        ))
+        Ok((views.generation.clone(), snapshot.context, Arc::clone(view)))
     }
 
     async fn retire(&self, query: ActiveQuery) -> crate::Result<()> {
@@ -306,11 +306,16 @@ impl Endpoint {
         mut output: PreparedOutput,
         sample: &WireSample,
         timeout: Duration,
-    ) -> crate::Result<PreparedOutput> {
+        generation: &CancellationToken,
+    ) -> crate::Result<Option<PreparedOutput>> {
         let metadata = sample.metadata();
         let Some(execution) = metadata.execution_id.as_deref() else {
-            output.publish_async(&self.bus, &self.instance).await?;
-            return Ok(output);
+            tokio::select! {
+                biased;
+                _ = generation.cancelled() => return Ok(None),
+                result = output.publish_async(&self.bus, &self.instance) => result?,
+            }
+            return Ok(Some(output));
         };
         let timeline = metadata
             .timeline_id
@@ -323,14 +328,20 @@ impl Endpoint {
         let (port, direction, target, sequence, item, bytes) = output
             .delivery_receipt(0)
             .ok_or_else(|| anyhow::anyhow!("Read reply has no delivery identity"))?;
-        output.publish_async(&self.bus, &self.instance).await?;
+        tokio::select! {
+            biased;
+            _ = generation.cancelled() => return Ok(None),
+            result = output.publish_async(&self.bus, &self.instance) => result?,
+        }
         let reply_acks = self
             .reply_acks
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("required Read has no reply admission channel"))?;
-        tokio::time::timeout(timeout, async {
+        let admitted = tokio::time::timeout(timeout, async {
             loop {
                 let ack: super::execution_wire::DeliveryAck = tokio::select! {
+                    biased;
+                    _ = generation.cancelled() => return Ok(false),
                     _ = self.cancel.cancelled() => anyhow::bail!("Read reply admission cancelled"),
                     ack = super::recv_execution(reply_acks) => ack?,
                 };
@@ -352,11 +363,14 @@ impl Endpoint {
                     "Read reply receiver refused admission: {}",
                     ack.detail.unwrap_or_default()
                 );
-                return Ok::<_, anyhow::Error>(());
+                return Ok::<_, anyhow::Error>(true);
             }
         })
         .await
         .map_err(|_| anyhow::anyhow!("Read reply receiver admission timed out"))??;
+        if !admitted {
+            return Ok(None);
+        }
         let identity = super::input::DeliveryQueue::new(
             1,
             self.max_request_bytes,
@@ -368,12 +382,26 @@ impl Endpoint {
             self.signature.name,
             "request",
         )?;
-        super::input::publish_delivery_ack(&self.bus, &identity, "delivery-ack", true, None)
-            .await?;
-        Ok(output)
+        tokio::select! {
+            biased;
+            _ = generation.cancelled() => return Ok(None),
+            result = super::input::publish_delivery_ack(
+                &self.bus,
+                &identity,
+                "delivery-ack",
+                true,
+                None,
+            ) => result?,
+        }
+        Ok(Some(output))
     }
 
-    async fn reject_required(&self, sample: &WireSample, detail: String) -> crate::Result<()> {
+    async fn reject_required(
+        &self,
+        sample: &WireSample,
+        detail: String,
+        generation: &CancellationToken,
+    ) -> crate::Result<()> {
         let identity = super::input::DeliveryQueue::new(
             1,
             self.max_request_bytes,
@@ -385,14 +413,17 @@ impl Endpoint {
             self.signature.name,
             "request",
         )?;
-        super::input::publish_delivery_ack(
-            &self.bus,
-            &identity,
-            "delivery-ack",
-            false,
-            Some(detail),
-        )
-        .await
+        tokio::select! {
+            biased;
+            _ = generation.cancelled() => Ok(()),
+            result = super::input::publish_delivery_ack(
+                &self.bus,
+                &identity,
+                "delivery-ack",
+                false,
+                Some(detail),
+            ) => result,
+        }
     }
 
     async fn refuse(
@@ -400,18 +431,22 @@ impl Endpoint {
         sample: &WireSample,
         context: StepContext,
         control: transport::WireControl,
+        generation: &CancellationToken,
     ) -> crate::Result<()> {
         anyhow::ensure!(
             sample.metadata().execution_id.is_none(),
             "required Read cannot return a scheduling-dependent refusal"
         );
-        PreparedOutput::read_refusal(
+        let output = PreparedOutput::read_refusal(
             self.signature,
             control,
             transport::reply_metadata_for_request(&self.instance, context, sample.metadata())?,
-        )
-        .publish_async(&self.bus, &self.instance)
-        .await
+        );
+        tokio::select! {
+            biased;
+            _ = generation.cancelled() => Ok(()),
+            result = output.publish_async(&self.bus, &self.instance) => result,
+        }
     }
 
     async fn run(self, subscriber: super::input::RuntimeSubscription) -> crate::Result<()> {
@@ -419,7 +454,12 @@ impl Endpoint {
         let mut active: Option<ActiveQuery> = None;
         let mut deadline = tokio::time::Instant::now();
         let mut completed = BTreeMap::<String, CachedReply>::new();
-        let mut generation = Arc::new(());
+        let mut generation = self
+            .views
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation
+            .clone();
         loop {
             let current_generation = self
                 .views
@@ -427,9 +467,9 @@ impl Endpoint {
                 .unwrap_or_else(|e| e.into_inner())
                 .generation
                 .clone();
-            if !Arc::ptr_eq(&generation, &current_generation) {
+            if generation.is_cancelled() {
                 completed.clear();
-                generation = current_generation;
+                generation = current_generation.clone();
             }
             tokio::select! {
                 biased;
@@ -442,7 +482,7 @@ impl Endpoint {
                     None => std::future::pending().await,
                 }} => {
                     let query = active.take().ok_or_else(|| anyhow::anyhow!("Read worker completion has no owner"))?;
-                    if !Arc::ptr_eq(&self.views.lock().unwrap_or_else(|e| e.into_inner()).generation, &query.generation) { continue; }
+                    if query.generation.is_cancelled() { continue; }
                     let output = match result? {
                         Ok(output) => output,
                         Err(error) => {
@@ -450,17 +490,18 @@ impl Endpoint {
                                 transport::WireControl::Oversized
                             } else { transport::WireControl::Failed };
                             if query.sample.metadata().execution_id.is_some() {
-                                self.reject_required(&query.sample, error.to_string()).await?;
+                                self.reject_required(&query.sample, error.to_string(), &query.generation).await?;
                             } else {
-                                self.refuse(&query.sample, query.context, control).await?;
+                                self.refuse(&query.sample, query.context, control, &query.generation).await?;
                             }
                             continue;
                         }
                     };
-                    let output = match self.publish_reply(output, &query.sample, query.timeout).await {
-                        Ok(output) => output,
+                    let output = match self.publish_reply(output, &query.sample, query.timeout, &query.generation).await {
+                        Ok(Some(output)) => output,
+                        Ok(None) => continue,
                         Err(error) if query.sample.metadata().execution_id.is_some() => {
-                            self.reject_required(&query.sample, error.to_string()).await?;
+                            self.reject_required(&query.sample, error.to_string(), &query.generation).await?;
                             continue;
                         }
                         Err(error) => return Err(error),
@@ -485,7 +526,7 @@ impl Endpoint {
                     let (current_generation, context, view) = match self.view(&sample) {
                         Ok(view) => view,
                         Err(error) if sample.metadata().execution_id.is_some() => {
-                            self.reject_required(&sample, error.to_string()).await?;
+                            self.reject_required(&sample, error.to_string(), &current_generation).await?;
                             continue;
                         }
                         Err(error) => return Err(error),
@@ -498,7 +539,7 @@ impl Endpoint {
                         let previous_correlation = previous.request.metadata().ingress_sequence.or(previous.request.metadata().command_id);
                         if correlation == previous_correlation {
                             anyhow::ensure!(sample.metadata() == previous.request.metadata() && sample.payload() == previous.request.payload(), "Read correlation reused with different request bytes");
-                            self.publish_reply(previous.output.clone(), &sample, timeout).await?;
+                            self.publish_reply(previous.output.clone(), &sample, timeout, &current_generation).await?;
                             continue;
                         }
                         anyhow::ensure!(correlation > previous_correlation, "Read correlation is stale");
@@ -506,13 +547,13 @@ impl Endpoint {
                     let required = sample.metadata().execution_id.is_some();
                     let permit = if required { None } else {
                         if self.hardware_busy.swap(true, Ordering::AcqRel) {
-                            self.refuse(&sample, context, transport::WireControl::Busy).await?;
+                            self.refuse(&sample, context, transport::WireControl::Busy, &current_generation).await?;
                             continue;
                         }
                         Some(QueryPermit(self.hardware_busy.clone()))
                     };
                     if sample.payload().len() as u64 > self.max_request_bytes {
-                        self.refuse(&sample, context, transport::WireControl::Oversized).await?;
+                        self.refuse(&sample, context, transport::WireControl::Oversized, &current_generation).await?;
                         continue;
                     }
                     transport::validate_request(self.signature, &sample, self.max_request_bytes)?;
