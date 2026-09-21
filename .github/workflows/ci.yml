@@ -45,19 +45,17 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # The example workspace test exercises the packages the
-      # `examples/runtime-rewrite` workspace declares (`services/counter*`,
-      # `fixture-check`, `robots/robot-alpha`, `robots/robot-beta`), which
-      # already covers the MuJoCo fixture-check package.
-      # Per-robot `cargo phoxal check` invocations for `workspace-robot` and
-      # `simulation-rover` (which each declare their own `[workspace]`) and
+      # The example workspace compiles the minimal Runtime and the reusable
+      # counter service plus its owner contract.
+      # Per-robot `cargo phoxal check` invocations for `composed` and
+      # `moving-rover` (which each declare their own `[workspace]`) and
       # the passive-component publish dry run were intentionally removed:
       # the subprocess and publication tests under `phoxal/cargo/tests/`
       # already cover the publication path, and change-scoped acceptance is
       # run against the relevant robot or component instead of every
       # maintained example on every PR.
       - name: Test the example workspace
-        run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all-targets
+        run: cargo test --manifest-path examples/Cargo.toml --workspace --all-targets --locked
 
   # Every consumer profile, built explicitly.
   #

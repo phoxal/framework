@@ -60,6 +60,10 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut sink_reads = Vec::new();
     let mut sink_requests = Vec::new();
     let mut sink_operations = Vec::new();
+    let mut restore_managed = Vec::new();
+    let mut select_managed = Vec::new();
+    let mut retire_managed = Vec::new();
+    let mut take_managed = Vec::new();
     let mut field_names = Vec::new();
     for field in fields.iter_mut() {
         let Some(field_name) = field.ident.clone() else {
@@ -224,6 +228,44 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             InputKind::Read => sink_reads.push(sink.read),
             InputKind::Request => sink_requests.push(sink.request),
             InputKind::Operation => sink_operations.push(sink.operation),
+        }
+        if matches!(
+            kind,
+            InputKind::Read | InputKind::Request | InputKind::Operation
+        ) {
+            let key = match kind {
+                InputKind::Read | InputKind::Request => generic_types3(&ty, field)?.0,
+                InputKind::Operation => generic_types2(&ty, field)?.0,
+                _ => unreachable!(),
+            };
+            let type_error = sink_type_error(&quote!(stringify!(#field_name)));
+            restore_managed.push(quote! {
+                stringify!(#field_name) => {
+                    let value = value.downcast::<#ty>().map_err(|_| #type_error)?;
+                    self.#field_name = *value;
+                    Ok(())
+                }
+            });
+            select_managed.push(quote! {
+                stringify!(#field_name) => {
+                    let key = key.downcast::<#key>().map_err(|_| #type_error)?;
+                    self.#field_name.select(*key, attempt_started);
+                    Ok(())
+                }
+            });
+            retire_managed.push(quote! {
+                stringify!(#field_name) => {
+                    self.#field_name = ::core::default::Default::default();
+                    Ok(())
+                }
+            });
+            take_managed.push(quote! {
+                stringify!(#field_name) => {
+                    self.#field_name.finish_invocation();
+                    Ok(::std::boxed::Box::new(::core::mem::take(&mut self.#field_name))
+                        as ::phoxal::runtime::input::TransportValue)
+                }
+            });
         }
     }
 
@@ -458,11 +500,60 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     ::phoxal::runtime::input::TransportValue,
                     ::phoxal::runtime::input::ReadError,
                 >,
+                provenance: ::core::option::Option<::phoxal::runtime::ObservationStamp>,
             ) -> ::phoxal::Result<()> {
                 match field {
                     #(#sink_reads,)*
                     _ => Err(::phoxal::__private::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
                         detail: format!("input field `{field}` is not a read"),
+                    })),
+                }
+            }
+
+            fn restore_managed(
+                &mut self,
+                field: &str,
+                value: ::phoxal::runtime::input::TransportValue,
+            ) -> ::phoxal::Result<()> {
+                match field {
+                    #(#restore_managed,)*
+                    _ => Err(::phoxal::__private::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                        detail: format!("input field `{field}` has no managed state"),
+                    })),
+                }
+            }
+
+            fn select_managed(
+                &mut self,
+                field: &str,
+                key: ::phoxal::runtime::input::TransportValue,
+                attempt_started: bool,
+            ) -> ::phoxal::Result<()> {
+                match field {
+                    #(#select_managed,)*
+                    _ => Err(::phoxal::__private::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                        detail: format!("input field `{field}` has no managed state"),
+                    })),
+                }
+            }
+
+            fn retire_managed(&mut self, field: &str) -> ::phoxal::Result<()> {
+                match field {
+                    #(#retire_managed,)*
+                    _ => Err(::phoxal::__private::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                        detail: format!("input field `{field}` has no managed state"),
+                    })),
+                }
+            }
+
+            fn take_managed(
+                &mut self,
+                field: &str,
+            ) -> ::phoxal::Result<::phoxal::runtime::input::TransportValue> {
+                match field {
+                    #(#take_managed,)*
+                    _ => Err(::phoxal::__private::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                        detail: format!("input field `{field}` has no managed state"),
                     })),
                 }
             }
@@ -1023,7 +1114,7 @@ fn expand_transport_decoder(
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
             bounds.push(quote! {
-                #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
+                #key: ::core::convert::From<u64> + ::core::cmp::Eq + ::core::marker::Send + 'static,
             });
             quote! {
                 #field_text => {
@@ -1103,6 +1194,7 @@ fn expand_transport_decoder(
                         #field_text,
                         key,
                         result,
+                        Some(_completion_stamp),
                     )
                 }
             }
@@ -1119,7 +1211,7 @@ fn expand_transport_decoder(
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
             bounds.push(quote! {
-                #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
+                #key: ::core::convert::From<u64> + ::core::cmp::Eq + ::core::marker::Send + 'static,
             });
             quote! {
                 #field_text => {
@@ -1425,7 +1517,7 @@ fn expand_transport_sink(
                         }
                         Err(error) => Err(error),
                     };
-                    self.#field_name = ::phoxal::runtime::Read::completed(*key, result);
+                    self.#field_name.admit(*key, result, provenance);
                     Ok(())
                 }
             };
@@ -1442,7 +1534,7 @@ fn expand_transport_sink(
                         }
                         Err(error) => Err(error),
                     };
-                    self.#field_name = ::phoxal::runtime::Request::completed(*key, result);
+                    self.#field_name.admit(*key, result);
                     Ok(())
                 }
             };
@@ -1459,7 +1551,7 @@ fn expand_transport_sink(
                         }
                         Err(error) => Err(error),
                     };
-                    self.#field_name = ::phoxal::runtime::Operation::completed(*key, result);
+                    self.#field_name.admit(*key, result);
                     Ok(())
                 }
             };

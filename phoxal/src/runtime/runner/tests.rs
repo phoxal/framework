@@ -1,6 +1,6 @@
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -824,6 +824,7 @@ impl crate::runtime::input::TransportInputSink for TransportInputs {
         field: &str,
         _key: crate::runtime::input::TransportValue,
         _result: Result<crate::runtime::input::TransportValue, ReadError>,
+        _provenance: Option<crate::runtime::ObservationStamp>,
     ) -> crate::Result<()> {
         Err(anyhow::anyhow!(format!("unexpected read field {field}")))
     }
@@ -1266,12 +1267,331 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
 }
 
 #[crate::runtime::inputs]
+struct RequestClientInputs {
+    #[crate::runtime::input(max_response_bytes = 64)]
+    request: crate::runtime::Request<u64, TransportRequest, TransportResponse>,
+}
+
+type RequestObservation = (
+    crate::runtime::ReadStatus,
+    bool,
+    Option<Result<u32, RequestError>>,
+);
+
+struct RequestClientRuntime {
+    selected_key: Arc<Mutex<Option<u64>>>,
+    observations: Arc<Mutex<Vec<RequestObservation>>>,
+}
+
+impl Runtime for RequestClientRuntime {
+    type Config = ();
+    type State = ();
+    type Inputs = RequestClientInputs;
+    type Outputs = ();
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(())
+    }
+
+    fn step(
+        &self,
+        _ctx: &StepContext,
+        state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        let completion = inputs.request.new_completion().map(|completion| {
+            completion
+                .result()
+                .map(|response| response.value)
+                .map_err(Clone::clone)
+        });
+        self.observations.lock().unwrap().push((
+            inputs.request.status(),
+            completion.is_some(),
+            completion,
+        ));
+        Ok((state, ()))
+    }
+}
+
+impl RegisteredRuntime for RequestClientRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn __retain_artifact_metadata() {}
+}
+
+#[crate::runtime::outputs]
+impl RequestClientRuntime {
+    #[crate::runtime::outputs::activate(request, timeout_ms = 25)]
+    fn request(&self, _state: &()) -> Option<crate::runtime::Activation<u64, TransportRequest>> {
+        self.selected_key
+            .lock()
+            .unwrap()
+            .map(|key| crate::runtime::Activation::new(key, TransportRequest { value: 41 }))
+    }
+}
+
+fn request_client_manifest() -> RuntimeLaunchManifest {
+    let signature = SourcePortSignature {
+        name: TRANSPORT_PORT.name.to_owned(),
+        service: TRANSPORT_PORT.service.to_owned(),
+        method: TRANSPORT_PORT.method.to_owned(),
+        kind: TRANSPORT_PORT.kind.as_str().to_owned(),
+        request: TRANSPORT_PORT.request.to_owned(),
+        response: TRANSPORT_PORT.response.to_owned(),
+    };
+    RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "typed-request-test".to_owned(),
+        instance_id: "request-client".to_owned(),
+        executable: PathBuf::from("typed-request-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections: BTreeMap::from([(
+            "request-client.request".to_owned(),
+            vec!["server.transport-commands".to_owned()],
+        )]),
+        artifacts: BTreeMap::from([(
+            "server".to_owned(),
+            SourceRuntimeRecord {
+                period_ms: Some(1),
+                timeout_ms: Some(100),
+                init_timeout_ms: Some(100),
+                inputs: vec![SourceInputRecord {
+                    name: "commands".to_owned(),
+                    kind: "commands".to_owned(),
+                    max_items: Some(4),
+                    max_bytes: Some(1024),
+                    port: Some(TRANSPORT_PORT.name.to_owned()),
+                    signature: Some(signature),
+                }],
+                transient_outputs: vec![SourceOutputRecord {
+                    name: "replies".to_owned(),
+                    kind: "reply".to_owned(),
+                    port: Some(TRANSPORT_PORT.name.to_owned()),
+                    signature: None,
+                    input: Some("commands".to_owned()),
+                    max_items: Some(4),
+                    max_bytes: Some(1024),
+                    max_request_bytes: None,
+                }],
+                service_outputs: Vec::new(),
+            },
+        )]),
+        scenario_producers: BTreeMap::new(),
+        observation_providers: BTreeMap::new(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset()
+-> crate::Result<()> {
+    use zenoh::bytes::Encoding;
+
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("request-client")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let manifest = request_client_manifest();
+    let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let expired = Arc::new(Mutex::new(BTreeSet::new()));
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let exchanges = Arc::new(Mutex::new(Vec::new()));
+    let activations = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut input = ExecutionInputAdapter::<RequestClientRuntime>::unbound().with_shared_state(
+        Arc::clone(&correlations),
+        Arc::clone(&expired),
+        Arc::clone(&operations),
+        Arc::clone(&exchanges),
+        Arc::clone(&activations),
+    );
+    input.bind(bus.clone(), &manifest).await?;
+    let mut output = ExecutionOutputAdapter::<RequestClientRuntime>::unbound().with_shared_state(
+        correlations,
+        expired,
+        operations,
+        exchanges,
+        activations,
+    );
+    output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let selected_key = Arc::new(Mutex::new(Some(9)));
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = RuntimeRunner::new(
+        RequestClientRuntime {
+            selected_key: Arc::clone(&selected_key),
+            observations: Arc::clone(&observations),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+    let requests = bus
+        .session()?
+        .declare_subscriber(bus.full_key(&transport::port_key(
+            "server",
+            TRANSPORT_PORT.name,
+            "request",
+        )))
+        .with(zenoh::handlers::FifoChannel::new(4))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    runner.poll(ExecutionTime::default())?;
+    let first = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+            .await?
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )?;
+    assert_eq!(TransportRequest::decode(first.payload())?.value, 41);
+    runner.poll(ExecutionTime::from_nanos(1_000_000))?;
+    assert!(
+        requests
+            .try_recv()
+            .expect("request queue remains readable")
+            .is_none(),
+        "pending key must not resend"
+    );
+
+    let metadata = first.metadata();
+    let reply_metadata = transport::reply_metadata(
+        "server",
+        StepContext::first(
+            ExecutionTime::from_nanos(2_000_000),
+            ExecutionDuration::from_millis(1),
+        ),
+        metadata.command_id(),
+        metadata.eligible_boundary(),
+        metadata.caller_rank.expect("request caller rank"),
+    )
+    .with_caller(metadata.caller.clone().expect("request caller"))
+    .encode_bounded()?;
+    bus.session()?
+        .put(
+            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            transport::encode_prost(&TransportResponse { value: 42 })?,
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(reply_metadata)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(2_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(3_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().as_slice(),
+        &[
+            (crate::runtime::ReadStatus::Inactive, false, None),
+            (crate::runtime::ReadStatus::Pending, false, None),
+            (crate::runtime::ReadStatus::Completed, true, Some(Ok(42))),
+            (crate::runtime::ReadStatus::Completed, false, None),
+        ]
+    );
+    assert!(
+        requests
+            .try_recv()
+            .expect("request queue remains readable")
+            .is_none(),
+        "completed key must not resend"
+    );
+
+    *selected_key.lock().unwrap() = None;
+    runner.poll(ExecutionTime::from_nanos(4_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(5_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().last(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false, None))
+    );
+
+    *selected_key.lock().unwrap() = Some(9);
+    runner.poll(ExecutionTime::from_nanos(6_000_000))?;
+    let retry = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+            .await?
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )?;
+    assert_ne!(retry.metadata().command_id, first.metadata().command_id);
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(8_000_000))?;
+    assert!(matches!(
+        observations.lock().unwrap().as_slice(),
+        [
+            ..,
+            (
+                crate::runtime::ReadStatus::Completed,
+                true,
+                Some(Err(RequestError::OutcomeUnknown(_)))
+            ),
+            (crate::runtime::ReadStatus::Completed, false, None)
+        ]
+    ));
+    assert!(
+        requests
+            .try_recv()
+            .expect("request queue remains readable")
+            .is_none(),
+        "unknown outcome must not retry implicitly"
+    );
+
+    let retry_metadata = retry.metadata();
+    let late_reply_metadata = transport::reply_metadata(
+        "server",
+        StepContext::first(
+            ExecutionTime::from_nanos(9_000_000),
+            ExecutionDuration::from_millis(1),
+        ),
+        retry_metadata.command_id(),
+        retry_metadata.eligible_boundary(),
+        retry_metadata
+            .caller_rank
+            .expect("late request caller rank"),
+    )
+    .with_caller(retry_metadata.caller.clone().expect("late request caller"))
+    .encode_bounded()?;
+    bus.session()?
+        .put(
+            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            transport::encode_prost(&TransportResponse { value: 99 })?,
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(late_reply_metadata)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(9_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().last(),
+        Some(&(crate::runtime::ReadStatus::Completed, false, None)),
+        "a late reply cannot publish a second completion"
+    );
+
+    runner.reset(ExecutionTime::from_nanos(10_000_000), ())?;
+    *selected_key.lock().unwrap() = None;
+    runner.poll(ExecutionTime::from_nanos(10_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().last(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false, None))
+    );
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+#[crate::runtime::inputs]
 struct OperationInputs {
     operation: crate::runtime::Operation<u64, u32>,
 }
 
 struct OperationRuntime {
     completion: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<(crate::runtime::ReadStatus, bool)>>>,
 }
 
 impl Runtime for OperationRuntime {
@@ -1290,6 +1610,10 @@ impl Runtime for OperationRuntime {
         state: Self::State,
         inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)> {
+        self.observations.lock().unwrap().push((
+            inputs.operation.status(),
+            inputs.operation.new_completion().is_some(),
+        ));
         if let Some(completion) = inputs.operation.new_completion() {
             let value = completion
                 .result()
@@ -1335,11 +1659,13 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
     let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
     let operation_completions = Arc::new(Mutex::new(Vec::new()));
     let exchange_completions = Arc::new(Mutex::new(Vec::new()));
+    let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
     let mut input = ExecutionInputAdapter::<OperationRuntime>::unbound().with_shared_state(
         Arc::clone(&correlations),
         Arc::clone(&expired_correlations),
         Arc::clone(&operation_completions),
         Arc::clone(&exchange_completions),
+        Arc::clone(&activation_states),
     );
     input
         .bind_direct(bus.clone(), "operation")
@@ -1350,12 +1676,15 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
         expired_correlations,
         operation_completions,
         exchange_completions,
+        activation_states,
     );
     output.bind_direct(bus.clone(), "operation");
     let completion = Arc::new(Mutex::new(None));
+    let observations = Arc::new(Mutex::new(Vec::new()));
     let mut runner = RuntimeRunner::new(
         OperationRuntime {
             completion: Arc::clone(&completion),
+            observations: Arc::clone(&observations),
         },
         ExecutionTime::default(),
         (),
@@ -1386,8 +1715,300 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
         *completion.lock().expect("operation completion lock"),
         Some(42)
     );
+    let final_index = observations.lock().unwrap().len() as u64;
+    runner.poll(ExecutionTime::from_nanos(final_index * 2_000_000))?;
+    let observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        observations.first(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false))
+    );
+    assert!(
+        observations
+            .iter()
+            .any(|observation| { *observation == (crate::runtime::ReadStatus::Completed, true) })
+    );
+    assert_eq!(
+        observations.last(),
+        Some(&(crate::runtime::ReadStatus::Completed, false))
+    );
     runner.stop().expect("runner stops");
     owner.close().await;
+    Ok(())
+}
+
+static REPLACEMENT_OPERATION_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static REPLACEMENT_OPERATION_MAX_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static REPLACEMENT_OPERATION_STARTED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+type OperationTestCompletion = (u64, Result<u32, OperationInputError>);
+
+struct ReplacementOperationRuntime {
+    selected: Arc<Mutex<Option<(u64, u32)>>>,
+    completions: Arc<Mutex<Vec<OperationTestCompletion>>>,
+}
+
+impl Runtime for ReplacementOperationRuntime {
+    type Config = ();
+    type State = ();
+    type Inputs = OperationInputs;
+    type Outputs = ();
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(())
+    }
+
+    fn step(
+        &self,
+        _ctx: &StepContext,
+        state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        if let Some(completion) = inputs.operation.new_completion() {
+            self.completions.lock().unwrap().push((
+                *completion.key(),
+                completion.result().copied().map_err(Clone::clone),
+            ));
+        }
+        Ok((state, ()))
+    }
+}
+
+impl RegisteredRuntime for ReplacementOperationRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn __retain_artifact_metadata() {}
+}
+
+#[crate::runtime::outputs]
+impl ReplacementOperationRuntime {
+    #[crate::runtime::outputs::activate(operation)]
+    fn activate(&self, _state: &()) -> Option<crate::runtime::Activation<u64, u32>> {
+        self.selected
+            .lock()
+            .unwrap()
+            .map(|(key, input)| crate::runtime::Activation::new(key, input))
+    }
+
+    #[crate::runtime::outputs::operation(operation, timeout_ms = 200, cancel_grace_ms = 100)]
+    fn run(input: u32) -> crate::Result<u32> {
+        REPLACEMENT_OPERATION_STARTED.lock().unwrap().push(input);
+        let active = REPLACEMENT_OPERATION_ACTIVE.fetch_add(1, Ordering::AcqRel) + 1;
+        REPLACEMENT_OPERATION_MAX_ACTIVE.fetch_max(active, Ordering::AcqRel);
+        if input == 1 {
+            std::thread::sleep(Duration::from_millis(40));
+        } else {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        REPLACEMENT_OPERATION_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        Ok(input)
+    }
+}
+
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_operation_runs_one_worker_and_only_the_latest_replacement() -> crate::Result<()>
+{
+    REPLACEMENT_OPERATION_ACTIVE.store(0, Ordering::Release);
+    REPLACEMENT_OPERATION_MAX_ACTIVE.store(0, Ordering::Release);
+    REPLACEMENT_OPERATION_STARTED.lock().unwrap().clear();
+
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("replacement-operation")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let expired = Arc::new(Mutex::new(BTreeSet::new()));
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let exchanges = Arc::new(Mutex::new(Vec::new()));
+    let activations = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut input = ExecutionInputAdapter::<ReplacementOperationRuntime>::unbound()
+        .with_shared_state(
+            Arc::clone(&correlations),
+            Arc::clone(&expired),
+            Arc::clone(&operations),
+            Arc::clone(&exchanges),
+            Arc::clone(&activations),
+        );
+    input
+        .bind_direct(bus.clone(), "replacement-operation")
+        .await?;
+    let mut output = ExecutionOutputAdapter::<ReplacementOperationRuntime>::unbound()
+        .with_shared_state(correlations, expired, operations, exchanges, activations);
+    output.bind_direct(bus.clone(), "replacement-operation");
+    let selected = Arc::new(Mutex::new(Some((1, 1))));
+    let completions = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = RuntimeRunner::new(
+        ReplacementOperationRuntime {
+            selected: Arc::clone(&selected),
+            completions: Arc::clone(&completions),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+
+    runner.poll(ExecutionTime::default())?;
+    *selected.lock().unwrap() = Some((2, 2));
+    runner.poll(ExecutionTime::from_nanos(1_000_000))?;
+    *selected.lock().unwrap() = Some((3, 3));
+    runner.poll(ExecutionTime::from_nanos(2_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(3_000_000))?;
+    assert!(matches!(
+        completions.lock().unwrap().as_slice(),
+        [(2, Err(OperationInputError::Stale))]
+    ));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    runner.poll(ExecutionTime::from_nanos(4_000_000))?;
+    for index in 5..=20 {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        runner.poll(ExecutionTime::from_nanos(index * 1_000_000))?;
+        if completions.lock().unwrap().len() == 2 {
+            runner.poll(ExecutionTime::from_nanos((index + 1) * 1_000_000))?;
+            break;
+        }
+    }
+
+    assert_eq!(
+        REPLACEMENT_OPERATION_STARTED.lock().unwrap().as_slice(),
+        &[1, 3],
+        "the superseded pending worker must never start"
+    );
+    assert_eq!(
+        REPLACEMENT_OPERATION_MAX_ACTIVE.load(Ordering::Acquire),
+        1,
+        "replacement cannot overlap the retiring owner"
+    );
+    let recorded = completions.lock().unwrap().clone();
+    assert!(
+        matches!(
+            recorded.as_slice(),
+            [(2, Err(OperationInputError::Stale)), (3, Ok(3))]
+        ),
+        "unexpected operation completions: {recorded:?}"
+    );
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+static UNRESPONSIVE_OPERATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct UnresponsiveOperationRuntime;
+
+impl Runtime for UnresponsiveOperationRuntime {
+    type Config = ();
+    type State = ();
+    type Inputs = OperationInputs;
+    type Outputs = ();
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(())
+    }
+
+    fn step(
+        &self,
+        _ctx: &StepContext,
+        state: Self::State,
+        _inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        Ok((state, ()))
+    }
+}
+
+impl RegisteredRuntime for UnresponsiveOperationRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn __retain_artifact_metadata() {}
+}
+
+#[crate::runtime::outputs]
+impl UnresponsiveOperationRuntime {
+    #[crate::runtime::outputs::activate(operation)]
+    fn activate(&self, _state: &()) -> Option<crate::runtime::Activation<u64, u32>> {
+        Some(crate::runtime::Activation::new(1, 1))
+    }
+
+    #[crate::runtime::outputs::operation(operation, timeout_ms = 1000, cancel_grace_ms = 5)]
+    fn run(input: u32) -> crate::Result<u32> {
+        UNRESPONSIVE_OPERATION_ACTIVE.store(true, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(50));
+        UNRESPONSIVE_OPERATION_ACTIVE.store(false, Ordering::Release);
+        Ok(input)
+    }
+}
+
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runner_stop_escalates_when_operation_outlives_its_retirement_grace() -> crate::Result<()> {
+    UNRESPONSIVE_OPERATION_ACTIVE.store(false, Ordering::Release);
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("unresponsive-operation")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let expired = Arc::new(Mutex::new(BTreeSet::new()));
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let exchanges = Arc::new(Mutex::new(Vec::new()));
+    let activations = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut input = ExecutionInputAdapter::<UnresponsiveOperationRuntime>::unbound()
+        .with_shared_state(
+            Arc::clone(&correlations),
+            Arc::clone(&expired),
+            Arc::clone(&operations),
+            Arc::clone(&exchanges),
+            Arc::clone(&activations),
+        );
+    input
+        .bind_direct(bus.clone(), "unresponsive-operation")
+        .await?;
+    let mut output = ExecutionOutputAdapter::<UnresponsiveOperationRuntime>::unbound()
+        .with_shared_state(correlations, expired, operations, exchanges, activations);
+    output.bind_direct(bus, "unresponsive-operation");
+    let mut runner = RuntimeRunner::new(
+        UnresponsiveOperationRuntime,
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+    runner.poll(ExecutionTime::default())?;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !UNRESPONSIVE_OPERATION_ACTIVE.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    let error = runner
+        .stop()
+        .expect_err("an unresponsive operation requires process replacement");
+    assert!(error.chain().any(|cause| {
+        cause.downcast_ref::<RunnerError>().is_some_and(|error| {
+            matches!(
+                error,
+                RunnerError::ProcessTerminationRequired {
+                    field: "operation",
+                    ..
+                }
+            )
+        })
+    }));
+    assert!(
+        UNRESPONSIVE_OPERATION_ACTIVE.load(Ordering::Acquire),
+        "stop must not join an owner after its retirement grace"
+    );
+    owner.close().await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
     Ok(())
 }
 
@@ -1444,23 +2065,26 @@ struct PublicReadRuntime {
     delay: Duration,
 }
 
+struct PublicReadState(u32);
+
 impl Runtime for PublicReadRuntime {
     type Config = ();
-    type State = u32;
+    type State = PublicReadState;
     type Inputs = ReadClientInputs;
     type Outputs = ();
 
     fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
-        Ok(41)
+        Ok(PublicReadState(41))
     }
 
     fn step(
         &self,
         _ctx: &StepContext,
-        state: Self::State,
+        mut state: Self::State,
         _inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), ()))
+        state.0 = state.0.saturating_add(1);
+        Ok((state, ()))
     }
 }
 
@@ -1472,8 +2096,8 @@ impl RegisteredRuntime for PublicReadRuntime {
 
 #[crate::runtime::outputs]
 impl PublicReadRuntime {
-    fn view(&self, state: &u32) -> u32 {
-        *state
+    fn view(&self, state: &PublicReadState) -> u32 {
+        state.0
     }
 
     #[crate::runtime::outputs::read(
@@ -1510,7 +2134,10 @@ struct ReadClientInputs {
 struct ReadClientRuntime {
     selected_key: Arc<Mutex<Option<u64>>>,
     response: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<ReadObservation>>>,
 }
+
+type ReadObservation = (crate::runtime::ReadStatus, bool, Option<(u32, String, u64)>);
 
 impl Runtime for ReadClientRuntime {
     type Config = ();
@@ -1528,10 +2155,21 @@ impl Runtime for ReadClientRuntime {
         state: Self::State,
         inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)> {
-        if let Some(completion) = inputs.read.new_completion() {
-            let response = completion
-                .result()
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let retained = inputs.read.retained_success().map(|success| {
+            (
+                success.response().value,
+                success.provenance().source().to_owned(),
+                success.provenance().capture_time().as_nanos(),
+            )
+        });
+        self.observations.lock().unwrap().push((
+            inputs.read.status(),
+            inputs.read.new_completion().is_some(),
+            retained,
+        ));
+        if let Some(completion) = inputs.read.new_completion()
+            && let Ok(response) = completion.result()
+        {
             *self.response.lock().expect("read response lock") = Some(response.value);
         }
         Ok((state, ()))
@@ -1546,7 +2184,7 @@ impl RegisteredRuntime for ReadClientRuntime {
 
 #[crate::runtime::outputs]
 impl ReadClientRuntime {
-    #[crate::runtime::outputs::activate(read, timeout_ms = 100)]
+    #[crate::runtime::outputs::activate(read, timeout_ms = 100, refresh_every_steps = 4)]
     fn request(&self, _state: &()) -> Option<crate::runtime::Activation<u64, ReadRequest>> {
         self.selected_key
             .lock()
@@ -1560,6 +2198,7 @@ async fn read_client_runner(
     manifest: &RuntimeLaunchManifest,
     selected_key: Arc<Mutex<Option<u64>>>,
     response: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<ReadObservation>>>,
 ) -> crate::Result<
     RuntimeRunner<
         ReadClientRuntime,
@@ -1572,11 +2211,13 @@ async fn read_client_runner(
     let expired = Arc::new(Mutex::new(BTreeSet::new()));
     let operations = Arc::new(Mutex::new(Vec::new()));
     let exchanges = Arc::new(Mutex::new(Vec::new()));
+    let activations = Arc::new(Mutex::new(BTreeMap::new()));
     let mut input = ExecutionInputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
         Arc::clone(&correlations),
         Arc::clone(&expired),
         Arc::clone(&operations),
         Arc::clone(&exchanges),
+        Arc::clone(&activations),
     );
     input.bind(bus.clone(), manifest).await?;
     let mut output = ExecutionOutputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
@@ -1584,6 +2225,7 @@ async fn read_client_runner(
         expired,
         operations,
         exchanges,
+        activations,
     );
     output
         .bind(bus.clone(), &manifest.instance_id, manifest)
@@ -1593,6 +2235,7 @@ async fn read_client_runner(
         ReadClientRuntime {
             selected_key,
             response,
+            observations,
         },
         ExecutionTime::default(),
         (),
@@ -1676,12 +2319,14 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         .await
         .expect("request subscriber");
     let response = Arc::new(Mutex::new(None));
+    let observations = Arc::new(Mutex::new(Vec::new()));
     let selected_key = Arc::new(Mutex::new(Some(9)));
     let mut runner = read_client_runner(
         &bus,
         &manifest,
         Arc::clone(&selected_key),
         Arc::clone(&response),
+        Arc::clone(&observations),
     )
     .await?;
     assert!(matches!(
@@ -1702,11 +2347,13 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     other_manifest.instance_id = "other".to_owned();
     let other_key = Arc::new(Mutex::new(Some(99)));
     let other_response = Arc::new(Mutex::new(None));
+    let other_observations = Arc::new(Mutex::new(Vec::new()));
     let mut other = read_client_runner(
         &bus,
         &other_manifest,
         Arc::clone(&other_key),
         Arc::clone(&other_response),
+        other_observations,
     )
     .await?;
     other.poll(ExecutionTime::default())?;
@@ -1779,10 +2426,84 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
             .is_none(),
         "same completed key must not resend"
     );
-    *selected_key.lock().unwrap() = None;
+    assert_eq!(
+        observations.lock().unwrap().as_slice(),
+        &[
+            (crate::runtime::ReadStatus::Inactive, false, None),
+            (crate::runtime::ReadStatus::Pending, false, None),
+            (crate::runtime::ReadStatus::Completed, true, None),
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+        ]
+    );
     runner.poll(ExecutionTime::from_nanos(4_000_000))?;
-    *selected_key.lock().unwrap() = Some(9);
+    let refresh = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+        .await?
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let refresh = WireSample::from_zenoh(refresh)?;
     runner.poll(ExecutionTime::from_nanos(5_000_000))?;
+    let refresh_metadata = refresh.metadata();
+    let failure_metadata = crate::runtime::transport::reply_metadata(
+        "reader",
+        StepContext::first(
+            ExecutionTime::from_nanos(6_000_000),
+            ExecutionDuration::from_millis(1),
+        ),
+        refresh_metadata.command_id.expect("refresh command id"),
+        refresh_metadata
+            .eligible_boundary
+            .expect("refresh boundary"),
+        refresh_metadata.caller_rank.expect("refresh caller rank"),
+    )
+    .with_caller(
+        refresh_metadata
+            .caller
+            .clone()
+            .expect("refresh request caller"),
+    );
+    crate::runtime::transport::PreparedOutput::read_refusal(
+        READ_PORT.signature(),
+        crate::runtime::transport::WireControl::Failed,
+        failure_metadata,
+    )
+    .publish_async(&bus, "reader")
+    .await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(6_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    let refresh_observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        &refresh_observations[4..8],
+        &[
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Pending,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Completed,
+                true,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+        ]
+    );
+    *selected_key.lock().unwrap() = None;
+    runner.poll(ExecutionTime::from_nanos(8_000_000))?;
+    *selected_key.lock().unwrap() = Some(9);
+    runner.poll(ExecutionTime::from_nanos(9_000_000))?;
     let retry = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
         .await?
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -1793,7 +2514,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         "reactivation after None starts a fresh attempt"
     );
     *selected_key.lock().unwrap() = Some(10);
-    runner.poll(ExecutionTime::from_nanos(6_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(10_000_000))?;
     let replacement = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
         .await?
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -1802,13 +2523,31 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         replacement.metadata().command_id,
         retry.metadata().command_id
     );
-    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(11_000_000))?;
     assert!(
         requests
             .try_recv()
             .expect("request queue readable")
             .is_none(),
         "replacement key also starts once"
+    );
+    let replacement_observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        replacement_observations[9],
+        (crate::runtime::ReadStatus::Inactive, false, None),
+        "retiring a key clears its retained success"
+    );
+    assert_eq!(
+        replacement_observations[11],
+        (crate::runtime::ReadStatus::Pending, false, None),
+        "a replacement key cannot inherit historical success"
+    );
+    runner.reset(ExecutionTime::from_nanos(12_000_000), ())?;
+    runner.poll(ExecutionTime::from_nanos(12_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().last(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false, None)),
+        "reset starts with no completion or retained success"
     );
     runner.stop()?;
     owner.close().await;
@@ -2353,6 +3092,98 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         assert_eq!(admitted.target, "reader.inspect");
         assert_eq!(admitted.boundary, boundary);
     }
+
+    runner.outputs.pin_read_views("timeline", 3)?;
+    let mut metadata = transport::request_metadata(
+        "caller",
+        "caller.read",
+        StepContext::first(
+            ExecutionTime::from_nanos(10_000_000),
+            ExecutionDuration::from_millis(10),
+        ),
+        3,
+        4,
+        0,
+    );
+    metadata.request_timeout_ms = Some(50);
+    let mut request = PreparedOutput::request(
+        READ_PORT.signature(),
+        &ReadRequest { value: 1 },
+        64,
+        metadata,
+    )?
+    .for_instance("reader");
+    request.stamp_delivery_identity(&execution.to_string(), "timeline", 3, 0)?;
+    request.publish_async(&bus, "caller").await?;
+    tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+        .await?
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let rejected: execution_wire::DeliveryAck =
+        tokio::time::timeout(Duration::from_secs(2), recv_execution(&request_acks)).await??;
+    assert!(!rejected.admitted);
+    assert_eq!(rejected.boundary, 3);
+    assert!(
+        rejected
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("timed out")),
+        "reply acknowledgement loss must reject the required request with its deadline"
+    );
+
+    runner.outputs.pin_read_views("timeline", 4)?;
+    let mut metadata = transport::request_metadata(
+        "caller",
+        "caller.read",
+        StepContext::first(
+            ExecutionTime::from_nanos(10_000_000),
+            ExecutionDuration::from_millis(10),
+        ),
+        4,
+        5,
+        0,
+    );
+    metadata.request_timeout_ms = Some(500);
+    let mut request = PreparedOutput::request(
+        READ_PORT.signature(),
+        &ReadRequest { value: 1 },
+        64,
+        metadata,
+    )?
+    .for_instance("reader");
+    request.stamp_delivery_identity(&execution.to_string(), "timeline", 4, 0)?;
+    request.publish_async(&bus, "caller").await?;
+    let reply = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+        .await?
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let wire = WireSample::from_zenoh(reply)?;
+
+    runner.reset(ExecutionTime::from_nanos(20_000_000), ())?;
+    publish_execution(
+        &bus,
+        "reader",
+        "read-reply-ack/read",
+        &execution_wire::DeliveryAck {
+            execution_id: execution.to_string(),
+            timeline_id: "timeline".to_owned(),
+            boundary: 4,
+            source: "reader".to_owned(),
+            target: "caller.read".to_owned(),
+            port: "read".to_owned(),
+            direction: "reply".to_owned(),
+            sequence: 5,
+            item: 0,
+            bytes: wire.payload().len() as u64,
+            admitted: true,
+            detail: None,
+        },
+    )
+    .await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), request_acks.recv_async())
+            .await
+            .is_err(),
+        "a reset generation cannot acknowledge a reply after revocation"
+    );
     runner.stop()?;
     owner.close().await;
     Ok(())
@@ -2363,11 +3194,19 @@ async fn send_external_read(
     id: u64,
     value: u32,
 ) -> crate::Result<()> {
+    send_external_read_bytes(bus, id, ReadRequest { value }.encode_to_vec()).await
+}
+
+async fn send_external_read_bytes(
+    bus: &crate::runtime::connection::Connection,
+    id: u64,
+    payload: Vec<u8>,
+) -> crate::Result<()> {
     let metadata = RuntimeWireMetadata::external_request(ExecutionTime::default(), id, 0, id);
     bus.session()?
         .put(
             bus.full_key(&transport::port_key("reader", "read", "request")),
-            ReadRequest { value }.encode_to_vec(),
+            payload,
         )
         .encoding(zenoh::bytes::Encoding::from(
             transport::PROTOBUF_ENCODING.to_owned(),
@@ -2500,7 +3339,42 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         43,
         "later queries see newly accepted State"
     );
-    send_external_read(&bus, 5, 1).await?;
+
+    send_external_read_bytes(&bus, 5, vec![0; 65]).await?;
+    let oversized_request = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+    )?;
+    assert_eq!(
+        oversized_request.metadata().wire_control()?,
+        transport::WireControl::Oversized
+    );
+    assert!(oversized_request.payload().is_empty());
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        3,
+        "an oversized request cannot enter the handler"
+    );
+
+    send_external_read_bytes(&bus, 6, vec![0x80]).await?;
+    let malformed = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+    )?;
+    assert_eq!(
+        malformed.metadata().wire_control()?,
+        transport::WireControl::Failed
+    );
+    assert!(malformed.payload().is_empty());
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        3,
+        "a malformed request cannot enter the typed handler"
+    );
+
+    send_external_read(&bus, 7, 1).await?;
     wait_entered(4).await?;
     runner.reset(ExecutionTime::default(), ())?;
     assert!(
@@ -2509,14 +3383,14 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
             .is_err(),
         "retired view cannot publish after reset"
     );
-    send_external_read(&bus, 6, 1).await?;
+    send_external_read(&bus, 8, 1).await?;
     let reset = WireSample::from_zenoh(
         tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
             .await?
             .map_err(|e| anyhow::anyhow!(e.to_string()))?,
     )?;
     assert_eq!(ReadResponse::decode(reset.payload())?.value, 42);
-    send_external_read(&bus, 7, 1).await?;
+    send_external_read(&bus, 9, 1).await?;
     wait_entered(6).await?;
     runner.stop()?;
     owner.close().await;

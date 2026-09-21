@@ -10,13 +10,12 @@ This repository and its source are the authority for current framework implement
 ## Repository
 
 - `phoxal/` - the framework facade and runtime library
-- `crates/` - reusable libraries, proc macros, and project tooling
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official services and drivers, with their owned contracts beside private binary implementations
 - `phoxal/cargo/` - the registry-aware project and publication command
-- `robot-rover` - the maintained example robot project is hosted in the separate [phoxal/robot-rover](https://github.com/phoxal/robot-rover) repository
+- `examples/` - self-contained component, service, Runtime, robot, and scenario examples
 
-The native MuJoCo simulator application is owned by [phoxal/simulator](https://github.com/phoxal/simulator); it is not part of this workspace. Hardware-only projects and `cargo-phoxal` build and run without it.
+Hardware-only projects and `cargo-phoxal` build and run without MuJoCo or a simulator installation.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 
@@ -27,13 +26,13 @@ Install or update the framework-owned `cargo-phoxal` package from the Phoxal reg
 ```sh
 cargo install cargo-phoxal \
   --index sparse+https://phoxal.github.io/registry/ \
-  --version 0.0.0-dev.3 \
+  --version 0.0.0-dev.6 \
   --locked
 ```
 
 Pre-release tools must be selected explicitly because Cargo does not choose them for a plain `cargo install`.
 The current `cargo-phoxal` release is `0.0.0-dev.6`.
-It consumes the `0.0.0-dev.1` framework package set.
+It consumes the `0.0.0-dev.2` framework package set.
 Later incompatible development trains increment only the final pre-release counter.
 The release order begins with `phoxal-build`, `phoxal-macros`, and `phoxal`, then continues through services, components, the supervisor, and `cargo-phoxal`.
 The build helper is required first because `phoxal` exposes the same Protobuf authoring implementation to consumer build scripts while also using it for its own generated contracts.
@@ -49,7 +48,7 @@ cargo phoxal check --locked
 Keeping those coupled changes in one owner repository prevents version-skewed adapters and duplicate project models.
 
 Hardware-only development does not require MuJoCo.
-Simulation uses the independent [Phoxal Simulator](https://github.com/phoxal/simulator), while `cargo-phoxal` owns installing MuJoCo, building the matching registry package, and maintaining the user installation.
+Simulation uses the separately installed Phoxal Simulator application, while `cargo-phoxal` owns installing MuJoCo, building the matching registry package, and maintaining the user installation.
 
 ```sh
 cargo phoxal simulation install
@@ -63,8 +62,7 @@ An existing official MuJoCo distribution can be selected explicitly with `--mujo
 For a complete source-based example:
 
 ```sh
-git clone https://github.com/phoxal/robot-rover.git
-cd robot-rover
+cd examples/robots/moving-rover
 cargo phoxal check --locked
 cargo phoxal simulation scenario list --locked
 cargo phoxal simulation scenario run ForwardTurnStop \
@@ -73,7 +71,7 @@ cargo phoxal simulation scenario run ForwardTurnStop \
 
 ## Maintained examples
 
-The complete Runtime rewrite examples and fresh-machine setup recipe are in [examples/runtime-rewrite](examples/runtime-rewrite/README.md).
+The maintained examples and their qualification commands are documented in [examples](examples/README.md).
 
 ## Releases
 

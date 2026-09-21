@@ -422,39 +422,20 @@ where
         Ok(false)
     }
 
-    /// Drops pending work and requires every live worker to exit before reset.
+    /// Drops pending work and waits through the non-extendable retirement grace
+    /// for every live worker to exit before reset.
     pub fn reset(&mut self) -> Result<(), OperationError> {
         self.pending = None;
-        if let Some(worker) = self.live.as_mut()
-            && worker.retiring_since.is_none()
-        {
-            worker.retiring_since = Some(Instant::now());
-        }
-        let finished = self
-            .live
-            .as_ref()
-            .is_some_and(|worker| worker.handle.as_ref().is_some_and(JoinHandle::is_finished));
-        if finished {
-            let Some(mut worker) = self.live.take() else {
-                return Ok(());
-            };
-            if let Some(handle) = worker.handle.take() {
-                handle.join().map_err(|_| OperationError::Panicked)?;
+        loop {
+            match self.retire() {
+                Ok(true) | Err(OperationError::NoWorker) => return Ok(()),
+                Ok(false) => {
+                    // The grace is measured from the first retirement request
+                    // inside `retire`, so this bounded wait cannot extend it.
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => return Err(error),
             }
-            Ok(())
-        } else if self.live.is_some() {
-            if self.live.as_ref().is_some_and(|worker| {
-                worker
-                    .retiring_since
-                    .is_some_and(|start| start.elapsed() >= self.policy.cancel_grace)
-            }) {
-                self.process_termination_required = true;
-                Err(OperationError::ProcessTerminationRequired)
-            } else {
-                Err(OperationError::OwnerMustTerminate)
-            }
-        } else {
-            Ok(())
         }
     }
 
@@ -610,6 +591,48 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(operation.poll().expect("idle poll").is_none());
+    }
+
+    #[test]
+    fn reset_waits_for_worker_exit_before_reuse() {
+        let policy = OperationPolicy::new(Duration::from_secs(1), Duration::from_millis(100))
+            .expect("valid policy");
+        let mut operation = ManagedOperation::new(policy, |_input: u64| {
+            std::thread::sleep(Duration::from_millis(5));
+            Ok(7_u64)
+        });
+        operation
+            .submit(Activation::new(OperationKey::new(1), 0))
+            .expect("start");
+
+        operation.reset().expect("cooperative worker retires");
+
+        assert_eq!(operation.state(), OperationState::Idle);
+        assert_eq!(
+            operation
+                .submit(Activation::new(OperationKey::new(2), 0))
+                .expect("resource can be reused after the owner exits"),
+            SubmitResult::Started
+        );
+    }
+
+    #[test]
+    fn reset_escalates_after_the_nonextendable_grace() {
+        let policy = OperationPolicy::new(Duration::from_secs(1), Duration::from_millis(1))
+            .expect("valid policy");
+        let mut operation = ManagedOperation::new(policy, |_input: u64| {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok(7_u64)
+        });
+        operation
+            .submit(Activation::new(OperationKey::new(1), 0))
+            .expect("start");
+
+        assert_eq!(
+            operation.reset(),
+            Err(super::OperationError::ProcessTerminationRequired)
+        );
+        assert!(operation.process_termination_required());
     }
 
     #[test]

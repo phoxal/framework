@@ -505,7 +505,51 @@ pub trait TransportInputSink {
         field: &str,
         key: TransportValue,
         result: Result<TransportValue, ReadError>,
+        provenance: Option<ObservationStamp>,
     ) -> crate::Result<()>;
+
+    /// Restore runner-owned managed input state before freezing a new cut.
+    fn restore_managed(&mut self, field: &str, value: TransportValue) -> crate::Result<()> {
+        let _ = value;
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no managed state"),
+            }
+        ))
+    }
+
+    /// Reconcile one accepted managed activation with this frozen cut.
+    fn select_managed(
+        &mut self,
+        field: &str,
+        key: TransportValue,
+        attempt_started: bool,
+    ) -> crate::Result<()> {
+        let _ = (key, attempt_started);
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no managed state"),
+            }
+        ))
+    }
+
+    /// Retire a managed binding whose accepted selector is now `None`.
+    fn retire_managed(&mut self, field: &str) -> crate::Result<()> {
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no managed state"),
+            }
+        ))
+    }
+
+    /// Move managed state back to the runner after an accepted invocation.
+    fn take_managed(&mut self, field: &str) -> crate::Result<TransportValue> {
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no managed state"),
+            }
+        ))
+    }
 
     /// Install a keyed request completion.
     fn set_request(
@@ -608,6 +652,7 @@ impl TransportInputSink for () {
         field: &str,
         _key: TransportValue,
         _result: Result<TransportValue, ReadError>,
+        _provenance: Option<ObservationStamp>,
     ) -> crate::Result<()> {
         Err(anyhow::anyhow!(
             super::transport::TransportError::InvalidMetadata {
@@ -1567,6 +1612,7 @@ pub struct Read<Key, Request, Response> {
     key: Option<Key>,
     completion: Option<ReadCompletion<Key, Response>>,
     retained_success: Option<ReadSuccess<Key, Response>>,
+    pending_provenance: Option<ObservationStamp>,
     request: PhantomData<fn() -> Request>,
 }
 
@@ -1579,6 +1625,7 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
             key: None,
             completion: None,
             retained_success: None,
+            pending_provenance: None,
             request: PhantomData,
         }
     }
@@ -1591,6 +1638,7 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
             key: Some(key),
             completion: None,
             retained_success: None,
+            pending_provenance: None,
             request: PhantomData,
         }
     }
@@ -1605,6 +1653,7 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
             key,
             completion: Some(completion),
             retained_success: None,
+            pending_provenance: None,
             request: PhantomData,
         }
     }
@@ -1643,6 +1692,56 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
     #[must_use]
     pub fn retained_success(&self) -> Option<&ReadSuccess<Key, Response>> {
         self.retained_success.as_ref()
+    }
+
+    #[doc(hidden)]
+    pub fn select(&mut self, key: Key, attempt_started: bool)
+    where
+        Key: Eq,
+    {
+        let same_key = self.key().is_some_and(|current| current == &key);
+        if !same_key {
+            self.retained_success = None;
+            self.completion = None;
+            self.pending_provenance = None;
+            self.key = Some(key);
+            self.status = ReadStatus::Pending;
+        } else if attempt_started {
+            self.completion = None;
+            self.pending_provenance = None;
+            self.key = Some(key);
+            self.status = ReadStatus::Pending;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn admit(
+        &mut self,
+        key: Key,
+        result: Result<Response, ReadError>,
+        provenance: Option<ObservationStamp>,
+    ) {
+        self.pending_provenance = if result.is_ok() { provenance } else { None };
+        self.key = None;
+        self.completion = Some(ReadCompletion { key, result });
+        self.status = ReadStatus::Completed;
+    }
+
+    #[doc(hidden)]
+    pub fn finish_invocation(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            let (key, result) = completion.into_parts();
+            match (result, self.pending_provenance.take()) {
+                (Ok(response), Some(provenance)) => {
+                    // Promotion happens after the invocation so a non-Clone
+                    // response has one owner at every point in time.
+                    self.retained_success = Some(ReadSuccess::new(key, response, provenance));
+                }
+                _ => {
+                    self.key = Some(key);
+                }
+            }
+        }
     }
 }
 
@@ -1779,6 +1878,34 @@ impl<Key, RequestBody, Response> Request<Key, RequestBody, Response> {
     pub fn new_completion(&self) -> Option<&RequestCompletion<Key, Response>> {
         self.completion.as_ref()
     }
+
+    #[doc(hidden)]
+    pub fn select(&mut self, key: Key, attempt_started: bool)
+    where
+        Key: Eq,
+    {
+        let same_key = self.key().is_some_and(|current| current == &key);
+        if !same_key || attempt_started {
+            self.status = ReadStatus::Pending;
+            self.key = Some(key);
+            self.completion = None;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn admit(&mut self, key: Key, result: Result<Response, RequestError>) {
+        self.status = ReadStatus::Completed;
+        self.key = None;
+        self.completion = Some(RequestCompletion { key, result });
+    }
+
+    #[doc(hidden)]
+    pub fn finish_invocation(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            let (key, _) = completion.into_parts();
+            self.key = Some(key);
+        }
+    }
 }
 
 impl<Key, RequestBody, Response> Default for Request<Key, RequestBody, Response> {
@@ -1904,6 +2031,34 @@ impl<Key, Response> Operation<Key, Response> {
     pub fn new_completion(&self) -> Option<&OperationCompletion<Key, Response>> {
         self.completion.as_ref()
     }
+
+    #[doc(hidden)]
+    pub fn select(&mut self, key: Key, attempt_started: bool)
+    where
+        Key: Eq,
+    {
+        let same_key = self.key().is_some_and(|current| current == &key);
+        if !same_key || attempt_started {
+            self.status = ReadStatus::Pending;
+            self.key = Some(key);
+            self.completion = None;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn admit(&mut self, key: Key, result: Result<Response, OperationInputError>) {
+        self.status = ReadStatus::Completed;
+        self.key = None;
+        self.completion = Some(OperationCompletion { key, result });
+    }
+
+    #[doc(hidden)]
+    pub fn finish_invocation(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            let (key, _) = completion.into_parts();
+            self.key = Some(key);
+        }
+    }
 }
 
 impl<Key, Response> Default for Operation<Key, Response> {
@@ -1961,7 +2116,7 @@ impl ExecutionTime {
 mod tests {
     use super::{
         Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,
-        Commands, InputKind, InputSpec, Read, ReadError, ReadStatus, Samples,
+        Commands, InputKind, InputSpec, Read, ReadError, ReadStatus, Request, Samples,
     };
     use crate::runtime::{ExecutionTime, ObservationStamp, Sample};
 
@@ -1981,6 +2136,58 @@ mod tests {
         assert_eq!(read.status(), ReadStatus::Completed);
         assert_eq!(read.new_completion().expect("completion").key(), &4);
         assert!(read.new_completion().expect("completion").result().is_err());
+    }
+
+    #[test]
+    fn read_promotes_a_non_clone_response_into_retained_success() {
+        struct NonCloneResponse(u16);
+
+        let provenance = ObservationStamp::new("provider", ExecutionTime::from_nanos(10), Some(3));
+        let mut read = Read::<u8, (), NonCloneResponse>::pending(4);
+        read.admit(4, Ok(NonCloneResponse(12)), Some(provenance));
+        assert_eq!(
+            read.new_completion()
+                .expect("new completion")
+                .result()
+                .expect("successful response")
+                .0,
+            12
+        );
+
+        read.finish_invocation();
+
+        let retained = read.retained_success().expect("retained success");
+        assert_eq!(retained.response().0, 12);
+        assert_eq!(retained.provenance().source(), "provider");
+        assert!(read.new_completion().is_none());
+    }
+
+    #[test]
+    fn request_completion_is_one_shot_without_implicit_retry() {
+        let mut request = Request::<u8, (), u16>::inactive();
+        request.select(4, true);
+        assert_eq!(request.status(), ReadStatus::Pending);
+        assert_eq!(request.key(), Some(&4));
+
+        request.admit(4, Ok(12));
+        assert_eq!(request.status(), ReadStatus::Completed);
+        assert_eq!(
+            request
+                .new_completion()
+                .expect("new request completion")
+                .result(),
+            Ok(&12)
+        );
+
+        request.finish_invocation();
+        assert_eq!(request.status(), ReadStatus::Completed);
+        assert_eq!(request.key(), Some(&4));
+        assert!(request.new_completion().is_none());
+
+        request.select(4, false);
+        assert_eq!(request.status(), ReadStatus::Completed);
+        request.select(4, true);
+        assert_eq!(request.status(), ReadStatus::Pending);
     }
 
     #[test]

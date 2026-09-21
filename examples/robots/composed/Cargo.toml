@@ -11,20 +11,20 @@ todo = "deny"
 unimplemented = "deny"
 
 [package]
-name = "example-workspace-robot"
+name = "example-composed-robot"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
-description = "A robot package inside the maintained example workspace."
+description = "A composed robot with local model components and a reusable service."
 
 [dependencies]
 bench_imu = { package = "example-bench-imu", path = "../../components/bench-imu" }
 bench_motor = { package = "example-bench-motor", path = "../../components/bench-motor" }
 counter = { package = "example-counter-service", path = "../../services/counter" }
 counter-contract = { package = "example-counter-contract", path = "../../services/counter/contract" }
-phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
-phoxal-supervisor = { path = "../../../../supervisor", version = "=0.0.0-dev.2" }
+phoxal = { path = "../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../supervisor", version = "=0.0.0-dev.2" }
 
 [lints]
 workspace = true

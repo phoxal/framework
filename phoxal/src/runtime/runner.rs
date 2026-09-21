@@ -690,6 +690,11 @@ pub trait InputSource<R: RegisteredRuntime> {
     /// Freeze and return the complete input snapshot for one candidate.
     fn freeze(&mut self, candidate: &HardwareInvocation) -> crate::Result<R::Inputs>;
 
+    /// Retain runner-owned managed input state after an accepted invocation.
+    fn retain(&mut self, _inputs: R::Inputs) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Take receipts for the transport records frozen by the last candidate.
     ///
     /// Direct in-process inputs have no distributed publication to prove and
@@ -906,17 +911,20 @@ where
     let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
     let operation_completions = Arc::new(Mutex::new(Vec::new()));
     let exchange_completions = Arc::new(Mutex::new(Vec::new()));
+    let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
     let input = ExecutionInputAdapter::<R>::unbound().with_shared_state(
         Arc::clone(&correlations),
         Arc::clone(&expired_correlations),
         Arc::clone(&operation_completions),
         Arc::clone(&exchange_completions),
+        Arc::clone(&activation_states),
     );
     let output = ExecutionOutputAdapter::<R>::unbound().with_shared_state(
         correlations,
         expired_correlations,
         operation_completions,
         exchange_completions,
+        activation_states,
     );
 
     // Runtime initialization is local and serialized before transport Ready
@@ -1751,6 +1759,9 @@ where
         if let Err(error) = self.schedule.accept(candidate) {
             return self.fail(anyhow::anyhow!(RunnerError::Schedule(error)));
         }
+        if let Err(error) = catch_adapter(|| self.inputs.retain(inputs)) {
+            return self.fail(error);
+        }
         Ok(PollOutcome::Accepted { invocation_index })
     }
 
@@ -1827,6 +1838,9 @@ where
         let required_deliveries = self.outputs.take_delivery_receipts();
         let required_inputs = self.inputs.take_input_receipts();
         let actuations = self.outputs.take_actuations();
+        if let Err(error) = catch_adapter(|| self.inputs.retain(inputs)) {
+            return self.fail_controlled(error);
+        }
         self.controlled_previous = Some(now);
         Ok(ControlledInvocationOutcome {
             boundary,

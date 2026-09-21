@@ -12,13 +12,13 @@ Install or update the released package from the Phoxal registry:
 ```sh
 cargo install cargo-phoxal \
   --index sparse+https://phoxal.github.io/registry/ \
-  --version 0.0.0-dev.3 \
+  --version 0.0.0-dev.6 \
   --locked
 ```
 
 Cargo requires an explicit version when installing a pre-release.
 The current `cargo-phoxal` release is `0.0.0-dev.6`.
-It consumes the `0.0.0-dev.1` framework package set.
+It consumes the `0.0.0-dev.2` framework package set.
 
 Cargo exposes the installed binary as `cargo phoxal`.
 Publishing a new tool version requires its exact `phoxal` dependency to be available in the registry first.
