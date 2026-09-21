@@ -4713,19 +4713,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "clap",
- "serde_json",
- "syn 2.0.119",
- "tempfile",
- "toml_edit",
-]
-
-[[package]]
 name = "yasna"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

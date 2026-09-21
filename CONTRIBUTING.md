@@ -45,8 +45,9 @@ follows the contract it owns rather than a workspace-wide version.
 A plain `feat:` or `fix:` prepares a patch release for the changed package, and
 the release PR updates only packages affected by the dependency graph.
 
-Run `cargo xtask policy` and the owning package's contract checks before pushing
-a change; every pull request runs the same workspace policy.
+Run the owning package's contract checks before pushing a change.
+Workspace architecture and code conventions are reviewed in each pull request
+rather than gated by a separate policy runner.
 
 ### The toolchain floor is a compatibility promise
 

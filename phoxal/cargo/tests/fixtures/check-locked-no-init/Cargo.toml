@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "check-locked-no-init-robot"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+publish = false
+
+[dependencies]
+
+[patch.phoxal]
+phoxal-supervisor = { path = "supervisor" }

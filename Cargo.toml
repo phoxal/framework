@@ -34,36 +34,6 @@ members = [
     "services/navigation",
     "services/safety",
     "services/world",
-    "xtask",
-    "phoxal/cargo",
-]
-# Keep the workspace's command runner out of plain root cargo builds: `xtask`
-# is the runner a maintainer invokes by name (`cargo xtask <verb>`), not part of
-# what this workspace produces. It is still built and tested by the
-# `--workspace` commands CI runs.
-# Invariant: default-members must contain every workspace member except xtask.
-# When adding a workspace member, add it to both members and default-members;
-# otherwise plain cargo build/test silently skips it.
-default-members = [
-    "phoxal/build-support",
-    "tests/fixtures/contracts/producer",
-    "tests/fixtures/contracts/consumer",
-    "tests/fixtures/hardware/driver",
-    "tests/fixtures/ports/consumer",
-    "tests/fixtures/scenarios",
-    "phoxal",
-    "phoxal/macros",
-    "supervisor",
-    "components/bno085",
-    "components/ddsm115",
-    "components/oak_d_lite",
-    "components/vl53l1x",
-    "components/zed_f9p",
-    "services/kinematics",
-    "services/motion",
-    "services/navigation",
-    "services/safety",
-    "services/world",
     "phoxal/cargo",
 ]
 
@@ -71,8 +41,9 @@ default-members = [
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 base64 = "0.22.1"
-# The workspace's own manifest reader, shared by the `cargo xtask policy` gate
-# and project tooling tests that inspect an authored workspace.
+# The framework project's manifest reader; `phoxal/cargo` uses it to inspect an
+# authored workspace, and tests under `phoxal/tests/` use it to assert the
+# SDK's consumer policy.
 cargo_metadata = { version = "0.23.1", features = ["builder"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2"

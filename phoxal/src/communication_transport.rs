@@ -1,27 +1,19 @@
-//! Public-session transport (client + server halves).
+//! Public-session SDK client transport and shared wire helpers.
 //!
 //! This module owns the wire exchange, bounded query collection, and the
 //! lifetime of the public queryables for the `phoxal.session.v1` protocol.
 //! The Protobuf messages and route/admission rules remain in
 //! [`crate::communication`].
 //!
-//! Submodule layout (both currently in the SDK):
+//! The `client` module owns the bounded, principal-bound, target-bound client
+//! transport published in the SDK. Public types: `PublicSessionTransport`,
+//! `PublicSessionConfig`, `PublicSessionConnection`, `PublicSubscription`,
+//! `DiscoveryEvent`, `SupervisorWatch`, `PublicTlsCredentials`,
+//! `PublicTransportSecurity`, `PublicTransportLimits`, `PublicTransportError`.
 //!
-//! - `client` - bounded, principal-bound, target-bound client transport.
-//!   Public types: `PublicSessionTransport`, `PublicSessionConfig`,
-//!   `PublicSessionConnection`, `PublicSubscription`, `DiscoveryEvent`,
-//!   `SupervisorWatch`, `PublicTlsCredentials`, `PublicTransportSecurity`,
-//!   `PublicTransportLimits`, `PublicTransportError`.
-//! - `server` - queryables, dispatch, backend invocation, simulation
-//!   authority. Public types: `PublicSessionServer`, `PrincipalPolicy`,
-//!   `PublicSessionBackend`, `PublicSimulationBackend`,
-//!   `PublicSimulationContext`, `PublicBindingContext`.
-//! - `simulation` - simulation authority state machine (server-only
-//!   authoritative ownership of grants; client consumes the typed protobuf
-//!   messages in [`crate::communication::simulation`]).
-//!
-//! Shared constants and helpers live in this parent module so both halves
-//! reference the same values without cyclic imports.
+//! The supervisor-owned server transport imports the shared constants and wire
+//! helpers from this module without exposing its authoritative state through
+//! the SDK.
 #![allow(unused_imports, dead_code)]
 
 pub(crate) mod client;
