@@ -28,8 +28,7 @@ path = "src/lib.rs"
 #
 # Every profile compiles the same source; features select optional dependencies
 # and `pub` declarations, not parallel code paths. The one place a feature may
-# be named in this crate's source is `src/lib.rs`, and `cargo xtask policy`
-# rejects it anywhere else.
+# be named in this crate's source is `src/lib.rs`.
 [features]
 default = ["runtime"]
 
