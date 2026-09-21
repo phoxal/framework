@@ -37,26 +37,6 @@ jobs:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     secrets: inherit
 
-  examples:
-    name: maintained examples
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      # The example workspace compiles the minimal Runtime and the reusable
-      # counter service plus its owner contract.
-      # Per-robot `cargo phoxal check` invocations for `composed` and
-      # `moving-rover` (which each declare their own `[workspace]`) and
-      # the passive-component publish dry run were intentionally removed:
-      # the subprocess and publication tests under `phoxal/cargo/tests/`
-      # already cover the publication path, and change-scoped acceptance is
-      # run against the relevant robot or component instead of every
-      # maintained example on every PR.
-      - name: Test the example workspace
-        run: cargo test --manifest-path examples/Cargo.toml --workspace --all-targets --locked
-
   # Every consumer profile, built explicitly.
   #
   # The shared `ci` job builds the workspace, and a workspace build unifies

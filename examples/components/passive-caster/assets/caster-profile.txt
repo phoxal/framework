@@ -1,3 +1,0 @@
-name: example-passive-caster
-mount_site: caster_mount
-purpose: passive physical geometry and calibration data

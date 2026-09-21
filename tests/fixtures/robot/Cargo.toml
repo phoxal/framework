@@ -1,0 +1,30 @@
+[package]
+name = "phoxal-test-robot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+description = "Internal four-wheel native-motion qualification robot."
+
+[dependencies]
+phoxal = { workspace = true, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../supervisor", version = "=0.0.0-dev.2" }
+ddsm115 = { package = "phoxal-component-ddsm115", path = "../../../components/ddsm115", version = "=0.0.0-dev.2" }
+motion = { package = "phoxal-service-motion", path = "../../../services/motion", version = "=0.0.0-dev.2" }
+test-controller = { package = "phoxal-test-controller", path = "controller" }
+prost.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "phoxal-scenarios"
+path = "tests/scenarios.rs"
+harness = false
+test = false
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+phoxal = { workspace = true, features = ["scenario", "port"] }
+
+[lints]
+workspace = true

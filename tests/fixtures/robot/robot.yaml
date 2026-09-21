@@ -1,0 +1,59 @@
+# $schema: ./.phoxal/schemas/robot.schema.json
+schema: phoxal/robot/v0
+robot:
+  id: phoxal-test-robot
+  model: model.xml
+  components:
+    front_left_drive:
+      component: ddsm115
+      mount_site: front_left_wheel_mount
+      driver:
+        connection:
+          type: serial
+          port: /dev/ttyUSB0
+          baud: 115200
+        config: { id: 1 }
+    front_right_drive:
+      component: ddsm115
+      mount_site: front_right_wheel_mount
+      driver:
+        connection:
+          type: serial
+          port: /dev/ttyUSB0
+          baud: 115200
+        config: { id: 2 }
+    rear_left_drive:
+      component: ddsm115
+      mount_site: rear_left_wheel_mount
+      driver:
+        connection:
+          type: serial
+          port: /dev/ttyUSB0
+          baud: 115200
+        config: { id: 3 }
+    rear_right_drive:
+      component: ddsm115
+      mount_site: rear_right_wheel_mount
+      driver:
+        connection:
+          type: serial
+          port: /dev/ttyUSB0
+          baud: 115200
+        config: { id: 4 }
+brain: {}
+
+services:
+  controller:
+    implementation: test-controller
+
+connections:
+  controller.manual: brain.manual
+  controller.encoders:
+    - front_left_drive.encoder
+    - front_right_drive.encoder
+    - rear_left_drive.encoder
+    - rear_right_drive.encoder
+  front_left_drive.actuator: controller.actuators
+  front_right_drive.actuator: controller.actuators
+  rear_left_drive.actuator: controller.actuators
+  rear_right_drive.actuator: controller.actuators

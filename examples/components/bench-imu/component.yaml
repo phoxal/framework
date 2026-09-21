@@ -1,9 +1,0 @@
-schema: phoxal/component/v0
-model: { file: model.xml, root_body: mount }
-capabilities:
-  accelerometer:
-    kind: accelerometer
-    publish_rate_hz: 100.0
-    axes: [true, true, true]
-    target: { kind: site, id: sensor_site }
-    signals: { acceleration: accelerometer }

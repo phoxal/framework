@@ -1,9 +1,0 @@
-[package]
-name = "example-passive-caster"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.88"
-license = "AGPL-3.0-only"
-description = "A local passive component with no authored Rust target."
-autolib = false
-autobins = false

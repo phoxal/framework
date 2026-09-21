@@ -367,10 +367,20 @@ mod tests {
 
     use super::*;
 
-    fn maintained_example(relative: &str) -> (std::path::PathBuf, String) {
+    fn qualification_fixture(relative: &str) -> (std::path::PathBuf, String) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("examples")
+            .join("tests/fixtures/robot")
+            .join(relative);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        (path, text)
+    }
+
+    fn official_component(relative: &str) -> (std::path::PathBuf, String) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("components")
             .join(relative);
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
@@ -405,26 +415,22 @@ robot:
     }
 
     #[test]
-    fn maintained_example_documents_pass_tool_owned_validation() {
-        for relative in [
-            "components/bench-motor/component.yaml",
-            "components/bench-imu/component.yaml",
-        ] {
-            let (path, text) = maintained_example(relative);
-            let document: ComponentDocument = serde_yaml::from_str(&text)
-                .unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()));
-            document
-                .validate()
-                .unwrap_or_else(|error| panic!("{} is invalid: {error}", path.display()));
-        }
+    fn qualification_documents_pass_tool_owned_validation() {
+        let (component_path, component_text) = official_component("ddsm115/component.yaml");
+        let component: ComponentDocument = serde_yaml::from_str(&component_text)
+            .unwrap_or_else(|error| panic!("cannot parse {}: {error}", component_path.display()));
+        component
+            .validate()
+            .unwrap_or_else(|error| panic!("{} is invalid: {error}", component_path.display()));
 
-        let (path, text) = maintained_example("robots/composed/robot.yaml");
-        parse_and_validate(&text, &path).expect("maintained robot document is valid");
+        let (robot_path, robot_text) = qualification_fixture("robot.yaml");
+        parse_and_validate(&robot_text, &robot_path)
+            .expect("qualification robot document is valid");
     }
 
     #[test]
-    fn maintained_composition_example_keeps_explicit_native_bindings() {
-        let (motor_path, motor_text) = maintained_example("components/bench-motor/component.yaml");
+    fn qualification_robot_keeps_explicit_native_bindings() {
+        let (motor_path, motor_text) = official_component("ddsm115/component.yaml");
         let motor: ComponentDocument = serde_yaml::from_str(&motor_text)
             .unwrap_or_else(|error| panic!("cannot parse {}: {error}", motor_path.display()));
         let ComponentDocument::V0 {
@@ -442,42 +448,24 @@ robot:
         assert_eq!(capabilities["motor"].joint.as_deref(), Some("motor_joint"));
         assert_eq!(capabilities["encoder"].target.kind, NativeTargetKind::Joint);
 
-        let (imu_path, imu_text) = maintained_example("components/bench-imu/component.yaml");
-        let imu: ComponentDocument = serde_yaml::from_str(&imu_text)
-            .unwrap_or_else(|error| panic!("cannot parse {}: {error}", imu_path.display()));
-        let ComponentDocument::V0 {
-            model,
-            capabilities,
-            ..
-        } = imu;
-        assert_eq!(model.file, Path::new("model.xml"));
-        assert_eq!(model.root_body, "mount");
-        assert_eq!(
-            capabilities["accelerometer"].target.kind,
-            NativeTargetKind::Site
-        );
-        assert_eq!(
-            capabilities["accelerometer"].signals["acceleration"],
-            "accelerometer"
-        );
-
-        let (_, robot_text) = maintained_example("robots/composed/robot.yaml");
+        let (_, robot_text) = qualification_fixture("robot.yaml");
         let robot: RobotDocument =
-            serde_yaml::from_str(&robot_text).expect("composed robot definition parses");
+            serde_yaml::from_str(&robot_text).expect("qualification robot definition parses");
         let RobotDocument::V0 { robot, .. } = robot;
         assert_eq!(robot.model.as_deref(), Some(Path::new("model.xml")));
-        assert_eq!(robot.components["left"].mount_site, "left_mount");
-        assert_eq!(robot.components["right"].mount_site, "right_mount");
-        assert_eq!(robot.components["imu"].mount_site, "imu_mount");
+        for (instance, mount) in [
+            ("front_left_drive", "front_left_wheel_mount"),
+            ("front_right_drive", "front_right_wheel_mount"),
+            ("rear_left_drive", "rear_left_wheel_mount"),
+            ("rear_right_drive", "rear_right_wheel_mount"),
+        ] {
+            assert_eq!(robot.components[instance].mount_site, mount);
+        }
 
-        let (_, scene) = maintained_example("robots/composed/simulation/scene.xml");
-        assert_eq!(
-            scene
-                .lines()
-                .find(|line| line.contains("<option"))
-                .expect("scene has native global options")
-                .trim(),
-            "<option timestep=\"0.001\" gravity=\"0 0 -9.81\" integrator=\"implicitfast\" solver=\"Newton\"/>"
-        );
+        let (_, scene) = qualification_fixture("simulation/scene.xml");
+        assert!(scene.contains("timestep=\"0.01\""));
+        assert!(scene.contains("gravity=\"0 0 -9.81\""));
+        assert!(scene.contains("integrator=\"implicitfast\""));
+        assert!(scene.contains("solver=\"Newton\""));
     }
 }

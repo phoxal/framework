@@ -1,0 +1,23 @@
+[package]
+name = "phoxal-test-controller"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Robot-local controller for the internal four-wheel qualification fixture."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "phoxal-test-controller"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+phoxal = { workspace = true, features = ["robotics", "runtime"] }
+motion = { package = "phoxal-service-motion", path = "../../../../services/motion", version = "=0.0.0-dev.2" }
+
+[lints]
+workspace = true

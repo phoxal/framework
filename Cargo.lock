@@ -2368,20 +2368,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-port-consumer-fixture"
-version = "0.1.0"
-dependencies = [
- "phoxal",
-]
-
-[[package]]
-name = "phoxal-scenario-fixture"
-version = "0.1.0"
-dependencies = [
- "phoxal",
-]
-
-[[package]]
 name = "phoxal-service-kinematics"
 version = "0.0.0-dev.2"
 dependencies = [
@@ -2469,6 +2455,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zenoh",
+]
+
+[[package]]
+name = "phoxal-test-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-service-motion",
+]
+
+[[package]]
+name = "phoxal-test-robot"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "phoxal",
+ "phoxal-component-ddsm115",
+ "phoxal-service-motion",
+ "phoxal-supervisor",
+ "phoxal-test-controller",
+ "prost",
+ "serde_json",
 ]
 
 [[package]]

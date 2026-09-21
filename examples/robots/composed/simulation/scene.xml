@@ -1,5 +1,0 @@
-<mujoco model="bench-scene">
-  <compiler angle="radian"/>
-  <option timestep="0.001" gravity="0 0 -9.81" integrator="implicitfast" solver="Newton"/>
-  <worldbody><site name="robot_mount" pos="0 0 0.5" size="0.002"/></worldbody>
-</mujoco>

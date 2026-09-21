@@ -67,21 +67,3 @@ fn contract_consumer_uses_lightweight_phoxal_facade_without_runtime() {
         ],
     );
 }
-
-#[test]
-fn sdk_port_feature_has_an_isolated_dependency_closure() {
-    let tree = dependency_tree("ports/consumer");
-    // The port-feature fixture must reach the SDK facade without dragging in
-    // any runtime, transport, or session machinery.
-    assert!(tree.lines().any(|line| line.starts_with("phoxal v")));
-    assert_absent(
-        &tree,
-        &[
-            "tokio v",
-            "zenoh v",
-            "zenoh-link v",
-            "zenoh-transport v",
-            "tracing-subscriber v",
-        ],
-    );
-}

@@ -217,9 +217,14 @@ path = "tests/runtime_forms.rs"
 required-features = ["runtime"]
 
 [[test]]
-name = "runtime_reference_examples"
-path = "tests/runtime_reference_examples.rs"
+name = "runtime_semantics"
+path = "tests/runtime_semantics.rs"
 required-features = ["runtime"]
+
+[[test]]
+name = "scenario_authoring"
+path = "tests/scenario_authoring.rs"
+required-features = ["scenario"]
 
 [[test]]
 name = "trybuild"

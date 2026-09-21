@@ -1,6 +1,0 @@
-schema: phoxal/component/v0
-assets:
-  - assets/caster-profile.txt
-capabilities:
-  caster:
-    kind: passive

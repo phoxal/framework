@@ -98,6 +98,61 @@ fn prepare_scenarios_persists_manifest_and_writes_harness() {
 }
 
 #[test]
+fn prepare_scenarios_preserves_an_authored_harness_target() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let robot_root = directory.path().to_path_buf();
+    fs::write(
+        robot_root.join("Cargo.toml"),
+        "[package]\n\
+         name = \"fixture-robot\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\n\
+         [dependencies]\n\
+         phoxal-supervisor = \"0.1\"\n\n\
+         [dev-dependencies]\n\
+         phoxal = { version = \"0.1\", features = [\"scenario\"] }\n\
+         clap = { version = \"4\", features = [\"derive\"] }\n\n\
+         [[test]]\n\
+         name = \"phoxal-scenarios\"\n\
+         path = \"tests/scenarios.rs\"\n\
+         harness = false\n\
+         test = false\n",
+    )
+    .expect("manifest");
+    fs::write(
+        robot_root.join("robot.yaml"),
+        "schema: phoxal/robot/v0\nrobot:\n  id: fixture-robot\n",
+    )
+    .expect("robot.yaml");
+    fs::create_dir_all(robot_root.join("src")).expect("src");
+    fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("main");
+    fs::create_dir_all(robot_root.join("tests")).expect("tests");
+    fs::write(robot_root.join("tests/scenarios.rs"), "fn main() {}\n").expect("authored harness");
+    fs::create_dir_all(robot_root.join("scenarios")).expect("scenarios");
+    fs::write(
+        robot_root.join("scenarios/only.rs"),
+        "// authored scenario\n",
+    )
+    .expect("scenario");
+
+    let layout = crate::project::ProjectLayout::discover(&robot_root).expect("layout");
+    let project = crate::project::Project::from_layout(layout).expect("project");
+    let changes = project
+        .prepare_scenarios(&CargoOptions::default())
+        .expect("prepare authored harness");
+
+    assert!(
+        changes.is_empty(),
+        "authored harness must be stable: {changes:?}"
+    );
+    assert!(
+        !robot_root
+            .join(".phoxal/generated/scenarios/main.rs")
+            .exists()
+    );
+}
+
+#[test]
 fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing() {
     let directory = tempfile::tempdir().expect("tempdir");
     let robot_root = directory.path().to_path_buf();

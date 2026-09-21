@@ -32,6 +32,9 @@ pub const SUPERVISOR_REGISTRY: &str = "phoxal";
 /// target when missing, the `scenario` feature on `[dev-dependencies]
 /// phoxal`, the Clap derive feature used by the generated binary, and
 /// regenerates the disposable harness source.
+/// A package may instead own an authored harness target with the same name,
+/// `harness = false`, and `test = false`; preparation then leaves its source
+/// alone while retaining the same artifact discovery and run protocol.
 /// Per the plan, preparation never removes authored configuration:
 /// removing the last scenario leaves an empty harness and the existing
 /// persistent setup untouched.
@@ -378,12 +381,18 @@ pub(crate) fn compute_scenario_change_plan(
             });
         }
     };
-    let has_managed_test_target =
-        lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
-    let add_test_target = !has_managed_test_target;
+    let existing_target = lookup_scenario_test_target(document);
+    if let Some(target) = &existing_target {
+        validate_scenario_test_target(layout, target)?;
+    }
+    let has_test_target = existing_target.is_some();
+    let has_managed_test_target = existing_target.as_ref().is_some_and(managed_target_matches);
+    let has_authored_test_target = has_test_target && !has_managed_test_target;
+    let add_test_target = !has_test_target;
     let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
     let add_clap_derive = !dev_dependency_has_feature(document, "clap", "derive");
-    let harness_changed = harness_needs_write(robot_root, &discovered, has_managed_test_target);
+    let harness_changed = !has_authored_test_target
+        && harness_needs_write(robot_root, &discovered, has_managed_test_target);
     let needs_persistent_setup =
         (add_test_target || add_scenario_feature || add_clap_derive) && !discovered.is_empty();
     Ok(ScenarioChangePlan {
@@ -393,6 +402,26 @@ pub(crate) fn compute_scenario_change_plan(
         add_clap_derive,
         harness_changed,
         needs_persistent_setup,
+    })
+}
+
+fn validate_scenario_test_target(layout: &ProjectLayout, table: &Table) -> Result<(), Error> {
+    let path = table.get("path").and_then(Item::as_str);
+    let harness = table.get("harness").and_then(Item::as_bool);
+    let test_flag = table.get("test").and_then(Item::as_bool);
+    if path.is_some_and(|path| !path.is_empty())
+        && harness == Some(false)
+        && test_flag == Some(false)
+    {
+        return Ok(());
+    }
+    Err(Error::ManifestPreparation {
+        path: layout.cargo_manifest().to_owned(),
+        message: format!(
+            "authored `[[test]] name = \"{SCENARIO_TEST_TARGET_NAME}\"` must declare a non-empty \
+             path, `harness = false`, and `test = false` (path={path:?}, harness={harness:?}, \
+             test={test_flag:?})"
+        ),
     })
 }
 

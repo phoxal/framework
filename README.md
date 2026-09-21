@@ -13,7 +13,7 @@ This repository and its source are the authority for current framework implement
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official services and drivers, with their owned contracts beside private binary implementations
 - `phoxal/cargo/` - the registry-aware project and publication command
-- `examples/` - self-contained component, service, Runtime, robot, and scenario examples
+- `tests/fixtures/` - internal compile-contract fixtures and one four-wheel native qualification robot
 
 Hardware-only projects and `cargo-phoxal` build and run without MuJoCo or a simulator installation.
 
@@ -59,19 +59,23 @@ The installer downloads and verifies the supported MuJoCo distribution, installs
 Use `cargo phoxal simulation upgrade` to replace the managed installation and `cargo phoxal simulation uninstall` to remove it.
 An existing official MuJoCo distribution can be selected explicitly with `--mujoco-distribution <path>`.
 
-For a complete source-based example:
+The repository intentionally has no maintained user examples while its pre-1.0 authoring and runtime contracts are still changing.
+Before pushing a change that can affect project preparation, runtime transport, components, or simulation, use the internal four-wheel robot in the root Cargo workspace.
+It contains only four actuator/encoder components, a disarmed brain, a small robot-local controller, and the finite `ForwardTurnStop` scenario.
+
+Build the current framework tool and a source simulator as documented by the simulator repository, then run:
 
 ```sh
-cd examples/robots/moving-rover
-cargo phoxal check --locked
-cargo phoxal simulation scenario list --locked
-cargo phoxal simulation scenario run ForwardTurnStop \
-  --locked --release
+cd tests/fixtures/robot
+../../../target/debug/cargo-phoxal check --locked
+../../../target/debug/cargo-phoxal simulation scenario list --locked
+../../../target/debug/cargo-phoxal simulation scenario run ForwardTurnStop \
+  --locked --release --headless \
+  --simulator ../../../../simulator/target/release/phoxal-simulator
 ```
 
-## Maintained examples
-
-The maintained examples and their qualification commands are documented in [examples](examples/README.md).
+This native qualification is a local pre-push gate for now.
+It is not a public example, a supported robot template, or a substitute for focused deterministic tests.
 
 ## Releases
 

@@ -1,0 +1,16 @@
+<mujoco model="phoxal-test-robot">
+  <compiler angle="radian" />
+  <worldbody>
+    <body name="base_footprint">
+      <freejoint name="base_freejoint" />
+      <body name="base_link" pos="0 0 0.21">
+        <inertial pos="0 0 0" mass="4" diaginertia="0.04 0.09 0.1" />
+        <geom name="chassis" type="box" size="0.25 0.15 0.05" mass="4" />
+        <site name="front_left_wheel_mount" pos="0.18 0.26 -0.1" euler="-1.5708 0 0" size="0.002" />
+        <site name="front_right_wheel_mount" pos="0.18 -0.26 -0.1" euler="1.5708 0 0" size="0.002" />
+        <site name="rear_left_wheel_mount" pos="-0.18 0.26 -0.1" euler="-1.5708 0 0" size="0.002" />
+        <site name="rear_right_wheel_mount" pos="-0.18 -0.26 -0.1" euler="1.5708 0 0" size="0.002" />
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

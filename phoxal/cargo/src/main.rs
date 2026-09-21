@@ -1206,7 +1206,7 @@ mod tests {
             "cargo-phoxal",
             "publish",
             "component",
-            "example-passive-caster",
+            "fixture-passive-caster",
             "--dry-run",
         ])
         .expect("publication dry-run parses");
@@ -1215,7 +1215,7 @@ mod tests {
             "cargo-phoxal",
             "publish",
             "component",
-            "example-passive-caster",
+            "fixture-passive-caster",
         ])
         .expect("normal publication parses");
         assert!(matches!(parsed.command, Command::Publish(_)));
