@@ -630,7 +630,6 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         document,
         executables,
         simulation,
-        scenario: _,
         ..
     } = &manifest;
     let SourceDocument::V0 {
