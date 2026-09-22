@@ -39,10 +39,17 @@ pub(super) struct Cli {
     #[arg(long, value_name = "PATH", hide = true)]
     pub(super) scenario_result: Option<PathBuf>,
 
+    /// Simulation-only run specification. Hardware launch rejects this before
+    /// starting the robot process graph.
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub(super) simulation_run: Option<PathBuf>,
+
+    /// Command-scoped owner whose loss cancels the complete execution.
+    #[arg(long, value_name = "PID", hide = true)]
+    pub(super) owner_pid: Option<u32>,
+
     /// Launch mode the supervisor runs under. `controlled` is the
-    /// default for local development; `hardware` is the on-robot
-    /// launch. Scenario bundles carry the `nondeployable` marker and
-    /// are refused outright under `hardware`.
+    /// default for local development; `hardware` is the on-robot launch.
     #[arg(
         long,
         value_name = "MODE",

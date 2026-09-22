@@ -1,6 +1,6 @@
 # phoxal
 
-The Phoxal framework runtime, protocol contracts, typed ports, and public session client live in this crate.
+The Phoxal framework runtime, generated service contracts, and public session client live in this crate.
 
 Source preparation, Cargo orchestration, and immutable bundle assembly belong to the framework-owned `cargo-phoxal` package.
 Native model composition belongs to the independent simulator application.
@@ -19,13 +19,14 @@ phoxal = "0.68"
 phoxal = { version = "0.68", default-features = false, features = ["session"] }
 
 # A public contract consumer with no transport or runner.
-phoxal = { version = "0.68", default-features = false, features = ["port"] }
+phoxal = { version = "0.68", default-features = false, features = ["contract"] }
 ```
 
 The `runtime` profile is the default and provides the synchronous Runtime macros, typed inputs and outputs, runner, and required transport.
 The `session` profile provides only the public logical-session client and its Protobuf transport.
 The supervisor executable owns its host implementation privately and consumes the reusable `runtime` and `session` APIs.
-The `port` and `protocol` profiles provide independent descriptor and protocol contracts without a runner or host implementation.
+The `contract` profile provides generated method descriptors and typed call and observation handles without a runner or host implementation.
+The `protocol` profile provides the public Protobuf transport contracts.
 
 The project compiler is the only owner of authored source parsing and project validation.
 It is implemented inside the `cargo-phoxal` package and exposed through `cargo phoxal`.

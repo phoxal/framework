@@ -18,7 +18,8 @@ message ProviderRequirement {
   string service_instance = 1;
   string port = 2;
   string payload_fqn = 3;
-  int32 kind = 4;
+  // Numeric phoxal.session.v1.MethodShape value.
+  int32 shape = 4;
   string input_fqn = 5;
   // Immutable source cadence in millionths of one hertz.
   uint64 rate_microhertz = 6;

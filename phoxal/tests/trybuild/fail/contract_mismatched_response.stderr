@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/trybuild/fail/contract_mismatched_response.rs:39:60
+   |
+39 |     let _: Option<CallCompletion<Wrong>> = completions.get(&ticket);
+   |                                                        --- ^^^^^^^ expected `&CallTicket<Wrong>`, found `&CallTicket<Expected>`
+   |                                                        |
+   |                                                        arguments to this method are incorrect
+   |
+   = note: expected reference `&CallTicket<Wrong>`
+              found reference `&CallTicket<Expected>`
+note: method defined here
+  --> src/runtime/input.rs
+   |
+   |     pub fn get<Response>(
+   |            ^^^

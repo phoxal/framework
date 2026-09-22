@@ -7,13 +7,14 @@ struct Forms;
 
 type Key = u64;
 
-const STATE: phoxal::port::State<u32> = phoxal::port::State::new("state");
-const SAMPLE: phoxal::port::Sample<u64> = phoxal::port::Sample::new("sample");
-const EVENT: phoxal::port::Event<u32> = phoxal::port::Event::new("event");
-const STREAM: phoxal::port::Stream<u64> = phoxal::port::Stream::new("stream");
-const SETPOINT: phoxal::port::Setpoint<u32> = phoxal::port::Setpoint::new("setpoint");
-const READ: phoxal::port::Read<u64, u32> = phoxal::port::Read::new("read");
-const COMMANDS: phoxal::port::Commands<u64, u32> = phoxal::port::Commands::new("commands");
+const STATE: phoxal::__private::State<u32> = phoxal::__private::State::new("state");
+const SAMPLE: phoxal::__private::Sample<u64> = phoxal::__private::Sample::new("sample");
+const EVENT: phoxal::__private::Event<u32> = phoxal::__private::Event::new("event");
+const STREAM: phoxal::__private::Stream<u64> = phoxal::__private::Stream::new("stream");
+const SETPOINT: phoxal::__private::Setpoint<u32> = phoxal::__private::Setpoint::new("setpoint");
+const READ: phoxal::__private::Read<u64, u32> = phoxal::__private::Read::new("read");
+const COMMANDS: phoxal::__private::Commands<u64, u32> =
+    phoxal::__private::Commands::new("commands");
 
 #[phoxal::runtime::inputs]
 #[allow(dead_code)]

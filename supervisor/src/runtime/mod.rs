@@ -32,11 +32,10 @@ use phoxal::communication_transport::PublicTransportLimits;
 
 use self::adapter::SupervisorAdapter;
 use self::transport::server::{PrincipalPolicy, PublicSessionServer};
-use crate::scenario_admission::{
-    ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
-};
+use crate::scenario_admission::{ScenarioLaunchMode, admit_simulation_run};
 use phoxal::identity::ExecutionId;
 use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
+use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use bundle::Bundle;
@@ -51,8 +50,20 @@ struct ExecutionLaunch {
     target: DeploymentTarget,
     ready_file: Option<PathBuf>,
     scenario_result: Option<PathBuf>,
+    simulation_run: Option<PathBuf>,
     shutdown: CancellationToken,
-    scenario_program: Option<phoxal::scenario::Program>,
+    scenario_program: Option<phoxal::scenario::__internal::Program>,
+}
+
+pub(super) struct RunRequest<'a> {
+    pub(super) requested_root: &'a Path,
+    pub(super) target: DeploymentTarget,
+    pub(super) ready_file: Option<&'a Path>,
+    pub(super) scenario_result: Option<&'a Path>,
+    pub(super) simulation_run: Option<&'a Path>,
+    pub(super) owner_pid: Option<u32>,
+    pub(super) listen: Option<&'a str>,
+    pub(super) launch_mode: ScenarioLaunchMode,
 }
 
 /// Execute one compiled source bundle and publish readiness atomically.
@@ -60,14 +71,17 @@ struct ExecutionLaunch {
 /// The optional file is an internal local-orchestration handoff. It becomes
 /// visible only after every required Runtime has completed admission and the
 /// public execution status is Ready.
-pub async fn run(
-    requested_root: &Path,
-    target: DeploymentTarget,
-    ready_file: Option<&Path>,
-    scenario_result: Option<&Path>,
-    listen: Option<&str>,
-    launch_mode: ScenarioLaunchMode,
-) -> Result<()> {
+pub async fn run(request: RunRequest<'_>) -> Result<()> {
+    let RunRequest {
+        requested_root,
+        target,
+        ready_file,
+        scenario_result,
+        simulation_run,
+        owner_pid,
+        listen,
+        launch_mode,
+    } = request;
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
             "failed to canonicalize bundle root {}",
@@ -76,102 +90,12 @@ pub async fn run(
     })?;
     let paths = RuntimeRendezvous::for_root(&bundle::owning_root(&canonical));
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
-    let runtime = bundle::open(&canonical)?;
-    let mut scenario_program = None;
-    if let Some(marker_value) = runtime.scenario_marker() {
-        // Scenario bundles must carry a validated program identity inside
-        // the nested `scenario` section. Verify the bounded program
-        // bytes against the recorded length and SHA-256 digest before
-        // consulting the admission policy; refuse inconsistent launch
-        // modes; never substitute placeholder identity values.
-        let section = runtime.scenario_section().ok_or_else(|| {
-            anyhow::anyhow!(
-                "scenario bundle carries `{marker_value}` but no nested `scenario` section \
-                 was written; refusing to launch"
-            )
-        })?;
-        let program = &section.program;
-        let bytes = program.verify_against(&canonical).with_context(|| {
-            format!(
-                "scenario program `{}` failed admission",
-                program.scenario_name
-            )
-        })?;
-        // The bytes the fixture later consumes are exactly the
-        // bytes the supervisor verified — decode the program here so
-        // a tampered or malformed artifact is rejected before any
-        // child starts. The fixture re-decodes at its own admission
-        // boundary.
-        let decoded = phoxal::scenario::Program::decode(&bytes)
-            .map_err(|error| anyhow::anyhow!("scenario program decode failed: {error}"))?;
-        decoded
-            .verify_identity()
-            .map_err(|error| anyhow::anyhow!("scenario program identity check failed: {error}"))?;
-        // The scenario name must match what the program itself
-        // carries. A scenario_name mismatch means the case host
-        // mis-wired the bundle or a tampered bundle substituted an
-        // unrelated program.
-        if decoded.scenario_name() != program.scenario_name {
-            return Err(anyhow::anyhow!(
-                "scenario program `{}` declared scenario_name `{}`; refusing to admit \
-                 a bundle whose program identity disagrees with the manifest",
-                program.scenario_name,
-                decoded.scenario_name(),
-            ));
-        }
-        if !program.controlled_execution {
-            return Err(anyhow::anyhow!(
-                "scenario bundle `{}` declares a non-controlled execution mode; \
-                 controlled simulation is the only supported scenario launch mode",
-                program.scenario_name
-            ));
-        }
-        if matches!(launch_mode, ScenarioLaunchMode::Hardware) {
-            return Err(anyhow::anyhow!(
-                "scenario bundle `{}` carries the nondeployable marker; \
-                 refusing hardware launch mode",
-                program.scenario_name
-            ));
-        }
-        if runtime.simulation().is_none() {
-            return Err(anyhow::anyhow!(
-                "scenario bundle `{}` requires a controlled simulation definition; \
-                 refusing to launch without one",
-                program.scenario_name
-            ));
-        }
-        // Validate quantum/bound alignment: the controlled
-        // simulation's quantum and transition bounds must agree with
-        // the decoded program. Presence alone is insufficient.
-        //
-        // The supervisor and program both reason about the quantum in
-        // nanoseconds: comparing the simulation's `quantum_ns` against
-        // `program.quantum().micros() * 1_000` avoids the integer
-        // truncation that would otherwise accept `2_000_001 ns`
-        // against a `2_000 us` program.
-        let simulation = runtime.simulation().ok_or_else(|| {
-            anyhow::anyhow!("scenario bundle must declare a controlled simulation")
-        })?;
-        validate_simulation_quantum(
-            &program.scenario_name,
-            decoded.quantum().micros(),
-            simulation.quantum_ns,
-        )
-        .map_err(|mismatch| anyhow::anyhow!("{mismatch}"))?;
-        let admission = evaluate_scenario_admission(
-            launch_mode,
-            &program.scenario_name,
-            program.program_byte_length,
-            &program.program_digest,
-            Some(marker_value.as_str()),
-        );
-        if let Some(diagnostic) = admission_diagnostic(&admission) {
-            return Err(anyhow::anyhow!(
-                "scenario bundle refused by supervisor admission policy: {diagnostic}"
-            ));
-        }
-        scenario_program = Some(decoded);
-    }
+    admit_simulation_run(launch_mode, simulation_run.is_some())?;
+    let mut runtime = bundle::open(&canonical)?;
+    let scenario_program = match simulation_run {
+        Some(path) => Some(admit_run_specification(&mut runtime, path)?),
+        None => None,
+    };
     tracing::info!(
         bundle = %runtime.root().display(),
         robot = runtime.robot_id(),
@@ -185,6 +109,16 @@ pub async fn run(
     let state = ExecutionState::new();
     let shutdown = CancellationToken::new();
     signal::cancel_on_termination(shutdown.clone())?;
+    let owner_guard = owner_pid.map(|owner_pid| {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            while process_is_alive(owner_pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            tracing::warn!(owner_pid, "command-scoped execution owner exited");
+            shutdown.cancel();
+        })
+    });
     let endpoint = match listen {
         Some(endpoint) => endpoint.to_owned(),
         None => router_endpoint(&paths.checked_supervisor_socket()?),
@@ -196,6 +130,7 @@ pub async fn run(
             target,
             ready_file: ready_file.map(Path::to_owned),
             scenario_result: scenario_result.map(Path::to_owned),
+            simulation_run: simulation_run.map(Path::to_owned),
             shutdown: shutdown.clone(),
             scenario_program,
         },
@@ -203,7 +138,305 @@ pub async fn run(
     )
     .await;
     shutdown.cancel();
+    if let Some(owner_guard) = owner_guard {
+        owner_guard.abort();
+    }
     outcome
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 does not modify the target process. It only asks the
+    // kernel whether the process exists and is visible to this caller.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
+}
+
+fn admit_run_specification(
+    runtime: &mut Bundle,
+    path: &Path,
+) -> Result<phoxal::scenario::__internal::Program> {
+    const MAX_RUN_SPECIFICATION_BYTES: u64 = 16 * 1024 * 1024;
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "simulation run specification is missing: {}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "simulation run specification must be a regular non-symlink file: {}",
+            path.display()
+        );
+    }
+    if metadata.len() > MAX_RUN_SPECIFICATION_BYTES {
+        bail!(
+            "simulation run specification is {} bytes; cap is {}",
+            metadata.len(),
+            MAX_RUN_SPECIFICATION_BYTES
+        );
+    }
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "failed to read simulation run specification {}",
+            path.display()
+        )
+    })?;
+    let specification: phoxal::artifact::simulation_run::SimulationRunSpecification =
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "failed to decode simulation run specification {}",
+                path.display()
+            )
+        })?;
+    let phoxal::artifact::simulation_run::SimulationRunSpecification::V0 {
+        bundle,
+        model,
+        program,
+        bindings,
+        captures,
+        execution,
+        ..
+    } = &specification;
+
+    let manifest_bytes = fs::read(runtime.root().join("manifest.json"))
+        .context("failed to read immutable bundle manifest for run admission")?;
+    let manifest_digest = format!("{:x}", Sha256::digest(&manifest_bytes));
+    if manifest_digest != bundle.manifest_sha256 {
+        bail!(
+            "simulation run references bundle manifest {}, but selected bundle is {}",
+            bundle.manifest_sha256,
+            manifest_digest
+        );
+    }
+    if runtime.robot_id() != bundle.robot_id {
+        bail!(
+            "simulation run references robot `{}`, but selected bundle is `{}`",
+            bundle.robot_id,
+            runtime.robot_id()
+        );
+    }
+    if program.bytes.len() != program.byte_length as usize {
+        bail!(
+            "simulation program is {} bytes; specification declares {}",
+            program.bytes.len(),
+            program.byte_length
+        );
+    }
+    let program_digest = format!("{:x}", Sha256::digest(&program.bytes));
+    if program_digest != program.sha256 {
+        bail!(
+            "simulation program digest {program_digest} does not match recorded {}",
+            program.sha256
+        );
+    }
+    let decoded = phoxal::scenario::__internal::Program::decode(&program.bytes)
+        .map_err(|error| anyhow::anyhow!("simulation program decode failed: {error}"))?;
+    decoded
+        .verify_identity()
+        .map_err(|error| anyhow::anyhow!("simulation program identity failed: {error}"))?;
+    if decoded.scenario_name() != program.test_identity {
+        bail!(
+            "simulation program identity `{}` does not match specification `{}`",
+            decoded.scenario_name(),
+            program.test_identity
+        );
+    }
+    if decoded.transition_count() != execution.transitions {
+        bail!(
+            "simulation program declares {} transitions; specification declares {}",
+            decoded.transition_count(),
+            execution.transitions
+        );
+    }
+    if captures.len() != decoded.captures().len() {
+        bail!(
+            "simulation specification declares {} captures; program declares {}",
+            captures.len(),
+            decoded.captures().len()
+        );
+    }
+    validate_program_contract(&decoded, bindings, captures)?;
+    let simulation = runtime
+        .simulation()
+        .ok_or_else(|| anyhow::anyhow!("simulation run requires a controlled simulation bundle"))?;
+    if simulation.model_identity != model.model_identity {
+        bail!(
+            "simulation model `{}` does not match bundle model `{}`",
+            model.model_identity,
+            simulation.model_identity
+        );
+    }
+    if simulation.quantum_ns != execution.quantum_ns {
+        bail!(
+            "simulation run quantum {} does not match bundle quantum {}",
+            execution.quantum_ns,
+            simulation.quantum_ns
+        );
+    }
+    validate_simulation_quantum(
+        &program.test_identity,
+        decoded.quantum().micros(),
+        execution.quantum_ns,
+    )
+    .map_err(|mismatch| anyhow::anyhow!("{mismatch}"))?;
+    let source = runtime
+        .source_mut()
+        .ok_or_else(|| anyhow::anyhow!("simulation run requires a source bundle"))?;
+    source.apply_simulation_bindings(bindings)?;
+    Ok(decoded)
+}
+
+fn validate_program_contract(
+    program: &phoxal::scenario::__internal::Program,
+    bindings: &[phoxal::artifact::simulation_run::SimulationBinding],
+    captures: &[phoxal::artifact::simulation_run::SimulationCaptureRequirement],
+) -> Result<()> {
+    use phoxal::artifact::simulation_run::{
+        SimulationBinding, SimulationCapturePolicy, SimulationCaptureRequirement,
+    };
+    use phoxal::scenario::__internal::{Action, Capture};
+
+    let mut expected = std::collections::BTreeMap::<(String, String), SimulationBinding>::new();
+    for step in program.steps() {
+        let (target_instance, signature, payload_bytes) = match &step.action {
+            Action::Setpoint {
+                target_instance,
+                consumer_signature,
+                encoded_payload,
+                ..
+            } => (target_instance, consumer_signature, encoded_payload.len()),
+            Action::Withdraw {
+                target_instance,
+                producer_signature,
+            } => (target_instance, producer_signature, 0),
+            Action::Command { .. } => continue,
+        };
+        let key = (target_instance.clone(), signature.name.to_owned());
+        let max_message_bytes = u32::try_from(payload_bytes)
+            .map_err(|_| anyhow::anyhow!("simulation program payload exceeds u32"))?;
+        let candidate = SimulationBinding {
+            target_instance: target_instance.clone(),
+            source_instance: "scenario".to_owned(),
+            signature: artifact_signature(*signature),
+            max_message_bytes,
+            replaces_authored_source: false,
+        };
+        expected
+            .entry(key)
+            .and_modify(|existing| {
+                existing.max_message_bytes = existing.max_message_bytes.max(max_message_bytes);
+            })
+            .or_insert(candidate);
+    }
+    if bindings.len() != expected.len() {
+        bail!(
+            "simulation specification declares {} bindings; program requires {}",
+            bindings.len(),
+            expected.len()
+        );
+    }
+    for binding in bindings {
+        let key = (
+            binding.target_instance.clone(),
+            binding.signature.endpoint.clone(),
+        );
+        let expected = expected.get(&key).with_context(|| {
+            format!(
+                "simulation specification declares binding {}.{} absent from the program",
+                binding.target_instance, binding.signature.endpoint
+            )
+        })?;
+        if binding.source_instance != expected.source_instance
+            || binding.signature != expected.signature
+            || binding.max_message_bytes != expected.max_message_bytes
+        {
+            bail!(
+                "simulation binding {}.{} does not match the canonical program",
+                binding.target_instance,
+                binding.signature.endpoint
+            );
+        }
+    }
+
+    let expected_captures = program
+        .captures()
+        .iter()
+        .map(|capture| match capture {
+            Capture::State {
+                name,
+                signature,
+                policy,
+            }
+            | Capture::Sample {
+                name,
+                signature,
+                policy,
+            }
+            | Capture::Event {
+                name,
+                signature,
+                policy,
+            } => {
+                let (instance, _) = name.split_once('/').with_context(|| {
+                    format!("simulation capture `{name}` has no configured instance")
+                })?;
+                Ok(SimulationCaptureRequirement::Observation {
+                    instance: instance.to_owned(),
+                    signature: artifact_signature(*signature),
+                    policy: match policy {
+                        phoxal::scenario::CapturePolicy::Latest => SimulationCapturePolicy::Latest,
+                        phoxal::scenario::CapturePolicy::BestEffortHistory { capacity } => {
+                            SimulationCapturePolicy::BestEffortHistory {
+                                capacity: *capacity,
+                            }
+                        }
+                        phoxal::scenario::CapturePolicy::RequiredHistory { capacity } => {
+                            SimulationCapturePolicy::RequiredHistory {
+                                capacity: *capacity,
+                            }
+                        }
+                    },
+                })
+            }
+            Capture::NativeBody { name, .. } => Ok(SimulationCaptureRequirement::RootBody {
+                body: name.clone(),
+                every_steps: 1,
+            }),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if captures != expected_captures {
+        bail!("simulation capture requirements do not match the canonical program");
+    }
+    Ok(())
+}
+
+fn artifact_signature(
+    signature: phoxal::__private::PortSignature,
+) -> phoxal::artifact::MethodSignature {
+    phoxal::artifact::MethodSignature {
+        endpoint: signature.name.to_owned(),
+        service: signature.service.to_owned(),
+        method: signature.method.to_owned(),
+        shape: match signature.shape {
+            phoxal::contract::MethodShape::Call => phoxal::artifact::MethodShape::Call,
+            phoxal::contract::MethodShape::Observation => {
+                phoxal::artifact::MethodShape::Observation
+            }
+        },
+        request: signature.request.to_owned(),
+        response: signature.response.to_owned(),
+        retained_latest: signature.retained_latest,
+        lease_valid_for_ms: signature.lease_valid_for_ms,
+    }
 }
 
 async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> {
@@ -213,6 +446,7 @@ async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> 
         target,
         ready_file,
         scenario_result,
+        simulation_run,
         shutdown,
         scenario_program,
     } = launch;
@@ -300,26 +534,29 @@ async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> 
         }
     };
 
-    let mut processes = match ProcessSupervisor::launch(source, execution, &endpoint).await {
-        Ok(processes) => processes,
-        Err(error) => {
-            let error = anyhow::anyhow!("failed to launch the Runtime graph: {error:#}");
-            mark_execution_failed(&public, execution, &error).await;
-            return finish_run(
-                Err(error),
-                RunResources {
-                    processes: None,
-                    public,
-                    owner,
-                    router,
-                    watchdog,
-                    shutdown,
-                    router_loss,
-                },
-            )
-            .await;
-        }
-    };
+    let mut processes =
+        match ProcessSupervisor::launch(source, execution, &endpoint, simulation_run.as_deref())
+            .await
+        {
+            Ok(processes) => processes,
+            Err(error) => {
+                let error = anyhow::anyhow!("failed to launch the Runtime graph: {error:#}");
+                mark_execution_failed(&public, execution, &error).await;
+                return finish_run(
+                    Err(error),
+                    RunResources {
+                        processes: None,
+                        public,
+                        owner,
+                        router,
+                        watchdog,
+                        shutdown,
+                        router_loss,
+                    },
+                )
+                .await;
+            }
+        };
 
     let (mode, quantum_ns) = match surface.simulation.as_ref() {
         Some(definition) => (RuntimeExecutionMode::Controlled, definition.quantum_ns()),
@@ -762,6 +999,58 @@ async fn verify_router_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incompatible_bundle_and_run_specification_fail_before_launch() -> Result<()> {
+        use phoxal::artifact::simulation_run::{
+            SimulationApplicationReference, SimulationBundleReference, SimulationExecutionBounds,
+            SimulationModelReference, SimulationProgram, SimulationRunSpecification,
+        };
+
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("manifest.json"), b"canonical bundle")?;
+        let source = bundle::SourceBundle::for_test(
+            directory.path(),
+            bundle::SourceManifest::for_test("fixture", Vec::new()),
+        );
+        let mut runtime = Bundle::Source(source);
+        let specification = SimulationRunSpecification::V0 {
+            bundle: SimulationBundleReference {
+                robot_id: "fixture".to_owned(),
+                manifest_sha256: "0".repeat(64),
+            },
+            model: SimulationModelReference {
+                scene: "simulation/scene.xml".to_owned(),
+                model_identity: "model".to_owned(),
+            },
+            simulator: SimulationApplicationReference {
+                package: "phoxal-simulator".to_owned(),
+                version: "0.0.0-dev.1".to_owned(),
+                binary: "phoxal-simulator".to_owned(),
+                executable_sha256: "1".repeat(64),
+            },
+            program: SimulationProgram {
+                test_identity: "fixture::run".to_owned(),
+                byte_length: 0,
+                sha256: format!("{:x}", Sha256::digest([])),
+                bytes: Vec::new(),
+            },
+            bindings: Vec::new(),
+            captures: Vec::new(),
+            execution: SimulationExecutionBounds {
+                quantum_ns: 2_000_000,
+                transitions: 1,
+                host_deadline_ms: 1_000,
+                shutdown_grace_ms: 100,
+            },
+        };
+        let path = directory.path().join("run.json");
+        fs::write(&path, serde_json::to_vec(&specification)?)?;
+        let error = admit_run_specification(&mut runtime, &path)
+            .expect_err("a run cannot target another immutable bundle");
+        assert!(error.to_string().contains("references bundle manifest"));
+        Ok(())
+    }
 
     #[test]
     fn readiness_is_published_once_after_admission() -> Result<()> {

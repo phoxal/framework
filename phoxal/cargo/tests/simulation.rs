@@ -2,8 +2,8 @@
 //!
 //! Status reporting has no MuJoCo or hardware prerequisite; it can run in
 //! any environment where the cargo-phoxal binary itself is available.
-//! The actual `install` / `scenario run` commands need a managed simulator
-//! and stay as host acceptance, exercised outside CI.
+//! Installation and executing a simulation test need a managed simulator and
+//! stay as host acceptance, exercised outside CI.
 
 mod support;
 
@@ -31,7 +31,10 @@ fn simulation_status_reports_a_deterministic_shape_in_json_mode() {
         Some(false),
         "isolated status must report no managed installation, got:\n{stdout}"
     );
-    let expected_root = root.join(".phoxal-home").join("simulation");
+    let expected_root = root
+        .join(".phoxal-home")
+        .join("applications")
+        .join("simulation");
     assert_eq!(
         parsed.get("root").and_then(serde_json::Value::as_str),
         Some(expected_root.to_string_lossy().as_ref()),

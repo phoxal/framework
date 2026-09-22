@@ -119,7 +119,7 @@ message Actuation {
 // the immutable graph fan-out.  Requests carry their exact target because the
 // generated activation already resolved it before publication. Reply targets
 // name the exact caller instance and input field; request targets name the
-// server instance, whose public port resolves to one admitted handler field.
+// server instance, whose public method resolves to one admitted handler field.
 message DeliveryReceipt {
   string port = 1;
   string direction = 2;
@@ -130,7 +130,7 @@ message DeliveryReceipt {
 }
 
 // Receiver-owned acknowledgement for one exact graph record.  This message
-// is carried on a private execution leg and is never part of a public port
+// is carried on a private execution leg and is never part of a public method
 // or session contract.
 message DeliveryAck {
   string execution_id = 1;

@@ -1,7 +1,7 @@
 # Kinematics service
 
 This executable estimates planar differential or skid-steer motion from every configured wheel encoder.
-Its library exports only the messages and ports owned by [contract](contract/README.md).
+Its generated contract-only library exports the Protobuf messages, method descriptors, and typed call or observation handles declared by [`kinematics.proto`](proto/phoxal/kinematics/v1/kinematics.proto).
 Configuration, inputs, outputs, runtime state, and measurement calculations live in separate executable modules.
 
 Configure `left_wheels` and `right_wheels` with one to four entries per side.

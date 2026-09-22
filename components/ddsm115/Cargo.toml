@@ -9,11 +9,11 @@ description = "Phoxal official driver: ddsm115 - wheel hub motor."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml", "assets/**"]
+include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml", "assets/**"]
 
 [lib]
 name = "phoxal_component_ddsm115"
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-component-ddsm115"
@@ -21,18 +21,23 @@ path = "src/main.rs"
 required-features = ["runtime"]
 
 [features]
-default = ["runtime"]
+default = []
 runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:phoxal-service-motion"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port", "robotics"] }
+phoxal = { workspace = true, default-features = false, features = ["contract", "robotics"] }
 anyhow = { workspace = true, optional = true }
 phoxal-service-motion = { workspace = true, optional = true }
 prost = { workspace = true }
 serde = { workspace = true, optional = true }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build", "robotics"] }
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/component/ddsm115/v1/ddsm115.proto"]
+includes = ["proto"]
+generated = "generated"
+dependencies = [
+    { dependency = "phoxal", proto_package = ".phoxal.robotics.v1", rust_path = "::phoxal::robotics" },
+]
 
 [dev-dependencies]
 serde_json = { workspace = true }

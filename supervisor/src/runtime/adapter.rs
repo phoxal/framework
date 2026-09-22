@@ -16,9 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::runtime::session_table::{SessionId, SessionTable, SessionTableError};
 use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
 use phoxal::communication::session::{
-    BindPortRequest, BindPortResponse, ExecutionState, ExecutionSummary, ListExecutionsRequest,
-    ListExecutionsResponse, ListPortsRequest, ListPortsResponse, OpenSessionRequest,
-    OpenSessionResponse, PortKind, PortMetadata, RenewSessionRequest, RenewSessionResponse,
+    BindMethodRequest, BindMethodResponse, ExecutionState, ExecutionSummary, ListExecutionsRequest,
+    ListExecutionsResponse, ListMethodsRequest, ListMethodsResponse, MethodMetadata, MethodShape,
+    OpenSessionRequest, OpenSessionResponse, RenewSessionRequest, RenewSessionResponse,
     SupervisorInfoRequest, SupervisorInfoResponse, SupervisorState, SupervisorStatusRequest,
     SupervisorStatusResponse,
 };
@@ -26,8 +26,8 @@ use phoxal::communication::validation::{DeploymentTarget, valid_identifier};
 
 /// Default maximum number of execution records retained by one adapter.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 256;
-/// Default maximum number of public port records retained by one execution.
-pub const DEFAULT_MAX_PORTS: usize = 1_024;
+/// Default maximum number of public method records retained by one execution.
+pub const DEFAULT_MAX_METHODS: usize = 1_024;
 /// Default page size used when a list request leaves `page_size` at zero.
 pub const DEFAULT_PAGE_SIZE: usize = 64;
 /// Default maximum diagnostic detail length in bytes.
@@ -53,8 +53,8 @@ pub struct AdapterLimits {
     pub max_bindings: usize,
     /// Maximum execution records retained by the adapter.
     pub max_executions: usize,
-    /// Maximum public ports retained in one execution definition.
-    pub max_ports: usize,
+    /// Maximum public methods retained in one execution definition.
+    pub max_methods: usize,
     /// Maximum accepted list page size.
     pub max_page_size: usize,
     /// Maximum bytes in a diagnostic status detail.
@@ -67,7 +67,7 @@ impl Default for AdapterLimits {
             max_sessions: DEFAULT_MAX_SESSIONS_PER_ADAPTER,
             max_bindings: 1_024,
             max_executions: DEFAULT_MAX_EXECUTIONS,
-            max_ports: DEFAULT_MAX_PORTS,
+            max_methods: DEFAULT_MAX_METHODS,
             max_page_size: DEFAULT_PAGE_SIZE,
             max_detail_bytes: DEFAULT_MAX_DETAIL_BYTES,
         }
@@ -85,14 +85,14 @@ impl AdapterLimits {
         max_sessions: usize,
         max_bindings: usize,
         max_executions: usize,
-        max_ports: usize,
+        max_methods: usize,
         max_page_size: usize,
         max_detail_bytes: usize,
     ) -> Result<Self, SupervisorAdapterError> {
         if max_sessions == 0
             || max_bindings == 0
             || max_executions == 0
-            || max_ports == 0
+            || max_methods == 0
             || max_page_size == 0
             || max_detail_bytes == 0
             || max_page_size > u32::MAX as usize
@@ -104,7 +104,7 @@ impl AdapterLimits {
             max_sessions,
             max_bindings,
             max_executions,
-            max_ports,
+            max_methods,
             max_page_size,
             max_detail_bytes,
         })
@@ -114,7 +114,7 @@ impl AdapterLimits {
         if self.max_sessions == 0
             || self.max_bindings == 0
             || self.max_executions == 0
-            || self.max_ports == 0
+            || self.max_methods == 0
             || self.max_page_size == 0
             || self.max_detail_bytes == 0
             || self.max_page_size > u32::MAX as usize
@@ -126,14 +126,14 @@ impl AdapterLimits {
     }
 }
 
-/// Public ports implemented by one service instance in one execution.
+/// Public methods implemented by one service instance in one execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServicePorts {
+pub struct ServiceMethods {
     instance: String,
-    ports: Vec<PortMetadata>,
+    methods: Vec<MethodMetadata>,
 }
 
-impl ServicePorts {
+impl ServiceMethods {
     /// Validate and retain one bounded service instance's generated metadata.
     ///
     /// # Errors
@@ -142,23 +142,23 @@ impl ServicePorts {
     /// invalid kind/FQN, or non-finite port bound.
     pub fn new(
         instance: impl Into<String>,
-        ports: Vec<PortMetadata>,
+        methods: Vec<MethodMetadata>,
     ) -> Result<Self, SupervisorAdapterError> {
         let instance = instance.into();
         validate_identifier(&instance, "service instance")?;
         let mut names = BTreeSet::new();
-        let mut ports = ports;
-        ports.sort_by(|left, right| left.name.cmp(&right.name));
-        for port in &ports {
+        let mut methods = methods;
+        methods.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
+        for port in &methods {
             validate_port(port)?;
-            if !names.insert(port.name.as_str()) {
-                return Err(SupervisorAdapterError::DuplicatePort {
+            if !names.insert(port.endpoint.as_str()) {
+                return Err(SupervisorAdapterError::DuplicateMethod {
                     service_instance: instance,
-                    name: port.name.clone(),
+                    endpoint: port.endpoint.clone(),
                 });
             }
         }
-        Ok(Self { instance, ports })
+        Ok(Self { instance, methods })
     }
 
     /// The deployed service instance identity.
@@ -167,10 +167,10 @@ impl ServicePorts {
         &self.instance
     }
 
-    /// The generated public port metadata in deterministic owner order.
+    /// The generated public method metadata in deterministic owner order.
     #[must_use]
-    pub fn ports(&self) -> &[PortMetadata] {
-        &self.ports
+    pub fn methods(&self) -> &[MethodMetadata] {
+        &self.methods
     }
 }
 
@@ -180,7 +180,7 @@ pub struct SimulationProviderDefinition {
     rate_microhertz: u64,
     service_instance: String,
     port: String,
-    kind: PortKind,
+    shape: MethodShape,
     input_fqn: String,
     payload_fqn: String,
 }
@@ -190,7 +190,7 @@ impl SimulationProviderDefinition {
     pub fn new(
         service_instance: impl Into<String>,
         port: impl Into<String>,
-        kind: PortKind,
+        shape: MethodShape,
         input_fqn: impl Into<String>,
         payload_fqn: impl Into<String>,
         rate_microhertz: u64,
@@ -199,16 +199,14 @@ impl SimulationProviderDefinition {
             rate_microhertz,
             service_instance: service_instance.into(),
             port: port.into(),
-            kind,
+            shape,
             input_fqn: input_fqn.into(),
             payload_fqn: payload_fqn.into(),
         };
         validate_identifier(&definition.service_instance, "simulation service instance")?;
         validate_identifier(&definition.port, "simulation provider port")?;
-        if !matches!(
-            definition.kind,
-            PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream
-        ) || !valid_fqn(&definition.input_fqn)
+        if definition.shape != MethodShape::Observation
+            || !valid_fqn(&definition.input_fqn)
             || !valid_fqn(&definition.payload_fqn)
             || definition.payload_fqn.is_empty()
             || definition.rate_microhertz == 0
@@ -246,10 +244,10 @@ impl SimulationProviderDefinition {
         &self.port
     }
 
-    /// Generated public port kind.
+    /// Generated public method shape.
     #[must_use]
-    pub const fn kind(&self) -> PortKind {
-        self.kind
+    pub const fn shape(&self) -> MethodShape {
+        self.shape
     }
 
     /// Input-side payload signature, when the generated port defines one.
@@ -336,7 +334,7 @@ impl SimulationDefinition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionDefinition {
     summary: ExecutionSummary,
-    services: Vec<ServicePorts>,
+    services: Vec<ServiceMethods>,
     simulation: Option<SimulationDefinition>,
 }
 
@@ -347,7 +345,7 @@ impl ExecutionDefinition {
     /// on map insertion order supplied by a host implementation.
     pub fn new(
         summary: ExecutionSummary,
-        mut services: Vec<ServicePorts>,
+        mut services: Vec<ServiceMethods>,
     ) -> Result<Self, SupervisorAdapterError> {
         validate_identifier(&summary.execution_id, "execution id")?;
         validate_identifier(&summary.timeline_id, "timeline id")?;
@@ -384,17 +382,17 @@ impl ExecutionDefinition {
                 }
             })?;
             let metadata = service
-                .ports
+                .methods
                 .iter()
-                .find(|port| port.name == provider.port())
-                .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+                .find(|port| port.endpoint == provider.port())
+                .ok_or_else(|| SupervisorAdapterError::MethodNotFound {
                     execution_id: self.summary.execution_id.clone(),
                     service_instance: provider.service_instance().to_owned(),
-                    name: provider.port().to_owned(),
+                    endpoint: provider.port().to_owned(),
                 })?;
-            let metadata_kind = PortKind::try_from(metadata.kind)
-                .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
-            if metadata_kind != provider.kind()
+            let metadata_shape = MethodShape::try_from(metadata.shape)
+                .map_err(|_| SupervisorAdapterError::InvalidEnum("method shape"))?;
+            if metadata_shape != provider.shape()
                 || metadata.input_fqn != provider.input_fqn()
                 || metadata.output_fqn != provider.payload_fqn()
             {
@@ -429,11 +427,11 @@ impl ExecutionDefinition {
 
     /// The services selected in this execution.
     #[must_use]
-    pub fn services(&self) -> &[ServicePorts] {
+    pub fn services(&self) -> &[ServiceMethods] {
         &self.services
     }
 
-    fn service(&self, instance: &str) -> Option<&ServicePorts> {
+    fn service(&self, instance: &str) -> Option<&ServiceMethods> {
         self.services
             .binary_search_by(|service| service.instance.as_str().cmp(instance))
             .ok()
@@ -443,7 +441,7 @@ impl ExecutionDefinition {
     fn total_ports(&self) -> usize {
         self.services
             .iter()
-            .map(|service| service.ports.len())
+            .map(|service| service.methods.len())
             .sum()
     }
 }
@@ -488,7 +486,7 @@ pub struct BindingContext {
     /// Deployed service instance.
     pub service_instance: String,
     /// Admitted generated descriptor.
-    pub metadata: PortMetadata,
+    pub metadata: MethodMetadata,
 }
 
 #[derive(Clone, Debug)]
@@ -497,7 +495,7 @@ struct Binding {
     execution_id: String,
     timeline_id: String,
     service_instance: String,
-    metadata: PortMetadata,
+    metadata: MethodMetadata,
 }
 
 /// Why previously admitted bindings no longer exist.
@@ -664,7 +662,7 @@ impl SupervisorAdapter {
         &mut self,
         execution: ExecutionDefinition,
     ) -> Result<Invalidation, SupervisorAdapterError> {
-        if execution.total_ports() > self.limits.max_ports {
+        if execution.total_ports() > self.limits.max_methods {
             return Err(SupervisorAdapterError::PortCapacityExceeded);
         }
         if self.executions.len() >= self.limits.max_executions
@@ -835,15 +833,15 @@ impl SupervisorAdapter {
         })
     }
 
-    /// List one exact service instance's generated public port metadata.
+    /// List one exact service instance's generated public method metadata.
     pub fn list_ports(
         &mut self,
         route: &PublicRoute,
         session_id: &[u8],
-        request: &ListPortsRequest,
+        request: &ListMethodsRequest,
         now_ms: u64,
-    ) -> Result<ListPortsResponse, SupervisorAdapterError> {
-        self.authorize_session(route, PublicOperation::ListPorts, session_id, now_ms)?;
+    ) -> Result<ListMethodsResponse, SupervisorAdapterError> {
+        self.authorize_session(route, PublicOperation::ListMethods, session_id, now_ms)?;
         let execution = self.execution(&request.execution_id)?;
         let service = execution
             .service(&request.service_instance)
@@ -851,17 +849,21 @@ impl SupervisorAdapter {
                 execution_id: request.execution_id.clone(),
                 service_instance: request.service_instance.clone(),
             })?;
-        let page = self.page(request.page_size, &request.page_token, service.ports.len())?;
-        let ports = service
-            .ports
+        let page = self.page(
+            request.page_size,
+            &request.page_token,
+            service.methods.len(),
+        )?;
+        let methods = service
+            .methods
             .iter()
             .skip(page.offset)
             .take(page.limit)
             .cloned()
             .collect();
-        Ok(ListPortsResponse {
-            ports,
-            next_page_token: page.next_token(service.ports.len()),
+        Ok(ListMethodsResponse {
+            methods,
+            next_page_token: page.next_token(service.methods.len()),
         })
     }
 
@@ -908,7 +910,7 @@ impl SupervisorAdapter {
         execution_id: &str,
         service_instance: &str,
         port_name: &str,
-        kind: i32,
+        shape: i32,
         input_fqn: &str,
         payload_fqn: &str,
     ) -> Result<(), SupervisorAdapterError> {
@@ -925,20 +927,18 @@ impl SupervisorAdapter {
             }
         })?;
         let port = service
-            .ports
+            .methods
             .iter()
-            .find(|port| port.name == port_name)
-            .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+            .find(|port| port.endpoint == port_name)
+            .ok_or_else(|| SupervisorAdapterError::MethodNotFound {
                 execution_id: execution_id.to_owned(),
                 service_instance: service_instance.to_owned(),
-                name: port_name.to_owned(),
+                endpoint: port_name.to_owned(),
             })?;
-        let metadata_kind = PortKind::try_from(port.kind)
-            .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
-        if !matches!(
-            metadata_kind,
-            PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream
-        ) || kind != metadata_kind as i32
+        let metadata_shape = MethodShape::try_from(port.shape)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("method shape"))?;
+        if metadata_shape != MethodShape::Observation
+            || shape != metadata_shape as i32
             || port.input_fqn != input_fqn
             || port.output_fqn != payload_fqn
         {
@@ -947,12 +947,12 @@ impl SupervisorAdapter {
                 port: port_name.to_owned(),
             });
         }
-        let requested_kind = PortKind::try_from(kind)
-            .map_err(|_| SupervisorAdapterError::InvalidEnum("simulation provider kind"))?;
+        let requested_shape = MethodShape::try_from(shape)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("simulation provider shape"))?;
         if !definition.providers().iter().any(|provider| {
             provider.service_instance() == service_instance
                 && provider.port() == port_name
-                && provider.kind() == requested_kind
+                && provider.shape() == requested_shape
                 && provider.input_fqn() == input_fqn
                 && provider.payload_fqn() == payload_fqn
         }) {
@@ -971,7 +971,7 @@ impl SupervisorAdapter {
         execution_id: &str,
         service_instance: &str,
         port_name: &str,
-    ) -> Result<PortMetadata, SupervisorAdapterError> {
+    ) -> Result<MethodMetadata, SupervisorAdapterError> {
         let execution = self.execution(execution_id)?;
         let definition = execution.simulation.as_ref().ok_or_else(|| {
             SupervisorAdapterError::SimulationUnavailable {
@@ -993,14 +993,14 @@ impl SupervisorAdapter {
             }
         })?;
         service
-            .ports
+            .methods
             .iter()
-            .find(|port| port.name == port_name)
+            .find(|port| port.endpoint == port_name)
             .cloned()
-            .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+            .ok_or_else(|| SupervisorAdapterError::MethodNotFound {
                 execution_id: execution_id.to_owned(),
                 service_instance: service_instance.to_owned(),
-                name: port_name.to_owned(),
+                endpoint: port_name.to_owned(),
             })
     }
 
@@ -1009,16 +1009,21 @@ impl SupervisorAdapter {
     pub fn bind(
         &mut self,
         route: &PublicRoute,
-        request: &BindPortRequest,
+        request: &BindMethodRequest,
         now_ms: u64,
-    ) -> Result<BindPortResponse, SupervisorAdapterError> {
-        self.require_operation(route, PublicOperation::Bind)?;
+    ) -> Result<BindMethodResponse, SupervisorAdapterError> {
+        self.require_operation(route, PublicOperation::BindMethod)?;
         let session = SessionId::from_bytes(&request.session_id)?;
-        self.authorize_session(route, PublicOperation::Bind, &request.session_id, now_ms)?;
+        self.authorize_session(
+            route,
+            PublicOperation::BindMethod,
+            &request.session_id,
+            now_ms,
+        )?;
         let expected = request
             .expected
             .as_ref()
-            .ok_or(SupervisorAdapterError::MissingPortMetadata)?;
+            .ok_or(SupervisorAdapterError::MissingMethodMetadata)?;
         validate_port(expected)?;
         let execution = self.execution(&request.execution_id)?;
         if execution.summary.state == ExecutionState::Stopped as i32
@@ -1038,13 +1043,13 @@ impl SupervisorAdapter {
                 service_instance: request.service_instance.clone(),
             })?;
         let admitted = service
-            .ports
+            .methods
             .iter()
             .find(|port| *port == expected)
-            .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+            .ok_or_else(|| SupervisorAdapterError::MethodNotFound {
                 execution_id: request.execution_id.clone(),
                 service_instance: request.service_instance.clone(),
-                name: expected.name.clone(),
+                endpoint: expected.endpoint.clone(),
             })?
             .clone();
         if self.bindings.len() >= self.limits.max_bindings {
@@ -1061,7 +1066,7 @@ impl SupervisorAdapter {
                 metadata: admitted.clone(),
             },
         );
-        Ok(BindPortResponse {
+        Ok(BindMethodResponse {
             binding_id: id.as_bytes().to_vec(),
             admitted: Some(admitted),
         })
@@ -1111,7 +1116,7 @@ impl SupervisorAdapter {
         route: &PublicRoute,
         request: &phoxal::communication::session::OperationRequest,
         now_ms: u64,
-    ) -> Result<PortMetadata, SupervisorAdapterError> {
+    ) -> Result<MethodMetadata, SupervisorAdapterError> {
         Ok(self
             .validate_binding_context(route, request, now_ms)?
             .metadata)
@@ -1127,19 +1132,15 @@ impl SupervisorAdapter {
         now_ms: u64,
     ) -> Result<BindingContext, SupervisorAdapterError> {
         let context = self.validate_binding_context(route, request, now_ms)?;
-        let kind = PortKind::try_from(context.metadata.kind)
-            .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
+        let shape = MethodShape::try_from(context.metadata.shape)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("method shape"))?;
         let valid = match operation {
-            PublicOperation::Read => kind == PortKind::Read,
-            PublicOperation::Command => kind == PortKind::Commands,
-            PublicOperation::Watch => kind == PortKind::State,
-            PublicOperation::Subscribe => {
-                matches!(kind, PortKind::Sample | PortKind::Event | PortKind::Stream)
-            }
+            PublicOperation::Call => shape == MethodShape::Call,
+            PublicOperation::Observe => shape == MethodShape::Observation,
             _ => false,
         };
         if !valid {
-            return Err(SupervisorAdapterError::BindingKindMismatch { operation, kind });
+            return Err(SupervisorAdapterError::BindingShapeMismatch { operation, shape });
         }
         Ok(context)
     }
@@ -1152,20 +1153,7 @@ impl SupervisorAdapter {
     ) -> Result<BindingContext, SupervisorAdapterError> {
         let session = SessionId::from_bytes(&request.session_id)?;
         let binding_id = BindingId::from_bytes(&request.binding_id)?;
-        let expected_kind = self
-            .bindings
-            .get(&binding_id)
-            .map(|binding| {
-                PortKind::try_from(binding.metadata.kind)
-                    .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))
-            })
-            .ok_or(SupervisorAdapterError::UnknownBinding)??;
-        let required_route = if matches!(expected_kind, PortKind::Commands | PortKind::Setpoint) {
-            PublicOperation::Command
-        } else {
-            PublicOperation::Read
-        };
-        self.authorize_session(route, required_route, &request.session_id, now_ms)?;
+        self.authorize_session(route, route.operation(), &request.session_id, now_ms)?;
         let binding = self
             .bindings
             .get(&binding_id)
@@ -1191,7 +1179,7 @@ impl SupervisorAdapter {
                 service_instance: binding.service_instance.clone(),
             });
         };
-        if !service.ports.iter().any(|port| port == &binding.metadata) {
+        if !service.methods.iter().any(|port| port == &binding.metadata) {
             return Err(SupervisorAdapterError::BindingInvalidated {
                 execution_id: binding.execution_id.clone(),
                 service_instance: binding.service_instance.clone(),
@@ -1399,21 +1387,25 @@ fn validate_execution_state(state: i32) -> Result<(), SupervisorAdapterError> {
     Ok(())
 }
 
-fn validate_port(port: &PortMetadata) -> Result<(), SupervisorAdapterError> {
-    validate_identifier(&port.name, "port name")?;
-    let kind = PortKind::try_from(port.kind)
-        .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
-    if kind == PortKind::Unspecified {
-        return Err(SupervisorAdapterError::InvalidEnum("port kind"));
+fn validate_port(port: &MethodMetadata) -> Result<(), SupervisorAdapterError> {
+    validate_identifier(&port.endpoint, "port name")?;
+    let shape = MethodShape::try_from(port.shape)
+        .map_err(|_| SupervisorAdapterError::InvalidEnum("method shape"))?;
+    if shape == MethodShape::Unspecified {
+        return Err(SupervisorAdapterError::InvalidEnum("method shape"));
     }
     if (port.input_fqn.is_empty() && port.output_fqn.is_empty())
         || !valid_fqn(&port.input_fqn)
         || !valid_fqn(&port.output_fqn)
     {
-        return Err(SupervisorAdapterError::InvalidPortMetadata);
+        return Err(SupervisorAdapterError::InvalidMethodMetadata);
     }
-    if port.max_message_bytes == 0 || port.max_buffered_items == 0 {
-        return Err(SupervisorAdapterError::InvalidPortMetadata);
+    if port.max_message_bytes == 0
+        || port.max_buffered_items == 0
+        || (shape == MethodShape::Call && port.retained_latest)
+        || port.lease_valid_for_ms == Some(0)
+    {
+        return Err(SupervisorAdapterError::InvalidMethodMetadata);
     }
     Ok(())
 }
@@ -1497,25 +1489,25 @@ pub enum SupervisorAdapterError {
     /// An execution's state or identity was internally invalid.
     #[error("execution definition is invalid: {0}")]
     InvalidExecution(&'static str),
-    /// A generated public port descriptor is not admissible.
-    #[error("public port metadata is invalid")]
-    InvalidPortMetadata,
+    /// A generated public method descriptor is not admissible.
+    #[error("public method metadata is invalid")]
+    InvalidMethodMetadata,
     /// One service instance name was repeated.
     #[error("service instance is repeated: {service_instance}")]
     DuplicateService { service_instance: String },
-    /// One public port name was repeated within a service instance.
-    #[error("port {name} is repeated in service {service_instance}")]
-    DuplicatePort {
+    /// One public method name was repeated within a service instance.
+    #[error("method {endpoint} is repeated in service {service_instance}")]
+    DuplicateMethod {
         /// The service instance with the duplicate.
         service_instance: String,
-        /// The repeated public port name.
-        name: String,
+        /// The repeated public method name.
+        endpoint: String,
     },
     /// The adapter has no room for another execution.
     #[error("execution capacity is exhausted")]
     ExecutionCapacityExceeded,
-    /// The adapter has no room for another public port.
-    #[error("public port capacity is exhausted")]
+    /// The adapter has no room for another public method.
+    #[error("public method capacity is exhausted")]
     PortCapacityExceeded,
     /// The adapter has no room for another binding.
     #[error("binding capacity is exhausted")]
@@ -1541,15 +1533,17 @@ pub enum SupervisorAdapterError {
         /// The service instance that was queried.
         service_instance: String,
     },
-    /// The selected public port is not known or no longer matches.
-    #[error("port {name} is not found in service {service_instance} of execution {execution_id}")]
-    PortNotFound {
+    /// The selected public method is not known or no longer matches.
+    #[error(
+        "method {endpoint} is not found in service {service_instance} of execution {execution_id}"
+    )]
+    MethodNotFound {
         /// The execution that was queried.
         execution_id: String,
         /// The service instance that was queried.
         service_instance: String,
-        /// The public port name that was queried.
-        name: String,
+        /// The public method name that was queried.
+        endpoint: String,
     },
     /// The requested simulation provider does not match an admitted generated
     /// publication port and payload contract.
@@ -1562,7 +1556,7 @@ pub enum SupervisorAdapterError {
     },
     /// A bind request omitted its expected generated descriptor.
     #[error("bind request is missing expected port metadata")]
-    MissingPortMetadata,
+    MissingMethodMetadata,
     /// A page size was not representable or otherwise invalid.
     #[error("page size is invalid")]
     InvalidPageSize,
@@ -1578,13 +1572,13 @@ pub enum SupervisorAdapterError {
     /// No active binding has the requested identifier.
     #[error("binding is unknown or was invalidated")]
     UnknownBinding,
-    /// The operation does not match the admitted public port kind.
-    #[error("public port kind {kind:?} cannot be used with {operation:?}")]
-    BindingKindMismatch {
+    /// The operation does not match the admitted public method shape.
+    #[error("public method shape {shape:?} cannot be used with {operation:?}")]
+    BindingShapeMismatch {
         /// Requested operation.
         operation: PublicOperation,
-        /// Admitted descriptor kind.
-        kind: PortKind,
+        /// Admitted method shape.
+        shape: MethodShape,
     },
     /// A stale request uses a different execution identity.
     #[error("operation execution identity does not match its binding")]
@@ -1628,18 +1622,40 @@ pub enum SupervisorAdapterError {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Copy)]
+    enum TestRole {
+        State,
+        Read,
+        Commands,
+    }
+
+    impl TestRole {
+        const fn shape(self) -> MethodShape {
+            match self {
+                Self::State => MethodShape::Observation,
+                Self::Read | Self::Commands => MethodShape::Call,
+            }
+        }
+
+        const fn retained_latest(self) -> bool {
+            matches!(self, Self::State)
+        }
+    }
+
     fn target() -> DeploymentTarget {
         DeploymentTarget::new("workshop", "rover-01").expect("target")
     }
 
-    fn port(name: &str, kind: PortKind) -> PortMetadata {
-        PortMetadata {
-            name: name.to_owned(),
-            kind: kind as i32,
+    fn port(endpoint: &str, role: TestRole) -> MethodMetadata {
+        MethodMetadata {
+            endpoint: endpoint.to_owned(),
+            shape: role.shape() as i32,
             input_fqn: "example.Request".to_owned(),
             output_fqn: "example.Response".to_owned(),
             max_message_bytes: 1024,
             max_buffered_items: 32,
+            retained_latest: role.retained_latest(),
+            lease_valid_for_ms: None,
         }
     }
 
@@ -1655,11 +1671,11 @@ mod tests {
                 state: ExecutionState::Ready as i32,
             },
             vec![
-                ServicePorts::new(
+                ServiceMethods::new(
                     "navigation",
                     vec![
-                        port("status", PortKind::State),
-                        port("commands", PortKind::Commands),
+                        port("status", TestRole::State),
+                        port("commands", TestRole::Commands),
                     ],
                 )
                 .expect("service"),
@@ -1701,7 +1717,7 @@ mod tests {
                 SimulationProviderDefinition::new(
                     "navigation",
                     "status",
-                    PortKind::State,
+                    MethodShape::Observation,
                     "example.Request",
                     "example.Response",
                     100_000_000,
@@ -1833,11 +1849,11 @@ mod tests {
             .expect("route");
         let ports_route = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
-            .and_then(|route| route.with_operation(PublicOperation::ListPorts))
+            .and_then(|route| route.with_operation(PublicOperation::ListMethods))
             .expect("route");
         let bind_route = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
-            .and_then(|route| route.with_operation(PublicOperation::Bind))
+            .and_then(|route| route.with_operation(PublicOperation::BindMethod))
             .expect("route");
         adapter
             .install_execution(execution("timeline-1"))
@@ -1859,7 +1875,7 @@ mod tests {
             .list_ports(
                 &ports_route,
                 &session,
-                &ListPortsRequest {
+                &ListMethodsRequest {
                     execution_id: "execution-1".to_owned(),
                     service_instance: "navigation".to_owned(),
                     page_size: 1,
@@ -1868,15 +1884,15 @@ mod tests {
                 },
                 101,
             )
-            .expect("list ports");
-        assert_eq!(first_ports.ports.len(), 1);
-        assert_eq!(first_ports.ports[0].name, "commands");
+            .expect("list methods");
+        assert_eq!(first_ports.methods.len(), 1);
+        assert_eq!(first_ports.methods[0].endpoint, "commands");
         assert_eq!(first_ports.next_page_token.len(), MAX_PAGE_TOKEN_BYTES);
-        let expected = port("commands", PortKind::Commands);
+        let expected = port("commands", TestRole::Commands);
         let response = adapter
             .bind(
                 &bind_route,
-                &BindPortRequest {
+                &BindMethodRequest {
                     session_id: session.clone(),
                     execution_id: "execution-1".to_owned(),
                     service_instance: "navigation".to_owned(),
@@ -1889,17 +1905,17 @@ mod tests {
         assert_eq!(adapter.binding_count(), 1);
         let wrong = adapter.bind(
             &bind_route,
-            &BindPortRequest {
+            &BindMethodRequest {
                 session_id: session,
                 execution_id: "execution-1".to_owned(),
                 service_instance: "navigation".to_owned(),
-                expected: Some(port("commands", PortKind::Read)),
+                expected: Some(port("commands", TestRole::State)),
             },
             103,
         );
         assert!(matches!(
             wrong,
-            Err(SupervisorAdapterError::PortNotFound { .. })
+            Err(SupervisorAdapterError::MethodNotFound { .. })
         ));
     }
 
@@ -1909,11 +1925,11 @@ mod tests {
         let (_, session) = open(&mut adapter, "operator-a");
         let inspect = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
-            .and_then(|route| route.with_operation(PublicOperation::Bind))
+            .and_then(|route| route.with_operation(PublicOperation::BindMethod))
             .expect("route");
         let mutation = target()
             .public_route("operator-a", PublicRouteKind::Mutation)
-            .and_then(|route| route.with_operation(PublicOperation::Command))
+            .and_then(|route| route.with_operation(PublicOperation::Call))
             .expect("route");
         adapter
             .install_execution(execution("timeline-1"))
@@ -1921,11 +1937,11 @@ mod tests {
         let binding = adapter
             .bind(
                 &inspect,
-                &BindPortRequest {
+                &BindMethodRequest {
                     session_id: session.clone(),
                     execution_id: "execution-1".to_owned(),
                     service_instance: "navigation".to_owned(),
-                    expected: Some(port("commands", PortKind::Commands)),
+                    expected: Some(port("commands", TestRole::Commands)),
                 },
                 101,
             )
@@ -1974,13 +1990,13 @@ mod tests {
             .bind(
                 &target()
                     .public_route("operator-a", PublicRouteKind::Inspection)
-                    .and_then(|route| route.with_operation(PublicOperation::Bind))
+                    .and_then(|route| route.with_operation(PublicOperation::BindMethod))
                     .expect("route"),
-                &BindPortRequest {
+                &BindMethodRequest {
                     session_id: session,
                     execution_id: "execution-1".to_owned(),
                     service_instance: "navigation".to_owned(),
-                    expected: Some(port("status", PortKind::State)),
+                    expected: Some(port("status", TestRole::State)),
                 },
                 100,
             )
@@ -2098,18 +2114,20 @@ mod tests {
             Err(SupervisorAdapterError::InvalidVersion { .. })
         ));
         assert!(matches!(
-            ServicePorts::new(
+            ServiceMethods::new(
                 "navigation",
-                vec![PortMetadata {
-                    name: "status".to_owned(),
-                    kind: PortKind::State as i32,
+                vec![MethodMetadata {
+                    endpoint: "status".to_owned(),
+                    shape: MethodShape::Observation as i32,
                     input_fqn: "not valid".to_owned(),
                     output_fqn: String::new(),
                     max_message_bytes: 1,
                     max_buffered_items: 1,
+                    retained_latest: true,
+                    lease_valid_for_ms: None,
                 }]
             ),
-            Err(SupervisorAdapterError::InvalidPortMetadata)
+            Err(SupervisorAdapterError::InvalidMethodMetadata)
         ));
         let mut adapter = adapter();
         assert_eq!(

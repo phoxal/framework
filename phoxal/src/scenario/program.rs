@@ -99,7 +99,7 @@ impl std::error::Error for ProgramError {}
 /// The schema version the bundle writes to disk. Bump only on
 /// backward-incompatible wire changes; this is the version a reader
 /// uses to decide whether to upgrade its decoder.
-pub const PROGRAM_SCHEMA_VERSION: u32 = 1;
+pub const PROGRAM_SCHEMA_VERSION: u32 = 2;
 
 /// The native quantum of the simulator's discrete tick. The framework
 /// resolves a request's duration to a multiple of this quantum and
@@ -454,6 +454,19 @@ fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
         } => {
             let validity = match validity.as_str() {
                 "permanent" => Validity::Permanent,
+                value if value.starts_with("lease:") => {
+                    let valid_for_ms = value["lease:".len()..].parse::<u64>().map_err(|_| {
+                        ProgramError::Other(format!(
+                            "decoded setpoint declares invalid validity `{value}`"
+                        ))
+                    })?;
+                    if valid_for_ms == 0 {
+                        return Err(ProgramError::Other(
+                            "decoded setpoint lease validity must be positive".to_owned(),
+                        ));
+                    }
+                    Validity::Lease { valid_for_ms }
+                }
                 other => {
                     return Err(ProgramError::Other(format!(
                         "decoded setpoint declares unknown validity `{other}`"
@@ -531,6 +544,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
     Ok(match capture {
         WireCapture::State {
             name,
+            policy,
             signature_name,
             signature_service,
             signature_method,
@@ -539,6 +553,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
             signature_response,
         } => crate::scenario::plan::Capture::State {
             name,
+            policy,
             signature: port_signature(
                 &signature_name,
                 &signature_service,
@@ -550,6 +565,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
         },
         WireCapture::Sample {
             name,
+            policy,
             signature_name,
             signature_service,
             signature_method,
@@ -558,6 +574,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
             signature_response,
         } => crate::scenario::plan::Capture::Sample {
             name,
+            policy,
             signature: port_signature(
                 &signature_name,
                 &signature_service,
@@ -569,6 +586,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
         },
         WireCapture::Event {
             name,
+            policy,
             signature_name,
             signature_service,
             signature_method,
@@ -577,6 +595,7 @@ fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture
             signature_response,
         } => crate::scenario::plan::Capture::Event {
             name,
+            policy,
             signature: port_signature(
                 &signature_name,
                 &signature_service,
@@ -727,6 +746,7 @@ enum WireAction {
 enum WireCapture {
     State {
         name: String,
+        policy: crate::scenario::plan::CapturePolicy,
         signature_name: String,
         signature_service: String,
         signature_method: String,
@@ -736,6 +756,7 @@ enum WireCapture {
     },
     Sample {
         name: String,
+        policy: crate::scenario::plan::CapturePolicy,
         signature_name: String,
         signature_service: String,
         signature_method: String,
@@ -745,6 +766,7 @@ enum WireCapture {
     },
     Event {
         name: String,
+        policy: crate::scenario::plan::CapturePolicy,
         signature_name: String,
         signature_service: String,
         signature_method: String,
@@ -781,7 +803,7 @@ fn wire_step(step: &Step) -> WireStep {
                     consumer_request: request.to_owned(),
                     consumer_response: response.to_owned(),
                     encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
-                    validity: validity.wire_label().to_owned(),
+                    validity: validity.wire_label(),
                 }
             }
             Action::Withdraw {
@@ -831,10 +853,15 @@ fn wire_step(step: &Step) -> WireStep {
 
 fn wire_capture(capture: &Capture) -> WireCapture {
     match capture {
-        Capture::State { name, signature } => {
+        Capture::State {
+            name,
+            signature,
+            policy,
+        } => {
             let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
             WireCapture::State {
                 name: name.clone(),
+                policy: *policy,
                 signature_name: sname.to_owned(),
                 signature_service: ssvc.to_owned(),
                 signature_method: smethod.to_owned(),
@@ -843,10 +870,15 @@ fn wire_capture(capture: &Capture) -> WireCapture {
                 signature_response: sresp.to_owned(),
             }
         }
-        Capture::Sample { name, signature } => {
+        Capture::Sample {
+            name,
+            signature,
+            policy,
+        } => {
             let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
             WireCapture::Sample {
                 name: name.clone(),
+                policy: *policy,
                 signature_name: sname.to_owned(),
                 signature_service: ssvc.to_owned(),
                 signature_method: smethod.to_owned(),
@@ -855,10 +887,15 @@ fn wire_capture(capture: &Capture) -> WireCapture {
                 signature_response: sresp.to_owned(),
             }
         }
-        Capture::Event { name, signature } => {
+        Capture::Event {
+            name,
+            signature,
+            policy,
+        } => {
             let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
             WireCapture::Event {
                 name: name.clone(),
+                policy: *policy,
                 signature_name: sname.to_owned(),
                 signature_service: ssvc.to_owned(),
                 signature_method: smethod.to_owned(),

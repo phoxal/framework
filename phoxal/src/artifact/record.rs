@@ -70,8 +70,8 @@ pub enum RuntimeRecord {
 pub struct InputRecord {
     /// Private Rust input field name.
     pub name: String,
-    /// Input semantic form.
-    pub kind: InputKind,
+    /// Private runtime storage or delivery role.
+    pub role: InputRole,
     /// Optional latest-value age bound.
     pub max_age_ms: Option<u64>,
     /// Optional item-count bound.
@@ -81,7 +81,7 @@ pub struct InputRecord {
     /// Public port name for an explicitly bound input.
     pub port: Option<String>,
     /// Complete generated port identity when one is bound.
-    pub signature: Option<PortSignature>,
+    pub signature: Option<MethodSignature>,
     /// Expected generated Protobuf request identity, when this input sends requests.
     pub request_fqn: Option<String>,
     /// Expected generated Protobuf publication or response identity.
@@ -94,12 +94,12 @@ pub struct InputRecord {
 pub struct OutputRecord {
     /// Private Rust field or method name.
     pub name: String,
-    /// Output role.
-    pub kind: OutputKind,
+    /// Private runtime production role.
+    pub role: OutputRole,
     /// Public served port name.
     pub port: Option<String>,
     /// Complete generated port identity when one is served.
-    pub signature: Option<PortSignature>,
+    pub signature: Option<MethodSignature>,
     /// Input field selected by a reply, activation, or worker.
     pub input: Option<String>,
     /// Projection method selected by an offered read.
@@ -124,70 +124,59 @@ pub struct OutputRecord {
     pub cancel_grace_ms: Option<u64>,
 }
 
-/// The seven public Protobuf port kinds.
+/// Public Protobuf method shape.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PortKind {
-    /// Latest state projection.
-    State,
-    /// Captured sample publication.
-    Sample,
-    /// Discrete event publication.
-    Event,
-    /// Ordered stream publication.
-    Stream,
-    /// Replaceable setpoint publication.
-    Setpoint,
-    /// Unary immutable read.
-    Read,
-    /// Unary behavioral command.
-    Commands,
+pub enum MethodShape {
+    /// Unary request and response.
+    Call,
+    /// Server-streamed observation.
+    Observation,
 }
 
-/// Input semantic forms recorded by the runtime macro.
+/// Private execution role for one runtime input.
+///
+/// Public service semantics live in [`MethodSignature`]. These roles describe
+/// only how the owning runtime stores or drains admitted data and deliberately
+/// do not reproduce the retired public port taxonomy.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum InputKind {
-    /// Latest value.
-    Latest,
-    /// Ordered samples.
-    Samples,
-    /// Ordered events.
-    Events,
-    /// Setpoint value.
-    Setpoint,
-    /// Ordered stream.
-    Stream,
-    /// Commands.
-    Commands,
-    /// Immutable read completion.
-    Read,
-    /// Behavioral request completion.
-    Request,
+pub enum InputRole {
+    /// One coalesced observation value.
+    #[serde(rename = "observation_latest")]
+    ObservationLatest,
+    /// Ordered observation history.
+    #[serde(rename = "observation_history")]
+    ObservationHistory,
+    /// One replaceable value governed by a finite lease.
+    #[serde(rename = "leased_value")]
+    LeasedValue,
+    /// Ingress queue for generated service calls.
+    #[serde(rename = "call_ingress")]
+    CallIngress,
+    /// Completion of a projection-style call adapter.
+    #[serde(rename = "call_result")]
+    CallResult,
+    /// Binding from an outgoing call to its admitted receiver.
+    #[serde(rename = "call_target")]
+    CallTarget,
     /// Local operation completion.
-    Operation,
+    #[serde(rename = "operation_result")]
+    OperationResult,
+    /// Generated service-call completions.
+    #[serde(rename = "call_completions")]
+    CallCompletions,
 }
 
-/// Output roles recorded by the runtime macro.
+/// Private execution role for one runtime output.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum OutputKind {
-    /// State projection.
-    State,
-    /// Sample batch.
-    Sample,
-    /// Event batch.
-    Event,
-    /// Stream batch.
-    Stream,
-    /// Setpoint projection.
-    Setpoint,
-    /// Read handler.
-    Read,
+pub enum OutputRole {
+    /// A generated service method. Its public shape and modifiers are in its signature.
+    Method,
     /// Command reply.
     Reply,
     /// Activation selector.
-    Activate,
+    Activation,
     /// Operation worker.
     Operation,
 }
@@ -195,19 +184,23 @@ pub enum OutputKind {
 /// Complete method identity for one generated public port.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PortSignature {
-    /// Public port name.
-    pub name: String,
+pub struct MethodSignature {
+    /// Stable endpoint name.
+    pub endpoint: String,
     /// Fully-qualified Protobuf service name.
     pub service: String,
     /// Protobuf method name.
     pub method: String,
-    /// Semantic port kind.
-    pub kind: PortKind,
+    /// Cardinality-derived public method shape.
+    pub shape: MethodShape,
     /// Fully-qualified request message name.
     pub request: String,
     /// Fully-qualified response message name.
     pub response: String,
+    /// Whether observation admission replays the latest accepted value.
+    pub retained_latest: bool,
+    /// Optional contract-owned validity interval.
+    pub lease_valid_for_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -228,7 +221,7 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             inputs: vec![InputRecord {
                 name: "input".to_owned(),
-                kind: InputKind::Latest,
+                role: InputRole::ObservationLatest,
                 max_age_ms: None,
                 max_items: None,
                 max_bytes: None,
@@ -240,15 +233,17 @@ mod tests {
             transient_outputs: Vec::new(),
             service_outputs: vec![OutputRecord {
                 name: "output".to_owned(),
-                kind: OutputKind::State,
+                role: OutputRole::Method,
                 port: Some("output".to_owned()),
-                signature: Some(PortSignature {
-                    name: "output".to_owned(),
+                signature: Some(MethodSignature {
+                    endpoint: "output".to_owned(),
                     service: "example.Service".to_owned(),
                     method: "Output".to_owned(),
-                    kind: PortKind::State,
+                    shape: MethodShape::Observation,
                     request: "google.protobuf.Empty".to_owned(),
                     response: "example.Payload".to_owned(),
+                    retained_latest: true,
+                    lease_valid_for_ms: None,
                 }),
                 input: None,
                 project: None,
@@ -286,20 +281,15 @@ mod tests {
     }
 
     #[test]
-    fn port_kind_serializes_as_lowercase() {
+    fn method_shape_serializes_as_lowercase() {
         for (kind, expected) in [
-            (PortKind::State, "\"state\""),
-            (PortKind::Sample, "\"sample\""),
-            (PortKind::Event, "\"event\""),
-            (PortKind::Stream, "\"stream\""),
-            (PortKind::Setpoint, "\"setpoint\""),
-            (PortKind::Read, "\"read\""),
-            (PortKind::Commands, "\"commands\""),
+            (MethodShape::Call, "\"call\""),
+            (MethodShape::Observation, "\"observation\""),
         ] {
             let json = serde_json::to_string(&kind).expect("serializes");
             assert_eq!(
                 json, expected,
-                "PortKind {:?} serializes as {expected}",
+                "MethodShape {:?} serializes as {expected}",
                 kind
             );
         }

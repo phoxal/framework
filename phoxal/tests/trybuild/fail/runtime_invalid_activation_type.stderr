@@ -1,24 +1,24 @@
-error[E0277]: the trait bound `Option<Activation<u64, u64>>: phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<u64, u32, u64>>` is not satisfied
+error[E0277]: the trait bound `Option<phoxal::runtime::Activation<u64, u64>>: phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<u64, u32, u64>>` is not satisfied
   --> tests/trybuild/fail/runtime_invalid_activation_type.rs:36:38
    |
 36 |     fn select(&self, _state: &()) -> Option<Activation<u64, u64>> {
    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
-   = help: the trait `phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<u64, u32, u64>>` is not implemented for `Option<Activation<u64, u64>>`
+   = help: the trait `phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<u64, u32, u64>>` is not implemented for `Option<phoxal::runtime::Activation<u64, u64>>`
 help: the following other types implement trait `phoxal::runtime::input::ActivationFor<Input>`
   --> src/runtime/input.rs
    |
    | / impl<Key: 'static, Request: 'static, Response: 'static> ActivationFor<Read<Key, Request, Response>>
    | |     for Option<Activation<Key, Request>>
-   | |________________________________________^ `Option<Activation<Key, Request>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<Key, Request, Response>>`
+   | |________________________________________^ `Option<phoxal::runtime::Activation<Key, Request>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Read<Key, Request, Response>>`
 ...
    | / impl<Key: 'static, RequestBody: 'static, Response: 'static>
    | |     ActivationFor<Request<Key, RequestBody, Response>> for Option<Activation<Key, RequestBody>>
-   | |_______________________________________________________________________________________________^ `Option<Activation<Key, RequestBody>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Request<Key, RequestBody, Response>>`
+   | |_______________________________________________________________________________________________^ `Option<phoxal::runtime::Activation<Key, RequestBody>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Request<Key, RequestBody, Response>>`
 ...
    | / impl<Key: 'static, Response: 'static, WorkerInput: 'static> ActivationFor<Operation<Key, Response>>
    | |     for Option<Activation<Key, WorkerInput>>
-   | |____________________________________________^ `Option<Activation<Key, WorkerInput>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Operation<Key, Response>>`
+   | |____________________________________________^ `Option<phoxal::runtime::Activation<Key, WorkerInput>>` implements `phoxal::runtime::input::ActivationFor<phoxal::runtime::Operation<Key, Response>>`
 note: required by a bound in `__phoxal_activate_select`
   --> tests/trybuild/fail/runtime_invalid_activation_type.rs:33:1
    |

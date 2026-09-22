@@ -46,11 +46,7 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
             SimulationCommand::Upgrade(arguments) => run_simulator_install(arguments, true),
             SimulationCommand::Status(arguments) => run_simulator_status(arguments),
             SimulationCommand::Uninstall => run_simulator_uninstall(),
-            SimulationCommand::Run(arguments) => run_simulation(arguments),
-            SimulationCommand::Scenario(arguments) => match arguments.command {
-                ScenarioCommand::List(arguments) => run_scenario_list(arguments),
-                ScenarioCommand::Run(arguments) => run_scenario_case(arguments),
-            },
+            SimulationCommand::Run(arguments) => run_simulation(*arguments),
         },
         command => {
             let project = Project::discover(std::env::current_dir().map_err(|source| {
@@ -91,13 +87,7 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                     );
                     Ok(())
                 }
-                Command::Test(arguments) => run_cargo(
-                    &project,
-                    CargoOperation::Test,
-                    arguments
-                        .options
-                        .into_options(Vec::new(), arguments.test_args),
-                ),
+                Command::Test(arguments) => run_test(&project, arguments),
                 Command::Update(arguments) => {
                     let options = arguments.into_options();
                     let outputs = project.update(&options)?;
@@ -297,72 +287,6 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Er
     }
 }
 
-fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), crate::project::Error> {
-    let ScenarioListArgs { filter, options } = arguments;
-    let project = Project::discover(std::env::current_dir().map_err(|source| {
-        crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
-            path: ".".into(),
-            source,
-        })
-    })?)?;
-    let cargo_options = options.into_options(Vec::new(), Vec::new());
-    let entries = crate::project::scenario::list_scenarios(&project, &cargo_options)?;
-    for entry in entries {
-        if filter
-            .as_deref()
-            .is_none_or(|needle| entry.name.contains(needle))
-        {
-            println!("{}", entry.name);
-        }
-    }
-    Ok(())
-}
-
-fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), crate::project::Error> {
-    let ScenarioRunArgs {
-        scenario,
-        simulator,
-        headless,
-        options,
-    } = arguments;
-    let project = Project::discover(std::env::current_dir().map_err(|source| {
-        crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
-            path: ".".into(),
-            source,
-        })
-    })?)?;
-    let cargo_options = options.into_options(Vec::new(), Vec::new());
-    let outcome = crate::project::scenario::run_scenario(
-        &project,
-        &cargo_options,
-        &scenario,
-        simulator.as_deref(),
-        headless,
-    )?;
-    println!(
-        "scenario {}: {}",
-        outcome.scenario_name,
-        if outcome.passed { "PASSED" } else { "FAILED" }
-    );
-    if !outcome.stdout.is_empty() {
-        for line in outcome.stdout.lines() {
-            println!("  {line}");
-        }
-    }
-    if !outcome.stderr.is_empty() {
-        for line in outcome.stderr.lines() {
-            eprintln!("  {line}");
-        }
-    }
-    if let Some(path) = outcome.report_artifact_path {
-        println!("  report: {}", path.display());
-    }
-    if !outcome.passed {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
 fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> {
     let (kind, package) = match arguments.package {
         PublishPackage::Component(package) => (PublicationKind::Component, package),
@@ -436,10 +360,11 @@ fn run_cargo(
     let json = json_requested(&options);
     let prepared = project.prepare(&options)?;
     print_preparation(&prepared);
-    let outputs = if operation == CargoOperation::Check {
-        prepared.check(&options)?
-    } else {
-        prepared.run(operation, &options)?
+    let outputs = match operation {
+        CargoOperation::Check => prepared.check(&options)?,
+        CargoOperation::Test | CargoOperation::Build | CargoOperation::Update => {
+            prepared.run(operation, &options)?
+        }
     };
     for output in outputs {
         print_bytes(&output.stdout, false);
@@ -447,6 +372,45 @@ fn run_cargo(
     }
     if json {
         eprintln!("cargo phoxal: {} completed", operation.as_str());
+    }
+    Ok(())
+}
+
+fn run_test(project: &Project, arguments: TestArgs) -> Result<(), crate::project::Error> {
+    let TestArgs {
+        options,
+        filter,
+        no_run,
+        simulator,
+        desktop,
+        test_args,
+    } = arguments;
+    let mut cargo_args = Vec::new();
+    if let Some(filter) = filter {
+        cargo_args.push(filter);
+    }
+    if no_run {
+        cargo_args.push(OsString::from("--no-run"));
+    }
+    let options = options.into_options(cargo_args, test_args);
+    let json = json_requested(&options);
+    let prepared = project.prepare(&options)?;
+    print_preparation(&prepared);
+    let outputs = crate::project::scenario::fixture_host::run_tests(
+        project,
+        &prepared,
+        &options,
+        &crate::project::scenario::fixture_host::TestHostOptions {
+            simulator,
+            headless: !desktop,
+        },
+    )?;
+    for output in outputs {
+        print_bytes(&output.stdout, false);
+        print_bytes(&output.stderr, true);
+    }
+    if json {
+        eprintln!("cargo phoxal: test completed");
     }
     Ok(())
 }
@@ -558,7 +522,6 @@ fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
         | crate::project::Error::BundlePublish { .. }
         | crate::project::Error::BundleCleanup { .. }
         | crate::project::Error::Publication(_) => None,
-        crate::project::Error::ScenarioRun(_) => None,
     }
 }
 
@@ -569,15 +532,14 @@ fn print_preparation(prepared: &crate::project::PreparedProject) {
                 dependency,
                 requirement,
             } => eprintln!("prepared dependency {dependency} ({requirement})"),
-            crate::project::PreparationChange::TestTargetAdded { name, path } => {
-                eprintln!("prepared test target `{name}` at {path}")
+            crate::project::PreparationChange::RobotApiDependencyAdded { package, path } => {
+                eprintln!("prepared generated dependency robot_api ({package} at {path})")
             }
-            crate::project::PreparationChange::DevDependencyFeatureAdded {
-                dependency,
-                feature,
-            } => eprintln!("prepared dev-dep `{dependency}` feature `{feature}`"),
-            crate::project::PreparationChange::HarnessWritten { path } => {
-                eprintln!("prepared harness at {path}")
+            crate::project::PreparationChange::RobotApiFileWritten { path } => {
+                eprintln!("prepared generated robot API file {path}")
+            }
+            crate::project::PreparationChange::ServiceContractFileWritten { package, path } => {
+                eprintln!("prepared generated contract {package}/{path}")
             }
         }
     }
@@ -619,10 +581,6 @@ impl Cli {
                 SimulationCommand::Install(_) | SimulationCommand::Upgrade(_) => false,
                 SimulationCommand::Status(_) | SimulationCommand::Uninstall => false,
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
-                SimulationCommand::Scenario(arguments) => match &arguments.command {
-                    ScenarioCommand::List(arguments) => json_common(&arguments.options, &[]),
-                    ScenarioCommand::Run(arguments) => json_common(&arguments.options, &[]),
-                },
             },
             Command::Publish(_) => false,
         }
@@ -664,9 +622,7 @@ enum SimulationCommand {
     /// Remove the managed simulator installation.
     Uninstall,
     /// Run one finite scene against the selected robot bundle.
-    Run(SimulationRunArgs),
-    /// List, plan, or run authored scenarios for the selected robot bundle.
-    Scenario(ScenarioArgs),
+    Run(Box<SimulationRunArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -690,42 +646,6 @@ struct SimulationStatusArgs {
     /// Emit one machine-readable JSON record.
     #[arg(long)]
     json: bool,
-}
-
-#[derive(Debug, Args)]
-struct ScenarioArgs {
-    #[command(subcommand)]
-    command: ScenarioCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ScenarioCommand {
-    /// List scenarios registered in the prepared harness binary.
-    List(ScenarioListArgs),
-    /// Run a single scenario by struct identity (e.g. `RoverForwardTurnStop`).
-    Run(ScenarioRunArgs),
-}
-
-#[derive(Debug, Args)]
-struct ScenarioListArgs {
-    /// Optional substring filter against the registered scenario names.
-    filter: Option<String>,
-    #[command(flatten)]
-    options: CommonArgs,
-}
-
-#[derive(Debug, Args)]
-struct ScenarioRunArgs {
-    /// Scenario struct identity (`<StructIdent>`, not the full `scenarios/...` prefix).
-    scenario: String,
-    /// Explicit simulator executable or packaged application executable.
-    #[arg(long)]
-    simulator: Option<PathBuf>,
-    /// Run without opening the simulator desktop.
-    #[arg(long)]
-    headless: bool,
-    #[command(flatten)]
-    options: CommonArgs,
 }
 
 #[derive(Debug, Args)]
@@ -853,6 +773,17 @@ impl BuildArgs {
 struct TestArgs {
     #[command(flatten)]
     options: CommonArgs,
+    /// Optional substring filter passed to Cargo's Rust test harness.
+    filter: Option<OsString>,
+    /// Compile selected tests without executing them.
+    #[arg(long)]
+    no_run: bool,
+    /// Explicit simulator executable for source-development qualification.
+    #[arg(long)]
+    simulator: Option<PathBuf>,
+    /// Present simulation runs in the desktop application instead of headless mode.
+    #[arg(long)]
+    desktop: bool,
     /// Arguments passed to the root test binary after Cargo's test delimiter.
     #[arg(last = true, allow_hyphen_values = true)]
     test_args: Vec<OsString>,
@@ -1112,9 +1043,6 @@ mod tests {
         let arguments = match parsed.command {
             Command::Simulation(arguments) => match arguments.command {
                 SimulationCommand::Run(arguments) => arguments,
-                SimulationCommand::Scenario(_) => {
-                    panic!("simulation command parsed as a scenario")
-                }
                 _ => panic!("simulation run parsed as a management command"),
             },
             _ => panic!("simulation command parsed as a different variant"),
@@ -1159,45 +1087,6 @@ mod tests {
             ])
             .is_err()
         );
-    }
-
-    #[test]
-    fn scenario_run_parses_explicit_simulator_and_headless_mode() {
-        let parsed = Cli::try_parse_from([
-            "cargo-phoxal",
-            "simulation",
-            "scenario",
-            "run",
-            "ForwardTurnStop",
-            "--headless",
-            "--simulator",
-            "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator",
-            "--locked",
-            "--release",
-        ])
-        .expect("scenario run parses");
-        let arguments = match parsed.command {
-            Command::Simulation(arguments) => match arguments.command {
-                SimulationCommand::Scenario(arguments) => match arguments.command {
-                    ScenarioCommand::Run(arguments) => arguments,
-                    ScenarioCommand::List(_) => panic!("scenario command parsed as list"),
-                },
-                SimulationCommand::Run(_) => panic!("scenario parsed as simulation run"),
-                _ => panic!("scenario parsed as a management command"),
-            },
-            _ => panic!("scenario parsed as a different command"),
-        };
-        assert_eq!(arguments.scenario, "ForwardTurnStop");
-        assert!(arguments.headless);
-        assert_eq!(
-            arguments.simulator,
-            Some(PathBuf::from(
-                "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator"
-            ))
-        );
-        let options = arguments.options.into_options(Vec::new(), Vec::new());
-        assert_eq!(options.lock, LockMode::Locked);
-        assert!(options.release);
     }
 
     #[test]

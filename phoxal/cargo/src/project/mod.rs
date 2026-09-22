@@ -13,6 +13,7 @@ mod error;
 mod file_lock;
 mod preparation;
 mod publication;
+mod robot_api;
 pub mod scenario;
 mod selection;
 mod simulation;
@@ -102,16 +103,6 @@ impl Project {
             .map(|(prepared, ())| prepared)
     }
 
-    /// Run only the scenario preparation step. Useful for `cargo phoxal
-    /// simulation scenario list/run` to materialise the test target and
-    /// generated harness without a full Cargo graph resolution.
-    pub fn prepare_scenarios(
-        &self,
-        options: &CargoOptions,
-    ) -> Result<Vec<PreparationChange>, Error> {
-        preparation::prepare_scenario_target(&self.layout, options)
-    }
-
     /// Stage authored inputs before resolving, allowing an explicit update to
     /// repair a lockfile that cannot resolve the newly authored dependencies.
     fn prepare_with<T>(
@@ -120,11 +111,9 @@ impl Project {
         before_resolution: impl FnOnce(&Path, &Path, Option<&Path>) -> Result<T, Error>,
     ) -> Result<(PreparedProject, T), Error> {
         let mut preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
-        // Scenario preparation runs *inside* the same workspace lock and
-        // manifest snapshot. Any later failure restores the manifest to its
-        // pre-supervisor state, which also undoes the scenario additions.
-        if let Err(error) = preparation::prepare_scenario_target_in_transaction(
+        if let Err(error) = preparation::prepare_robot_api_in_transaction(
             &self.layout,
+            &self.document,
             options,
             &mut preparation,
         ) {
@@ -157,10 +146,50 @@ impl Project {
         if let Err(error) = reject_direct_targetless_git(&metadata) {
             return rollback_preparation(preparation, error);
         }
-        let cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest) {
+        let mut cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest)
+        {
             Ok(sources) => sources,
             Err(error) => return rollback_preparation(preparation, error.into()),
         };
+        let mut metadata = metadata;
+        let robot_api_changed = match preparation::finalize_robot_api_in_transaction(
+            &self.layout,
+            &self.document,
+            &cargo_sources,
+            options,
+            &mut preparation,
+        ) {
+            Ok(changed) => changed,
+            Err(error) => return rollback_preparation(preparation, error),
+        };
+        if robot_api_changed {
+            if let Some(source) = &local_source {
+                for relative in [
+                    ".phoxal/robot-api/src/lib.rs",
+                    ".phoxal/robot-api/src/contracts.rs",
+                    ".phoxal/robot-api/src/services.rs",
+                ] {
+                    if let Err(error) =
+                        source.sync_project_file(self.layout.root(), Path::new(relative))
+                    {
+                        return rollback_preparation(preparation, error);
+                    }
+                }
+            }
+            metadata = match cargo::load_metadata_at(
+                metadata_manifest,
+                metadata_workdir,
+                metadata_target,
+                options,
+            ) {
+                Ok(metadata) => metadata,
+                Err(error) => return rollback_preparation(preparation, error),
+            };
+            cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest) {
+                Ok(sources) => sources,
+                Err(error) => return rollback_preparation(preparation, error.into()),
+            };
+        }
         let cargo_root_package = match metadata.root_package().cloned() {
             Some(package) => package,
             None => return rollback_preparation(preparation, SourceError::MissingBrain.into()),
@@ -256,7 +285,7 @@ impl Project {
         &self,
         options: &CargoOptions,
         request: &SimulationRunOptions,
-        program: &phoxal::scenario::Program,
+        program: &phoxal::scenario::__internal::Program,
     ) -> Result<SimulationRunReport, Error> {
         simulation::run(self, options, request, Some(program))
     }
@@ -631,16 +660,15 @@ impl PreparedProject {
         )
     }
 
-    /// Builds a nondeployable controlled-simulation bundle carrying one
-    /// immutable scenario program. Setpoint inputs selected by the program are
-    /// substituted only in the compiled bundle; the authored `robot.yaml`
-    /// remains unchanged.
-    pub fn build_scenario_simulation_bundle(
+    /// Builds the immutable controlled-simulation bundle while validating one
+    /// run-only experiment graph against it. The returned bundle never embeds
+    /// the experiment or its virtual producers.
+    pub(crate) fn build_simulation_bundle_for_run(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
         facts: &SimulationModelFacts,
-        program: &phoxal::scenario::Program,
+        program: &phoxal::scenario::__internal::Program,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
         bundle::assemble_with_inputs(
@@ -649,18 +677,18 @@ impl PreparedProject {
             output,
             Some(&build_inputs),
             Some(facts),
-            Some(bundle::ScenarioBundleInput {
+            Some(bundle::SimulationRunInput {
                 program,
                 fixture_instance_id: "scenario",
             }),
         )
     }
 
-    pub(crate) fn build_scenario_probe_bundle(
+    pub(crate) fn build_probe_bundle_for_run(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
-        program: &phoxal::scenario::Program,
+        program: &phoxal::scenario::__internal::Program,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
         bundle::assemble_with_inputs(
@@ -669,7 +697,7 @@ impl PreparedProject {
             output,
             Some(&build_inputs),
             None,
-            Some(bundle::ScenarioBundleInput {
+            Some(bundle::SimulationRunInput {
                 program,
                 fixture_instance_id: "scenario",
             }),

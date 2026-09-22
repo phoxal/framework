@@ -8,7 +8,7 @@ use phoxal::runtime::StepContext;
 #[cfg(test)]
 use phoxal_component_vl53l1x::FILE_DESCRIPTOR_SET;
 #[cfg(test)]
-use phoxal_component_vl53l1x::ports;
+use phoxal_component_vl53l1x::vl53l1x;
 
 const BACKEND_UNAVAILABLE: &str =
     "vl53l1x hardware backend unavailable: refusing to publish fabricated range measurements";
@@ -49,22 +49,30 @@ impl Runtime for Vl53l1x {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, Vl53l1x, Vl53l1xConfig, Vl53l1xOutputs, ports,
+        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, Vl53l1x, Vl53l1xConfig, Vl53l1xOutputs, vl53l1x,
     };
-    use phoxal::port::PortKind;
+    use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
-    fn generated_range_port_has_a_retained_descriptor() {
-        assert_eq!(ports::RANGE.name(), "range");
+    fn generated_range_method_has_a_retained_descriptor() {
+        assert_eq!(vl53l1x::methods::RANGE.signature().endpoint, "range");
         assert_eq!(
-            ports::RANGE.signature().service,
+            vl53l1x::methods::RANGE.signature().service,
             "phoxal.component.vl53l1x.v1.Vl53l1x"
         );
-        assert_eq!(ports::RANGE.signature().kind, PortKind::Sample);
+        assert_eq!(
+            vl53l1x::methods::RANGE.signature().shape,
+            MethodShape::Observation
+        );
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
-        assert!(!ports::RANGE.signature().descriptor_set().is_empty());
+        assert!(
+            !vl53l1x::methods::RANGE
+                .signature()
+                .descriptor_set()
+                .is_empty()
+        );
         assert_eq!(Vl53l1xOutputs::FIELDS[0].name, "range");
         assert_eq!(Vl53l1xOutputs::FIELDS[0].port, Some("range"));
         assert!(Vl53l1xOutputs::FIELDS[0].port_signature.is_some());

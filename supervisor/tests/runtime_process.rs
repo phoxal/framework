@@ -146,7 +146,8 @@ fn build_bundle() -> TestBundle {
             "target": "phoxal-runtime-reference",
             "path": "bin/brain",
             "bytes": bytes.len(),
-            "sha256": sha256
+            "sha256": sha256,
+            "artifact": support::reference_runtime_artifact()
         }],
         "components": []
     });

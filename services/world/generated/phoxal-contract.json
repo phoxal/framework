@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "generator": "0.0.0-dev.2",
+  "descriptor_sha256": "803f42eca345705e8612cbb0414fa2024f69e3e4105d066ad1c64397659225b0",
+  "sources": [
+    {
+      "path": "phoxal/world/v1/world.proto",
+      "sha256": "c9054863aed0e08622714ba2af8f175b8a32e4f9b2302d35525f934937707a08"
+    }
+  ],
+  "generated": [
+    {
+      "path": "lib.rs",
+      "sha256": "100bba9603a7e4e4311ea851d629adf9044574b40062727e43bdb4f46ca86ba2"
+    },
+    {
+      "path": "phoxal-descriptors.bin",
+      "sha256": "803f42eca345705e8612cbb0414fa2024f69e3e4105d066ad1c64397659225b0"
+    },
+    {
+      "path": "phoxal.api.rs",
+      "sha256": "c452b36102298dbddcbcaab6b8f4b7cf501b020c988e39da72df1ace9eca5d09"
+    },
+    {
+      "path": "phoxal.kinematics.v1.rs",
+      "sha256": "de008c5d9fe9b78a3aff3188741946d2a3b15ec69aef0b21d8fb0cb7a0580b70"
+    },
+    {
+      "path": "phoxal.robotics.v1.rs",
+      "sha256": "37244932df541ce573897765ad180c2ee29ccbd9ac40ab16013e44a7e94511e9"
+    },
+    {
+      "path": "phoxal.world.v1.rs",
+      "sha256": "99be1698fa001145885b3ec7a4aa545bf4663580cd14b9c46b8b4e18cea3efe1"
+    }
+  ],
+  "dependencies": [
+    {
+      "package": "phoxal-service-kinematics",
+      "descriptor_sha256": "7159b60d4bd6da5fea27ab861fc8f004e3f472a95227aa785c35464d04bc2037"
+    }
+  ]
+}

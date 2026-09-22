@@ -1,11 +1,13 @@
 use super::products::{canonical_membership_digest, observation_memberships};
 use super::*;
 use crate::runtime::adapter::{
-    ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
+    ExecutionDefinition, ServiceMethods, SimulationDefinition, SimulationProviderDefinition,
 };
 use phoxal::communication::DeploymentTarget;
 use phoxal::communication::session::OpenSessionRequest;
-use phoxal::communication::session::{ExecutionState, ExecutionSummary, PortKind, PortMetadata};
+use phoxal::communication::session::{
+    ExecutionState, ExecutionSummary, MethodMetadata, MethodShape,
+};
 use phoxal::communication::simulation::{
     CutReceipt, Observation, ProductDisposition, ProductMembership, ProviderRequirement,
 };
@@ -112,7 +114,7 @@ impl Fixture {
                 SimulationProviderDefinition::new(
                     "sensor",
                     "sample",
-                    PortKind::Sample,
+                    MethodShape::Observation,
                     "fixture.Empty",
                     "fixture.Sample",
                     1_000_000_000,
@@ -130,15 +132,17 @@ impl Fixture {
                         state: ExecutionState::Ready as i32,
                     },
                     vec![
-                        ServicePorts::new(
+                        ServiceMethods::new(
                             "sensor",
-                            vec![PortMetadata {
-                                name: "sample".into(),
-                                kind: PortKind::Sample as i32,
+                            vec![MethodMetadata {
+                                endpoint: "sample".into(),
+                                shape: MethodShape::Observation as i32,
                                 input_fqn: "fixture.Empty".into(),
                                 output_fqn: "fixture.Sample".into(),
                                 max_message_bytes: 1024,
                                 max_buffered_items: 8,
+                                retained_latest: false,
+                                lease_valid_for_ms: None,
                             }],
                         )
                         .unwrap(),
@@ -177,7 +181,7 @@ impl Fixture {
                     rate_microhertz: 1_000_000_000,
                     service_instance: "sensor".into(),
                     port: "sample".into(),
-                    kind: PortKind::Sample as i32,
+                    shape: MethodShape::Observation as i32,
                     input_fqn: "fixture.Empty".into(),
                     payload_fqn: "fixture.Sample".into(),
                 }],
@@ -497,7 +501,7 @@ async fn not_due_must_match_the_exact_immutable_rational_schedule() {
     let provider = SimulationProviderDefinition::new(
         "sensor",
         "sample",
-        PortKind::Sample,
+        MethodShape::Observation,
         "fixture.Empty",
         "fixture.Sample",
         30_000_000,

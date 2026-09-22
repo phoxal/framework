@@ -30,7 +30,10 @@ pub(super) fn validate_controlled_capacity(
             // field, which has no receiver queue reservation.
             continue;
         };
-        if matches!(input.kind.as_str(), "operation" | "" | "read" | "request") {
+        if matches!(
+            input.role.as_str(),
+            "operation_result" | "call_completions" | "" | "call_result" | "call_target"
+        ) {
             // Keyed exchanges enforce the caller's response-byte bound and
             // correlation lifecycle. The target Commands batch bounds requests
             // at its own receiver; it is not a publication batch to every caller.
@@ -45,7 +48,7 @@ pub(super) fn validate_controlled_capacity(
             .with_context(|| {
                 format!("consumer `{consumer_instance}` period is not quantum-aligned")
             })?;
-        let replaceable = matches!(input.kind.as_str(), "latest" | "setpoint");
+        let replaceable = matches!(input.role.as_str(), "observation_latest" | "leased_value");
         let mut required_items = 0_u64;
         let mut required_bytes = 0_u64;
         for source in connection_source_values(consumer, source_values)? {
@@ -113,7 +116,7 @@ pub(super) fn validate_controlled_capacity(
                 .get(source_instance)
                 .with_context(|| format!("source `{source}` has no runtime artifact"))?;
             let source_input = source_artifact.inputs.iter().find(|candidate| {
-                candidate.port.as_deref() == Some(source_port) && candidate.kind == "commands"
+                candidate.port.as_deref() == Some(source_port) && candidate.role == "call_ingress"
             });
             let source_output = source_artifact
                 .transient_outputs

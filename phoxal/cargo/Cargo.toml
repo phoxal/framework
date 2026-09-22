@@ -26,12 +26,16 @@ base64 = { workspace = true }
 cargo_metadata = { workspace = true }
 flate2 = { workspace = true }
 fs4 = { workspace = true }
+heck = { workspace = true }
 jsonschema = { workspace = true }
 keyring = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
 object = { workspace = true, features = ["write_core", "read_core", "elf", "pe"] }
 prost-reflect = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+prettyplease = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
@@ -40,11 +44,13 @@ tar = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
+syn = { workspace = true }
 
 # The case host drives the supervised lifecycle from the harness. The
 # harness binary itself depends only on the SDK, but the case-host
 # protocol in `scenario::__harness` requires the scenario feature.
 phoxal = { path = "..", version = "=0.0.0-dev.2", registry = "phoxal", default-features = false, features = ["scenario"] }
+phoxal-build = { workspace = true }
 
 [lints]
 workspace = true

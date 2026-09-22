@@ -98,7 +98,19 @@ mod tests {
                     "reader",
                     serde_json::json!({"runtime": {
                 "period_ms": 20, "timeout_ms": 10, "inputs": [], "transient_outputs": [],
-                "service_outputs": [{"name": "view", "kind": "read", "port": "window", "max_request_bytes": 64, "max_bytes": 64}]
+                "service_outputs": [{
+                    "name": "view",
+                    "role": "method",
+                    "port": "window",
+                    "signature": {
+                        "shape": "call",
+                        "retained_latest": false,
+                        "lease_valid_for_ms": null
+                    },
+                    "project": "project_window",
+                    "max_request_bytes": 64,
+                    "max_bytes": 64
+                }]
             }, "descriptors": []}),
                 )],
             ),

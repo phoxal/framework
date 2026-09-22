@@ -3,7 +3,7 @@ syntax = "proto3";
 package phoxal.component.oak_d_lite.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 
 message Vector3 {
   double x = 1;
@@ -54,30 +54,23 @@ message ImuSample {
 
 service OakDLite {
   rpc LeftMono(google.protobuf.Empty) returns (stream CameraFrame) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Rgb(google.protobuf.Empty) returns (stream CameraFrame) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc RightMono(google.protobuf.Empty) returns (stream CameraFrame) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Depth(google.protobuf.Empty) returns (stream DepthFrame) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Imu(google.protobuf.Empty) returns (stream ImuSample) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Accelerometer(google.protobuf.Empty) returns (stream AccelerometerSample) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Gyroscope(google.protobuf.Empty) returns (stream GyroscopeSample) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 }

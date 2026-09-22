@@ -13,10 +13,10 @@
 //! ## Submodules
 //!
 //! - This module's root owns `RuntimeRecord`, `InputRecord`, `OutputRecord`,
-//!   `PortKind`, `InputKind`, `OutputKind`, `PortSignature`,
+//!   `MethodShape`, `InputRole`, `OutputRole`, `MethodSignature`,
 //!   `ArtifactSummary`, `DescriptorSummary`.
 //! - [`bundle`](crate::artifact::bundle) owns `BundleManifest`, package/executable/component/artifact
-//!   records, `BundleSimulation`, `BundleScenarioSection`,
+//!   records and `BundleSimulation`,
 //!   `BundleProvenance` family, `digest_source_files`.
 //! - [`document`](crate::artifact::document) owns `RobotDocument`, `ComponentDocument`, capability
 //!   declarations, native target records, and the inert DTO closure
@@ -26,9 +26,9 @@
 //!   `ScenarioExecutionReport`, `ScenarioStepEvidence`,
 //!   `ScenarioCaptureEvidence`. Process orchestration stays in
 //!   `cargo-phoxal`.
-//! - [`scenario`](mod@crate::artifact::scenario) owns `BundleScenarioProgram`, `BundleScenarioProducer`,
-//!   scenario artifact-path constant. Bundle assembly orchestration
-//!   stays in `cargo-phoxal`.
+//! - [`simulation_run`](crate::artifact::simulation_run) owns the experiment
+//!   specification that references an immutable bundle. Run hosting stays in
+//!   `cargo-phoxal`.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -36,10 +36,10 @@
 pub mod bundle;
 pub mod document;
 mod record;
-pub mod scenario;
 pub mod simulation;
+pub mod simulation_run;
 
 pub use record::{
-    ArtifactSummary, DescriptorSummary, InputKind, InputRecord, OutputKind, OutputRecord, PortKind,
-    PortSignature, RUNTIME_RECORD, RuntimeRecord,
+    ArtifactSummary, DescriptorSummary, InputRecord, InputRole, MethodShape, MethodSignature,
+    OutputRecord, OutputRole, RUNTIME_RECORD, RuntimeRecord,
 };

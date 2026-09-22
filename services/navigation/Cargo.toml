@@ -9,10 +9,10 @@ description = "Public navigation contract and private navigation service executa
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["build.rs", "lib.rs", "validation.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
+include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "Cargo.lock", "README.md"]
 
 [lib]
-path = "lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-service-navigation"
@@ -21,21 +21,21 @@ required-features = ["runtime"]
 
 [features]
 default = []
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:phoxal-service-kinematics", "dep:phoxal-service-world"]
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror", "dep:phoxal-service-kinematics", "dep:phoxal-service-world"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port"] }
+phoxal = { workspace = true, default-features = false, features = ["contract"] }
 phoxal-service-kinematics = { workspace = true, optional = true }
 phoxal-service-world = { workspace = true, optional = true }
 prost = { workspace = true }
-thiserror = { workspace = true }
+thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
-phoxal-service-kinematics = { workspace = true }
-phoxal-service-world = { workspace = true }
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/navigation/v1/navigation.proto"]
+includes = ["proto"]
+generated = "generated"
 
 [lints]
 workspace = true

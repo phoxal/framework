@@ -1,7 +1,7 @@
 # Motion service
 
 This executable owns final actuator intent, arm/disarm state, and emergency handling.
-Its library exports only the messages and ports owned by [contract](contract/README.md).
+Its generated contract-only library exports the Protobuf messages, method descriptors, and typed call or observation handles declared by [`motion.proto`](proto/phoxal/motion/v1/motion.proto).
 Configuration, inputs, outputs, arbitration, and drive calculations live in separate executable modules.
 
 Configure `left_wheels` and `right_wheels` with one to four entries per side.

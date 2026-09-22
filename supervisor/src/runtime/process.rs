@@ -7,6 +7,7 @@
 //! every process without relying on detached threads or cancellable blocking
 //! work.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -43,6 +44,7 @@ impl ProcessSupervisor {
         bundle: &SourceBundle,
         execution: ExecutionId,
         connect: &str,
+        simulation_run: Option<&Path>,
     ) -> Result<Self> {
         let stop = CancellationToken::new();
         let mut children: Vec<(String, Child)> = Vec::new();
@@ -62,6 +64,9 @@ impl ProcessSupervisor {
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .kill_on_drop(true);
+            if let Some(path) = simulation_run {
+                command.arg("--simulation-run").arg(path);
+            }
             let child = match command.spawn().with_context(|| {
                 format!(
                     "failed to launch runtime `{}` from {}",
@@ -202,6 +207,7 @@ mod tests {
             &bundle,
             phoxal::identity::ExecutionId::mint(),
             "test-endpoint",
+            None,
         )
         .await
         .expect("the process fixture launches");

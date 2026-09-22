@@ -5,11 +5,12 @@ use phoxal::runtime::{
     StepContext, initialize, invoke,
 };
 
-const COUNTER_STATUS: phoxal::port::State<CounterStatus> =
-    phoxal::port::State::new("counter-status");
-const COUNTER_READ: phoxal::port::Read<CounterReadRequest, CounterReadResponse> =
-    phoxal::port::Read::new("counter-read");
-const READER_STATUS: phoxal::port::State<ReaderStatus> = phoxal::port::State::new("reader-status");
+const COUNTER_STATUS: phoxal::__private::State<CounterStatus> =
+    phoxal::__private::State::new("counter-status");
+const COUNTER_READ: phoxal::__private::Read<CounterReadRequest, CounterReadResponse> =
+    phoxal::__private::Read::new("counter-read");
+const READER_STATUS: phoxal::__private::State<ReaderStatus> =
+    phoxal::__private::State::new("reader-status");
 
 #[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct CounterStatus {
@@ -295,7 +296,7 @@ impl OnceReader {
 }
 
 const VALUES: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-const SUM_STATUS: phoxal::port::State<SumStatus> = phoxal::port::State::new("sum-status");
+const SUM_STATUS: phoxal::__private::State<SumStatus> = phoxal::__private::State::new("sum-status");
 
 #[derive(Clone, Copy, PartialEq, prost::Message)]
 struct SumStatus {

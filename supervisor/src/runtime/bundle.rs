@@ -14,6 +14,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use phoxal::artifact::MethodShape;
+
 /// The bundle directory's name inside a deployment release. The supervisor is
 /// handed a bundle root and knows nothing about releases, but it does have to
 /// find the run directory that owns the execution, and a release's bundle
@@ -45,53 +47,9 @@ impl Bundle {
         }
     }
 
-    /// Returns the scenario nondeployable marker carried by the
-    /// underlying source manifest, if any. Returns `None` for an
-    /// ordinary source bundle. Scenario bundles that the case host
-    /// has built carry the stable marker so the admission policy can
-    /// reject hardware launches.
-    pub(crate) fn scenario_marker(&self) -> Option<String> {
-        match self {
-            Self::Source(bundle) => match &bundle.manifest {
-                SourceManifest::V0 { scenario, .. } => {
-                    scenario.as_ref().map(|section| section.marker.clone())
-                }
-            },
-        }
-    }
-
-    /// Returns the validated scenario program identity if the
-    /// manifest carries the nondeployable marker. Carries the exact
-    /// bounded program path, byte length, SHA-256 digest, fixture
-    /// instance id, and the controlled-execution flag the case host
-    /// wrote. The supervisor verifies the bytes before admission.
-    #[allow(dead_code)]
-    pub(crate) fn scenario_program(&self) -> Option<ScenarioProgramRef> {
-        match self {
-            Self::Source(bundle) => match &bundle.manifest {
-                SourceManifest::V0 { scenario, .. } => {
-                    scenario.as_ref().map(|section| section.program.clone())
-                }
-            },
-        }
-    }
-
-    /// The full scenario execution section, if the manifest is a
-    /// scenario bundle. `None` means the bundle is an ordinary
-    /// runtime bundle.
-    #[allow(dead_code)]
-    pub(crate) fn scenario_section(&self) -> Option<&SourceScenarioSection> {
-        match self {
-            Self::Source(bundle) => match &bundle.manifest {
-                SourceManifest::V0 { scenario, .. } => scenario.as_ref(),
-            },
-        }
-    }
-
-    /// Returns the controlled-simulation definition carried by the
-    /// source manifest, if any. A scenario bundle that does not also
-    /// carry a controlled simulation definition is refused because
-    /// the fixture has nothing to schedule against.
+    /// Returns the immutable controlled-simulation definition carried by the
+    /// source manifest, if any. A separate run specification can only be
+    /// admitted against a bundle that carries this native scheduling contract.
     pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
         match self {
             Self::Source(bundle) => match &bundle.manifest {
@@ -101,6 +59,12 @@ impl Bundle {
     }
 
     pub(crate) fn source(&self) -> Option<&SourceBundle> {
+        match self {
+            Self::Source(bundle) => Some(bundle),
+        }
+    }
+
+    pub(crate) fn source_mut(&mut self) -> Option<&mut SourceBundle> {
         match self {
             Self::Source(bundle) => Some(bundle),
         }
@@ -138,6 +102,50 @@ impl SourceBundle {
 
     pub(crate) fn connections(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.execution_connections
+    }
+
+    /// Apply simulation-only source bindings to this in-memory execution
+    /// graph. The immutable manifest and its bytes remain unchanged.
+    pub(crate) fn apply_simulation_bindings(
+        &mut self,
+        bindings: &[phoxal::artifact::simulation_run::SimulationBinding],
+    ) -> Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for binding in bindings {
+            if binding.source_instance != "scenario" {
+                bail!(
+                    "simulation binding for {}.{} has unsupported source instance `{}`",
+                    binding.target_instance,
+                    binding.signature.endpoint,
+                    binding.source_instance
+                );
+            }
+            if binding.signature.shape != MethodShape::Call
+                || binding.signature.lease_valid_for_ms.is_none()
+            {
+                bail!(
+                    "simulation binding for {}.{} is not a leased generated call",
+                    binding.target_instance,
+                    binding.signature.endpoint
+                );
+            }
+            let target = format!("{}.{}", binding.target_instance, binding.signature.endpoint);
+            if !seen.insert(target.clone()) {
+                bail!("simulation run declares conflicting producers for `{target}`");
+            }
+            let replaces_authored_source = self.execution_connections.contains_key(&target);
+            if binding.replaces_authored_source != replaces_authored_source {
+                bail!(
+                    "simulation binding for `{target}` records replaces_authored_source={}, but the immutable graph requires {}",
+                    binding.replaces_authored_source,
+                    replaces_authored_source
+                );
+            }
+            let source = format!("{}.{}", binding.source_instance, binding.signature.endpoint);
+            self.execution_connections
+                .insert(target, serde_json::Value::String(source));
+        }
+        Ok(())
     }
     /// Return the immutable simulation contract carried by this source bundle.
     pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
@@ -186,201 +194,7 @@ pub(crate) enum SourceManifest {
         components: Vec<SourceComponentRecord>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
-        /// Optional scenario execution identity. The presence of this
-        /// section means the bundle is nondeployable and the supervisor
-        /// admission path is in control of the execution. The marker
-        /// and program identity travel together so a tampered or partial
-        /// shape cannot pass admission: there is no scenario_marker or
-        /// scenario_program fallback field. See Gate A3 of
-        /// the scenario acceptance review.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scenario: Option<SourceScenarioSection>,
     },
-}
-
-/// Scenario execution identity recorded in the source manifest.
-/// Presence means the bundle is nondeployable and the supervisor
-/// admission path is in control of the execution. The marker and
-/// program identity travel together so a tampered or partial shape
-/// cannot pass admission.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SourceScenarioSection {
-    pub(crate) marker: String,
-    pub(crate) program: ScenarioProgramRef,
-    #[serde(default)]
-    producers: Vec<SourceScenarioProducer>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct SourceScenarioProducer {
-    instance: String,
-    port: String,
-    service_fqn: String,
-    method: String,
-    kind: String,
-    request_fqn: String,
-    response_fqn: String,
-    max_message_bytes: u32,
-}
-
-/// Scenario program identity recorded inside [`SourceScenarioSection`].
-/// The supervisor verifies the exact bounded program bytes against
-/// `program_byte_length` and `program_digest` before admission so a
-/// tampered bundle cannot drive the fixture.
-///
-/// `program_path` is a bundle-relative POSIX path with no `..`
-/// segments, no absolute prefix, and no symlink escape from the
-/// bundle root. The supervisor rejects anything else.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ScenarioProgramRef {
-    pub(crate) scenario_name: String,
-    pub(crate) program_path: String,
-    pub(crate) program_byte_length: u32,
-    pub(crate) program_digest: String,
-    pub(crate) fixture_instance_id: String,
-    pub(crate) controlled_execution: bool,
-}
-
-/// The maximum size of a single scenario program artifact. P3 keeps
-/// the cap low because scenario programs are short, bounded, and
-/// fully decoded into typed structures before the fixture runs; an
-/// admission that needs more than this is either a misuse or a
-/// tampered bundle.
-pub(crate) const MAX_SCENARIO_PROGRAM_BYTES: usize = 1024 * 1024;
-
-impl ScenarioProgramRef {
-    /// Validate the bundle-relative program path, read the bounded
-    /// artifact against `bundle_root`, and verify its length and
-    /// digest match the recorded identity. Returns the verified bytes
-    /// so the caller can hand the same artifact to the fixture; the
-    /// bytes are returned only when every invariant has been
-    /// satisfied.
-    pub(crate) fn verify_against(&self, bundle_root: &Path) -> Result<Vec<u8>> {
-        if self.scenario_name.is_empty() {
-            bail!("scenario program carries an empty scenario name");
-        }
-        if self.fixture_instance_id.is_empty() {
-            bail!("scenario program carries an empty fixture instance id");
-        }
-        if self.program_byte_length == 0 {
-            bail!("scenario program declares a zero byte length");
-        }
-        if self.program_byte_length as usize > MAX_SCENARIO_PROGRAM_BYTES {
-            bail!(
-                "scenario program declares {} bytes; cap is {}",
-                self.program_byte_length,
-                MAX_SCENARIO_PROGRAM_BYTES,
-            );
-        }
-        if self.program_digest.len() != 64
-            || !self
-                .program_digest
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            bail!(
-                "scenario program `{}` has an invalid lowercase SHA-256 digest",
-                self.scenario_name,
-            );
-        }
-        let relative = safe_relative_path(&self.program_path)?;
-        let absolute = bundle_root.join(relative);
-        // Canonicalize the bundle root as well so the prefix check
-        // works on platforms whose canonical path differs from the
-        // input path (notably macOS, where `/var/...` resolves to
-        // `/private/var/...`).
-        let canonical_root = fs::canonicalize(bundle_root)
-            .with_context(|| format!("cannot resolve bundle root {}", bundle_root.display(),))?;
-        let metadata = fs::symlink_metadata(&absolute).with_context(|| {
-            format!(
-                "scenario program `{}` is missing at {}",
-                self.scenario_name,
-                absolute.display(),
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "scenario program `{}` must not be a symbolic link: {}",
-                self.scenario_name,
-                absolute.display(),
-            );
-        }
-        if !metadata.is_file() {
-            bail!(
-                "scenario program `{}` is not a regular file: {}",
-                self.scenario_name,
-                absolute.display(),
-            );
-        }
-        let canonical = absolute.canonicalize().with_context(|| {
-            format!(
-                "cannot resolve scenario program `{}` at {}",
-                self.scenario_name,
-                absolute.display(),
-            )
-        })?;
-        if !canonical.starts_with(&canonical_root) {
-            bail!(
-                "scenario program `{}` escapes its bundle root: {}",
-                self.scenario_name,
-                canonical.display(),
-            );
-        }
-        // Bounded read with a +1 trailing byte so an oversize file
-        // is detected even if the declared `program_byte_length` was
-        // also tampered upward.
-        let file = fs::File::open(&canonical).with_context(|| {
-            format!(
-                "cannot open scenario program `{}` at {}",
-                self.scenario_name,
-                canonical.display(),
-            )
-        })?;
-        let mut bytes = Vec::with_capacity(self.program_byte_length as usize);
-        file.take(MAX_SCENARIO_PROGRAM_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .with_context(|| {
-                format!(
-                    "failed to read scenario program `{}` at {}",
-                    self.scenario_name,
-                    canonical.display(),
-                )
-            })?;
-        if bytes.len() > MAX_SCENARIO_PROGRAM_BYTES {
-            bail!(
-                "scenario program `{}` exceeds the {}-byte cap",
-                self.scenario_name,
-                MAX_SCENARIO_PROGRAM_BYTES,
-            );
-        }
-        if bytes.len() != self.program_byte_length as usize {
-            bail!(
-                "scenario program `{}` is {} bytes; manifest declares {}",
-                self.scenario_name,
-                bytes.len(),
-                self.program_byte_length,
-            );
-        }
-        let mut hasher = Sha256::new();
-        sha2::Digest::update(&mut hasher, &bytes);
-        let digest = hasher.finalize();
-        let mut hex = String::with_capacity(64);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        if hex != self.program_digest {
-            bail!(
-                "scenario program `{}` digest {hex} does not match recorded {}",
-                self.scenario_name,
-                self.program_digest,
-            );
-        }
-        Ok(bytes)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -402,7 +216,9 @@ pub(crate) struct SourceSimulationProvider {
     pub(crate) port: String,
     pub(crate) service_fqn: String,
     pub(crate) method: String,
-    pub(crate) kind: String,
+    pub(crate) shape: MethodShape,
+    pub(crate) retained_latest: bool,
+    pub(crate) lease_valid_for_ms: Option<u64>,
     pub(crate) input_fqn: String,
     pub(crate) payload_fqn: String,
     pub(crate) max_message_bytes: u32,
@@ -436,8 +252,6 @@ pub(crate) enum SourceDocument {
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SourceService {
-    #[serde(default)]
-    implementation: Option<String>,
     #[serde(default)]
     binary: Option<String>,
     #[serde(default)]
@@ -613,7 +427,6 @@ impl SourceManifest {
                 name: "fixture".to_owned(),
                 source: "local".to_owned(),
             },
-            scenario: None,
             target: "host".to_owned(),
             profile: "dev".to_owned(),
             features: Vec::new(),
@@ -826,15 +639,11 @@ fn validate_source_simulation(
                 provider.port
             );
         }
-        if !matches!(
-            provider.kind.as_str(),
-            "state" | "sample" | "event" | "stream"
-        ) {
+        if provider.shape != MethodShape::Observation {
             bail!(
-                "simulation provider `{}.{}` has unsupported kind `{}`",
+                "simulation provider `{}.{}` must be an observation",
                 provider.service_instance,
-                provider.port,
-                provider.kind
+                provider.port
             );
         }
         if provider.input_fqn.is_empty()
@@ -1001,13 +810,6 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
     }
     for (service, definition) in document_services {
         validate_segment(service, "service instance")?;
-        if definition
-            .implementation
-            .as_deref()
-            .is_some_and(str::is_empty)
-        {
-            bail!("service `{service}` has an empty implementation key");
-        }
         if definition.binary.as_deref().is_some_and(str::is_empty) {
             bail!("service `{service}` has an empty binary target");
         }
@@ -1268,6 +1070,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn obsolete_bundle_scenario_artifacts_are_rejected_during_decode() {
+        let value = serde_json::json!({
+            "schema": "phoxal/bundle/v0",
+            "robot_id": "fixture",
+            "document": {
+                "schema": "phoxal/robot/v0",
+                "robot": {"id": "fixture", "components": {}},
+                "brain": null,
+                "services": {},
+                "connections": {}
+            },
+            "root_package": {"id": "fixture", "name": "fixture", "source": "local"},
+            "target": "host",
+            "profile": "dev",
+            "features": [],
+            "executables": [],
+            "components": [],
+            "scenario": {"program": "obsolete"}
+        });
+        let error = serde_json::from_value::<SourceManifest>(value)
+            .expect_err("the immutable bundle schema has no scenario section");
+        assert!(error.to_string().contains("unknown field `scenario`"));
+    }
+
+    #[test]
+    fn simulation_bindings_reject_conflicting_run_owned_producers() {
+        let manifest = SourceManifest::for_test("fixture", Vec::new());
+        let mut bundle = SourceBundle::for_test(Path::new("."), manifest);
+        let binding = phoxal::artifact::simulation_run::SimulationBinding {
+            target_instance: "controller".to_owned(),
+            source_instance: "scenario".to_owned(),
+            signature: phoxal::artifact::MethodSignature {
+                endpoint: "manual".to_owned(),
+                service: "phoxal.motion.v1.Motion".to_owned(),
+                method: "Manual".to_owned(),
+                shape: MethodShape::Call,
+                request: "phoxal.motion.v1.MotionIntent".to_owned(),
+                response: "google.protobuf.Empty".to_owned(),
+                retained_latest: false,
+                lease_valid_for_ms: Some(100),
+            },
+            max_message_bytes: 32,
+            replaces_authored_source: false,
+        };
+        let error = bundle
+            .apply_simulation_bindings(&[binding.clone(), binding])
+            .expect_err("one target cannot have two run-owned producers");
+        assert!(error.to_string().contains("conflicting producers"));
+    }
+
     fn simulation_fixture() -> SourceSimulation {
         SourceSimulation {
             protocol: "phoxal.simulation.v1".to_owned(),
@@ -1280,7 +1133,9 @@ mod tests {
                 method: "Sample".into(),
                 service_instance: "imu".to_owned(),
                 port: "sample".to_owned(),
-                kind: "sample".to_owned(),
+                shape: MethodShape::Observation,
+                retained_latest: false,
+                lease_valid_for_ms: None,
                 input_fqn: "google.protobuf.Empty".to_owned(),
                 payload_fqn: "example.Imu".to_owned(),
                 max_message_bytes: 1024,
@@ -1371,7 +1226,6 @@ mod tests {
             )],
             components: Vec::new(),
             simulation: Some(simulation_fixture()),
-            scenario: None,
         };
         {
             let SourceManifest::V0 {
@@ -1439,202 +1293,5 @@ mod tests {
             *mut_simulation = None;
         }
         assert!(execution_connections(&manifest).is_err());
-    }
-
-    fn write_program(directory: &tempfile::TempDir, relative: &str, bytes: &[u8]) -> String {
-        let safe = Path::new(relative);
-        let absolute = directory.path().join(safe);
-        if let Some(parent) = absolute.parent() {
-            fs::create_dir_all(parent).expect("program parent");
-        }
-        fs::write(&absolute, bytes).expect("write program");
-        let mut hasher = Sha256::new();
-        sha2::Digest::update(&mut hasher, bytes);
-        let digest = hasher.finalize();
-        let mut hex = String::with_capacity(64);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        hex
-    }
-
-    fn program_ref(path: &str, bytes_len: u32, digest: String) -> ScenarioProgramRef {
-        ScenarioProgramRef {
-            scenario_name: "scenarios/Demo".to_owned(),
-            program_path: path.to_owned(),
-            program_byte_length: bytes_len,
-            program_digest: digest,
-            fixture_instance_id: "fixture".to_owned(),
-            controlled_execution: true,
-        }
-    }
-
-    #[test]
-    fn scenario_program_verify_accepts_bundled_artifact() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let bytes = b"scenarios/Demo program bytes";
-        let digest = write_program(&directory, "program.bin", bytes);
-        let program = program_ref("program.bin", bytes.len() as u32, digest);
-        let verified = program
-            .verify_against(directory.path())
-            .expect("verify succeeds");
-        assert_eq!(verified, bytes);
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_absolute_path() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let program = program_ref("/etc/passwd", 1, "0".repeat(64));
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("absolute path must be refused");
-        assert!(format!("{error:#}").contains("not bundle-relative"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_parent_traversal() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let program = program_ref("../outside.bin", 1, "0".repeat(64));
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("parent traversal must be refused");
-        assert!(format!("{error:#}").contains("not bundle-relative"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_length_mismatch() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let bytes = b"short";
-        let digest = write_program(&directory, "program.bin", bytes);
-        let program = program_ref("program.bin", bytes.len() as u32 + 16, digest);
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("length mismatch must be refused");
-        assert!(format!("{error:#}").contains("manifest declares"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_tampered_digest() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let bytes = b"intended";
-        let digest = write_program(&directory, "program.bin", bytes);
-        let mut tampered = digest;
-        // Flip the first hex digit.
-        let replacement = if tampered.starts_with('0') { '1' } else { '0' };
-        unsafe {
-            tampered.as_bytes_mut()[0] = replacement as u8;
-        }
-        let program = program_ref("program.bin", bytes.len() as u32, tampered);
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("digest mismatch must be refused");
-        assert!(format!("{error:#}").contains("does not match recorded"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_oversize_declaration() {
-        let program = program_ref(
-            "program.bin",
-            u32::try_from(MAX_SCENARIO_PROGRAM_BYTES).unwrap() + 1,
-            "0".repeat(64),
-        );
-        let directory = tempfile::tempdir().expect("bundle root");
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("oversize declaration must be refused");
-        assert!(format!("{error:#}").contains("cap is"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_invalid_digest() {
-        let program = program_ref("program.bin", 1, "NOT_HEX".to_owned());
-        let directory = tempfile::tempdir().expect("bundle root");
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("invalid digest must be refused");
-        assert!(format!("{error:#}").contains("invalid lowercase SHA-256"));
-    }
-
-    #[test]
-    fn scenario_program_verify_rejects_symlink_escape() {
-        let directory = tempfile::tempdir().expect("bundle root");
-        let outside = tempfile::tempdir().expect("outside");
-        let outside_path = outside.path().join("secret.bin");
-        fs::write(&outside_path, b"outside bytes").expect("write outside");
-        let link_path = directory.path().join("escape.bin");
-        std::os::unix::fs::symlink(&outside_path, &link_path).expect("symlink");
-        let mut hasher = Sha256::new();
-        sha2::Digest::update(&mut hasher, b"outside bytes");
-        let digest = hasher.finalize();
-        let mut hex = String::with_capacity(64);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        let program = program_ref("escape.bin", 13, hex);
-        let error = program
-            .verify_against(directory.path())
-            .expect_err("symlink must be refused");
-        assert!(format!("{error:#}").contains("symbolic link"));
-    }
-
-    /// Producer/consumer round-trip: the supervisor's nested
-    /// `SourceScenarioSection` must deserialize the exact JSON the
-    /// project's `BundleScenarioSection` writes. See Gate A3 of
-    /// the scenario acceptance review: "Test producer output with the real
-    /// consumer. Serializing and deserializing BundleScenarioSection
-    /// with the same type does not prove supervisor compatibility."
-    #[test]
-    fn source_section_round_trips_with_project_writer() {
-        // Write the exact shape `BundleScenarioSection` serializes
-        // (mirror what the project crate emits).
-        let project_payload = serde_json::json!({
-            "marker": "phoxal/scenarios/nondeployable",
-            "program": {
-                "scenario_name": "scenarios/Demo",
-                "program_path": "program.bin",
-                "program_byte_length": 4_u32,
-                "program_digest": "abcd".repeat(8),
-                "fixture_instance_id": "fixture",
-                "controlled_execution": true,
-            },
-        });
-        // The supervisor's nested section must accept it.
-        let section: SourceScenarioSection = serde_json::from_value(project_payload.clone())
-            .expect("nested section accepts the project shape");
-        assert_eq!(section.marker, "phoxal/scenarios/nondeployable");
-        assert_eq!(section.program.scenario_name, "scenarios/Demo");
-        assert!(section.program.controlled_execution);
-
-        // A flat top-level shape (the previous, superseded one) must
-        // now be refused. Reading it directly as the manifest must
-        // fail with `unknown field scenario_marker`/`scenario_program`
-        // since those are no longer part of the schema.
-        let flat_payload = serde_json::json!({
-            "schema": "phoxal/bundle/v0",
-            "robot_id": "robot",
-            "document": { "robot": { "id": "robot" } },
-            "root_package": { "id": "robot", "name": "robot", "source": "local" },
-            "target": "host",
-            "profile": "dev",
-            "features": [],
-            "executables": [],
-            "components": [],
-            "scenario_marker": "phoxal/scenarios/nondeployable",
-            "scenario_program": {
-                "scenario_name": "scenarios/Demo",
-                "program_path": "program.bin",
-                "program_byte_length": 4_u32,
-                "program_digest": "abcd".repeat(8),
-                "fixture_instance_id": "fixture",
-                "controlled_execution": true,
-            },
-        });
-        let parsed: Result<SourceManifest, _> = serde_json::from_value(flat_payload);
-        assert!(
-            parsed.is_err(),
-            "flat shape must be rejected after refactor"
-        );
     }
 }

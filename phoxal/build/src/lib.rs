@@ -1,8 +1,9 @@
 //! Build-time generation for service-owned Phoxal Protobuf contracts.
 //!
-//! [`compile_protos`] supplies the shared `phoxal/port.proto` import and a
-//! pinned Protobuf compiler, emits Prost messages with type names, retains the
-//! original descriptor closure, and generates inert typed port references.
+//! [`compile_protos`] supplies a pinned Protobuf compiler, emits Prost messages
+//! with type names, and retains the original descriptor closure.
+//! [`compile_contracts`] additionally generates inert typed call and
+//! observation descriptors from ordinary Protobuf method cardinality.
 //!
 //! Two flags tune what a build script needs:
 //!
@@ -16,7 +17,7 @@
 //!   [`compile_protos_with_dependencies_and_output`]) name the file the
 //!   retained descriptor closure lands in. A build script that performs more
 //!   than one compilation in the same `OUT_DIR` must give each invocation a
-//!   distinct filename; the two simple forms write [`DESCRIPTOR_FILE`] and
+//!   distinct filename; the two simple forms write `DESCRIPTOR_FILE` and
 //!   are the right call for a single compilation.
 
 use std::collections::{HashMap, HashSet};
@@ -25,17 +26,22 @@ use std::process::Command;
 
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use prost_reflect::{DescriptorPool, Value};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-/// The shared option definition packaged with this crate.
-pub const PORT_PROTO: &str = include_str!("../proto/phoxal/port.proto");
+/// The replacement call/observation option definition packaged with this crate.
+pub const API_PROTO: &str = include_str!("../proto/phoxal/api.proto");
 
 const DESCRIPTOR_FILE: &str = "phoxal-descriptors.bin";
+/// Generated freshness and dependency-closure evidence.
+pub const CONTRACT_METADATA_FILE: &str = "phoxal-contract.json";
 const DEPENDENCY_DESCRIPTOR_FILE: &str = "phoxal-dependency-descriptors.bin";
-const PORT_KIND_EXTENSION: &str = "phoxal.port.kind";
+const RETAINED_LATEST_EXTENSION: &str = "phoxal.api.retained_latest";
+const LEASE_EXTENSION: &str = "phoxal.api.lease";
 const MAX_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DESCRIPTOR_FILES: usize = 1_024;
 
-/// Returns the packaged Protobuf include root containing `phoxal/port.proto`.
+/// Returns the packaged Protobuf include root containing `phoxal/api.proto`.
 #[must_use]
 pub fn include_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("proto")
@@ -106,28 +112,22 @@ pub enum Error {
         /// Observed value.
         actual: usize,
     },
-    /// The packaged method option is absent from the compiled descriptor closure.
-    #[error("compiled descriptor closure is missing {PORT_KIND_EXTENSION}")]
-    MissingPortKindExtension,
-    /// A service method omits its mandatory kind.
-    #[error("owned method {0} must declare option (phoxal.port.kind)")]
-    MissingKind(String),
-    /// A service method uses the unspecified or an unknown kind value.
-    #[error("owned method {method} declares invalid phoxal.port.kind value {value}")]
-    InvalidKind {
+    /// A public contract method uses unsupported Protobuf cardinality.
+    #[error("owned method {method} has unsupported shape: {reason}")]
+    UnsupportedMethodShape {
         /// Fully-qualified Protobuf method.
         method: String,
-        /// Unknown enum number.
-        value: i32,
+        /// Why the method cannot become a call or observation.
+        reason: &'static str,
     },
-    /// A method shape does not match its declared kind.
-    #[error("owned method {method} declared {kind} but {reason}")]
-    InvalidShape {
+    /// A contract modifier is incompatible with the method shape or value.
+    #[error("owned method {method} has invalid {modifier}: {reason}")]
+    InvalidModifier {
         /// Fully-qualified Protobuf method.
         method: String,
-        /// Declared port kind.
-        kind: &'static str,
-        /// Shape mismatch.
+        /// Option name.
+        modifier: &'static str,
+        /// Validation failure.
         reason: &'static str,
     },
     /// Two generated identifiers collide after normalization.
@@ -143,6 +143,12 @@ pub enum Error {
     /// Prost generation failed after descriptor validation.
     #[error("cannot generate Rust contract bindings: {0}")]
     Prost(#[from] std::io::Error),
+    /// Generated contract metadata could not be encoded.
+    #[error("cannot encode generated contract metadata: {0}")]
+    Metadata(#[from] serde_json::Error),
+    /// Checked-in contract evidence does not match its authored or generated files.
+    #[error("contract metadata mismatch at {path}: {message}")]
+    ContractMetadataMismatch { path: PathBuf, message: String },
 }
 
 /// Compiles owned Protobuf files and their imported descriptor closure.
@@ -164,7 +170,7 @@ pub fn compile_protos(
 /// Compiles owned Protobuf files into a named descriptor output file.
 ///
 /// Equivalent to [`compile_protos`] but writes the retained descriptor closure
-/// to `OUT_DIR/<descriptor_file>` instead of [`DESCRIPTOR_FILE`]. A build
+/// to `OUT_DIR/<descriptor_file>` instead of `DESCRIPTOR_FILE`. A build
 /// script that needs multiple descriptor closures in the same `OUT_DIR` —
 /// for example one for the framework-owned protocol protos and a separate one
 /// for a domain vocabulary — gives each compilation a distinct filename.
@@ -256,6 +262,404 @@ pub fn compile_protos_with_dependencies_and_output(
     )
 }
 
+/// Compiles one owner contract using cardinality-derived calls and observations.
+///
+/// This is the replacement service-package generator. It accepts only unary
+/// calls and empty-request server-stream observations, and emits generated
+/// method descriptors backed by [`phoxal::contract`](https://docs.rs/phoxal).
+pub fn compile_contracts(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+) -> Result<(), Error> {
+    compile_contracts_with_dependencies(protos, includes, &[], &[])
+}
+
+/// Compiles a replacement contract and names its retained descriptor output.
+pub fn compile_contracts_with_output(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    descriptor_file: &str,
+) -> Result<(), Error> {
+    compile_contracts_to_with_dependencies(
+        protos,
+        includes,
+        &descriptor_out_dir()?,
+        &[],
+        &[],
+        descriptor_file,
+    )
+}
+
+/// Compiles a replacement contract using dependency-owned descriptor closures.
+pub fn compile_contracts_with_dependencies(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+) -> Result<(), Error> {
+    compile_contracts_with_dependencies_and_output(
+        protos,
+        includes,
+        dependencies,
+        extern_paths,
+        DESCRIPTOR_FILE,
+    )
+}
+
+/// Compiles a replacement contract with dependency closures and named output.
+pub fn compile_contracts_with_dependencies_and_output(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+    descriptor_file: &str,
+) -> Result<(), Error> {
+    compile_contracts_to_with_dependencies(
+        protos,
+        includes,
+        &descriptor_out_dir()?,
+        dependencies,
+        extern_paths,
+        descriptor_file,
+    )
+}
+
+/// Generates checked-in contract artifacts into an explicit candidate directory.
+///
+/// Project tooling calls this against a temporary directory and installs the
+/// complete candidate atomically. Build scripts should use [`compile_contracts`]
+/// so Cargo owns their `OUT_DIR` lifecycle.
+pub fn generate_contract_package(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    out_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+) -> Result<(), Error> {
+    std::fs::create_dir_all(out_dir).map_err(|source| Error::Path {
+        path: out_dir.to_owned(),
+        source,
+    })?;
+    compile_contracts_to_with_dependencies(
+        protos,
+        includes,
+        out_dir,
+        dependencies,
+        extern_paths,
+        DESCRIPTOR_FILE,
+    )?;
+    let mut generated = std::fs::read_dir(out_dir)
+        .map_err(|source| Error::Path {
+            path: out_dir.to_owned(),
+            source,
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|extension| extension == "rs")
+                && path.file_name().is_some_and(|name| name != "lib.rs")
+        })
+        .collect::<Vec<_>>();
+    generated.sort();
+    let mut library = String::from("// @generated by phoxal-build; do not edit.\n");
+    for path in generated {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Err(Error::Path {
+                path,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "generated Rust filename is not UTF-8",
+                ),
+            });
+        };
+        library.push_str("include!(");
+        library.push_str(&format!("{name:?}"));
+        library.push_str(");\n");
+    }
+    for (proto_package, rust_path) in extern_paths {
+        let module = contract_import_module(proto_package);
+        library.push_str("#[doc(hidden)]\npub mod ");
+        library.push_str(&module);
+        library.push_str(" {\n    pub use ");
+        library.push_str(rust_path);
+        library.push_str("::*;\n}\n");
+    }
+    library.push_str(
+        "/// Exact generated descriptor closure.\n\
+         pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(\"phoxal-descriptors.bin\");\n",
+    );
+    std::fs::write(out_dir.join("lib.rs"), library).map_err(|source| Error::Path {
+        path: out_dir.join("lib.rs"),
+        source,
+    })?;
+    write_contract_metadata(protos, includes, out_dir, dependencies)?;
+    Ok(())
+}
+
+fn contract_import_module(proto_package: &str) -> String {
+    let mut module = String::from("__phoxal_contract_import_");
+    for character in proto_package.trim_start_matches('.').chars() {
+        if character.is_ascii_alphanumeric() {
+            module.push(character.to_ascii_lowercase());
+        } else {
+            module.push('_');
+        }
+    }
+    module
+}
+
+#[derive(Deserialize, Serialize)]
+struct ContractMetadata {
+    format: u32,
+    generator: String,
+    descriptor_sha256: String,
+    sources: Vec<ContractFile>,
+    generated: Vec<ContractFile>,
+    dependencies: Vec<ContractDependency>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ContractFile {
+    path: String,
+    sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ContractDependency {
+    package: String,
+    descriptor_sha256: String,
+}
+
+fn write_contract_metadata(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    out_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
+) -> Result<(), Error> {
+    let include_roots = includes
+        .iter()
+        .map(|path| canonical(path.as_ref()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sources = protos
+        .iter()
+        .map(|path| {
+            let path = canonical(path.as_ref())?;
+            let relative = include_roots
+                .iter()
+                .find_map(|include| path.strip_prefix(include).ok())
+                .ok_or_else(|| Error::SourceOutsideIncludes(path.clone()))?;
+            Ok(ContractFile {
+                path: proto_name(relative),
+                sha256: file_sha256(&path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let descriptor = out_dir.join(DESCRIPTOR_FILE);
+    let descriptor_sha256 = file_sha256(&descriptor)?;
+    let mut generated = std::fs::read_dir(out_dir)
+        .map_err(|source| Error::Path {
+            path: out_dir.to_owned(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| Error::Path {
+            path: out_dir.to_owned(),
+            source,
+        })?
+        .into_iter()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| entry.file_name() != CONTRACT_METADATA_FILE)
+        .map(|entry| {
+            let path = entry.path();
+            Ok(ContractFile {
+                path: entry.file_name().to_string_lossy().into_owned(),
+                sha256: file_sha256(&path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    generated.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut dependency_metadata = dependencies
+        .iter()
+        .map(|dependency| ContractDependency {
+            package: dependency.package.to_owned(),
+            descriptor_sha256: bytes_sha256(dependency.descriptors),
+        })
+        .collect::<Vec<_>>();
+    dependency_metadata.sort_by(|left, right| left.package.cmp(&right.package));
+
+    let metadata = ContractMetadata {
+        format: 1,
+        generator: env!("CARGO_PKG_VERSION").to_owned(),
+        descriptor_sha256,
+        sources,
+        generated,
+        dependencies: dependency_metadata,
+    };
+    let mut encoded = serde_json::to_vec_pretty(&metadata)?;
+    encoded.push(b'\n');
+    std::fs::write(out_dir.join(CONTRACT_METADATA_FILE), encoded).map_err(|source| {
+        Error::Path {
+            path: out_dir.join(CONTRACT_METADATA_FILE),
+            source,
+        }
+    })?;
+    Ok(())
+}
+
+/// Verifies checked-in contract files without rewriting the package.
+pub fn verify_contract_metadata(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    generated_dir: &Path,
+) -> Result<(), Error> {
+    let metadata_path = generated_dir.join(CONTRACT_METADATA_FILE);
+    let encoded = std::fs::read(&metadata_path).map_err(|source| Error::Path {
+        path: metadata_path.clone(),
+        source,
+    })?;
+    let metadata: ContractMetadata = serde_json::from_slice(&encoded)?;
+    if metadata.format != 1 {
+        return Err(Error::ContractMetadataMismatch {
+            path: metadata_path,
+            message: format!("unsupported format {}", metadata.format),
+        });
+    }
+    if metadata.generator != env!("CARGO_PKG_VERSION") {
+        return Err(Error::ContractMetadataMismatch {
+            path: generated_dir.join(CONTRACT_METADATA_FILE),
+            message: format!(
+                "generator {} is incompatible with {}",
+                metadata.generator,
+                env!("CARGO_PKG_VERSION")
+            ),
+        });
+    }
+
+    let include_roots = includes
+        .iter()
+        .map(|path| canonical(path.as_ref()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut actual_sources = protos
+        .iter()
+        .map(|path| {
+            let path = canonical(path.as_ref())?;
+            let relative = include_roots
+                .iter()
+                .find_map(|include| path.strip_prefix(include).ok())
+                .ok_or_else(|| Error::SourceOutsideIncludes(path.clone()))?;
+            Ok(ContractFile {
+                path: proto_name(relative),
+                sha256: file_sha256(&path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    actual_sources.sort_by(|left, right| left.path.cmp(&right.path));
+    if !same_contract_files(&metadata.sources, &actual_sources) {
+        return Err(Error::ContractMetadataMismatch {
+            path: generated_dir.join(CONTRACT_METADATA_FILE),
+            message: "authored Protobuf sources differ from accepted generation".to_owned(),
+        });
+    }
+
+    let mut actual_generated = std::fs::read_dir(generated_dir)
+        .map_err(|source| Error::Path {
+            path: generated_dir.to_owned(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| Error::Path {
+            path: generated_dir.to_owned(),
+            source,
+        })?
+        .into_iter()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| entry.file_name() != CONTRACT_METADATA_FILE)
+        .map(|entry| {
+            let path = entry.path();
+            Ok(ContractFile {
+                path: entry.file_name().to_string_lossy().into_owned(),
+                sha256: file_sha256(&path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    actual_generated.sort_by(|left, right| left.path.cmp(&right.path));
+    if !same_contract_files(&metadata.generated, &actual_generated) {
+        return Err(Error::ContractMetadataMismatch {
+            path: generated_dir.join(CONTRACT_METADATA_FILE),
+            message: "generated contract files differ from accepted generation".to_owned(),
+        });
+    }
+    if metadata.descriptor_sha256 != file_sha256(&generated_dir.join(DESCRIPTOR_FILE))? {
+        return Err(Error::ContractMetadataMismatch {
+            path: generated_dir.join(DESCRIPTOR_FILE),
+            message: "descriptor digest differs from accepted generation".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Verifies the exact direct descriptor inputs recorded during generation.
+pub fn verify_contract_dependencies(
+    generated_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
+) -> Result<(), Error> {
+    let metadata_path = generated_dir.join(CONTRACT_METADATA_FILE);
+    let encoded = std::fs::read(&metadata_path).map_err(|source| Error::Path {
+        path: metadata_path.clone(),
+        source,
+    })?;
+    let metadata: ContractMetadata = serde_json::from_slice(&encoded)?;
+    let mut actual = dependencies
+        .iter()
+        .map(|dependency| ContractDependency {
+            package: dependency.package.to_owned(),
+            descriptor_sha256: bytes_sha256(dependency.descriptors),
+        })
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| left.package.cmp(&right.package));
+    if metadata.dependencies.len() != actual.len()
+        || metadata
+            .dependencies
+            .iter()
+            .zip(actual)
+            .any(|(left, right)| {
+                left.package != right.package || left.descriptor_sha256 != right.descriptor_sha256
+            })
+    {
+        return Err(Error::ContractMetadataMismatch {
+            path: metadata_path,
+            message: "resolved dependency descriptors differ from accepted generation".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn same_contract_files(left: &[ContractFile], right: &[ContractFile]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.path == right.path && left.sha256 == right.sha256)
+}
+
+fn file_sha256(path: &Path) -> Result<String, Error> {
+    let bytes = std::fs::read(path).map_err(|source| Error::Path {
+        path: path.to_owned(),
+        source,
+    })?;
+    Ok(bytes_sha256(&bytes))
+}
+
+fn bytes_sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn descriptor_out_dir() -> Result<PathBuf, Error> {
     std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
@@ -273,6 +677,43 @@ fn compile_to(
 }
 
 fn compile_to_with_dependencies(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    out_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+    descriptor_file: &str,
+) -> Result<(), Error> {
+    compile_contracts_to_with_dependencies(
+        protos,
+        includes,
+        out_dir,
+        dependencies,
+        extern_paths,
+        descriptor_file,
+    )
+}
+
+fn compile_contracts_to_with_dependencies(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    out_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+    descriptor_file: &str,
+) -> Result<(), Error> {
+    compile_contracts_impl(
+        protos,
+        includes,
+        out_dir,
+        dependencies,
+        extern_paths,
+        descriptor_file,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_contracts_impl(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     out_dir: &Path,
@@ -336,6 +777,12 @@ fn compile_to_with_dependencies(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         ));
     }
+    if let Some(path) = &dependency_descriptor_path {
+        std::fs::remove_file(path).map_err(|source| Error::Path {
+            path: path.clone(),
+            source,
+        })?;
+    }
 
     let descriptor_bytes =
         std::fs::read(&descriptor_path).map_err(|source| Error::ReadDescriptor {
@@ -358,14 +805,11 @@ fn compile_to_with_dependencies(
             actual: file_count,
         });
     }
-    let ports = validate_owned_ports(&pool, &owned_names)?;
-
-    let has_ports = !ports.is_empty();
-    let service_package = ports.keys().next().and_then(|name| {
-        name.rsplit_once('.')
-            .and_then(|(prefix, _)| prefix.rsplit_once('.'))
-            .map(|(package, _)| package.to_owned())
-    });
+    let methods = validate_owned_methods(&pool, &owned_names)?;
+    let service_package = owner_service_package(methods.keys());
+    let service_generator: Box<dyn prost_build::ServiceGenerator> =
+        Box::new(ContractGenerator { methods });
+    let has_services = service_package.is_some();
     let mut config = prost_build::Config::new();
     config
         .out_dir(out_dir)
@@ -373,13 +817,19 @@ fn compile_to_with_dependencies(
         .file_descriptor_set_path(&descriptor_path)
         .skip_protoc_run()
         .enable_type_names()
-        .service_generator(Box::new(PortGenerator { ports }));
+        .service_generator(service_generator);
+    config.compile_well_known_types();
+    config.extern_path(".google.protobuf.Empty", "::phoxal::contract::Empty");
     for (proto_package, rust_path) in extern_paths {
         config.extern_path(*proto_package, *rust_path);
     }
     config.compile_protos(&owned_paths, &include_roots)?;
+    let generated_well_known_types = out_dir.join("google.protobuf.rs");
+    if generated_well_known_types.exists() {
+        std::fs::remove_file(generated_well_known_types)?;
+    }
 
-    if has_ports {
+    if has_services {
         embed_descriptor_section(
             out_dir,
             service_package.as_deref().unwrap_or_default(),
@@ -393,9 +843,17 @@ fn compile_to_with_dependencies(
     }
     println!(
         "cargo:rerun-if-changed={}",
-        include_dir().join("phoxal/port.proto").display()
+        include_dir().join("phoxal/api.proto").display()
     );
     Ok(())
+}
+
+fn owner_service_package<'a>(methods: impl Iterator<Item = &'a String>) -> Option<String> {
+    methods.into_iter().next().and_then(|name| {
+        name.rsplit_once('.')
+            .and_then(|(prefix, _)| prefix.rsplit_once('.'))
+            .map(|(package, _)| package.to_owned())
+    })
 }
 
 fn merge_dependency_descriptors(
@@ -518,61 +976,6 @@ fn proto_name(path: &Path) -> String {
         .join("/")
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Kind {
-    State,
-    Sample,
-    Event,
-    Stream,
-    Setpoint,
-    Read,
-    Commands,
-}
-
-impl Kind {
-    fn from_number(method: &str, value: i32) -> Result<Self, Error> {
-        match value {
-            1 => Ok(Self::State),
-            2 => Ok(Self::Sample),
-            3 => Ok(Self::Event),
-            4 => Ok(Self::Stream),
-            5 => Ok(Self::Setpoint),
-            6 => Ok(Self::Read),
-            7 => Ok(Self::Commands),
-            _ => Err(Error::InvalidKind {
-                method: method.to_owned(),
-                value,
-            }),
-        }
-    }
-
-    fn rust_type(self) -> &'static str {
-        match self {
-            Self::State => "State",
-            Self::Sample => "Sample",
-            Self::Event => "Event",
-            Self::Stream => "Stream",
-            Self::Setpoint => "Setpoint",
-            Self::Read => "Read",
-            Self::Commands => "Commands",
-        }
-    }
-
-    fn is_publication(self) -> bool {
-        matches!(
-            self,
-            Self::State | Self::Sample | Self::Event | Self::Stream | Self::Setpoint
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-struct PortSpec {
-    kind: Kind,
-    public_name: String,
-    constant_name: String,
-}
-
 fn embed_descriptor_section(
     out_dir: &Path,
     service_package: &str,
@@ -588,7 +991,7 @@ fn embed_descriptor_section(
             actual: descriptor_len,
         })?;
     let section = format!(
-        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal::port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{descriptor_file}\")));\n"
+        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal::contract::descriptor_frame::<{frame_len}>(include_bytes!({descriptor_file:?}));\n"
     );
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -603,27 +1006,34 @@ const fn phoxal_port_frame_header_bytes() -> usize {
     16
 }
 
-fn validate_owned_ports(
+#[derive(Clone, Copy, Debug)]
+enum ContractShape {
+    Call,
+    Observation,
+}
+
+#[derive(Clone, Debug)]
+struct MethodSpec {
+    shape: ContractShape,
+    public_name: String,
+    constant_name: String,
+    retained_latest: bool,
+    lease_valid_for_ms: Option<u64>,
+}
+
+fn validate_owned_methods(
     pool: &DescriptorPool,
     owned_names: &HashSet<String>,
-) -> Result<HashMap<String, PortSpec>, Error> {
-    let owned_files = pool
-        .files()
-        .filter(|file| owned_names.contains(file.name()))
-        .collect::<Vec<_>>();
-    if !owned_files
-        .iter()
-        .any(|file| file.services().next().is_some())
-    {
-        return Ok(HashMap::new());
-    }
-    let extension = pool
-        .get_extension_by_name(PORT_KIND_EXTENSION)
-        .ok_or(Error::MissingPortKindExtension)?;
-    let mut ports = HashMap::new();
+) -> Result<HashMap<String, MethodSpec>, Error> {
+    let retained_latest = pool.get_extension_by_name(RETAINED_LATEST_EXTENSION);
+    let lease = pool.get_extension_by_name(LEASE_EXTENSION);
+    let mut methods = HashMap::new();
     let mut package_modules: HashMap<String, HashSet<String>> = HashMap::new();
 
-    for file in owned_files {
+    for file in pool
+        .files()
+        .filter(|file| owned_names.contains(file.name()))
+    {
         for service in file.services() {
             let module_name = service.name().to_snake_case();
             if !package_modules
@@ -638,31 +1048,64 @@ fn validate_owned_ports(
                 });
             }
 
-            let mut names = HashSet::new();
+            let mut public_names = HashSet::new();
             let mut constants = HashSet::new();
             for method in service.methods() {
                 let full_name = method.full_name().to_owned();
+                let shape = contract_shape(&method)?;
                 let options = method.options();
-                if !options.has_extension(&extension) {
-                    return Err(Error::MissingKind(full_name));
+                let retained = retained_latest.as_ref().is_some_and(|extension| {
+                    matches!(options.get_extension(extension).as_ref(), Value::Bool(true))
+                });
+                if retained && !matches!(shape, ContractShape::Observation) {
+                    return Err(Error::InvalidModifier {
+                        method: full_name,
+                        modifier: RETAINED_LATEST_EXTENSION,
+                        reason: "it is valid only for observations",
+                    });
                 }
-                let value = match options.get_extension(&extension).as_ref() {
-                    Value::EnumNumber(value) => *value,
-                    _ => {
-                        return Err(Error::InvalidKind {
-                            method: full_name,
-                            value: 0,
-                        });
-                    }
-                };
-                let kind = Kind::from_number(&full_name, value)?;
-                validate_shape(&method, kind)?;
+                let lease_valid_for_ms = lease
+                    .as_ref()
+                    .filter(|extension| options.has_extension(extension))
+                    .map(|extension| {
+                        let option_value = options.get_extension(extension);
+                        let Value::Message(value) = option_value.as_ref() else {
+                            return Err(Error::InvalidModifier {
+                                method: full_name.clone(),
+                                modifier: LEASE_EXTENSION,
+                                reason: "the option is not a Lease message",
+                            });
+                        };
+                        let Some(value) = value.get_field_by_name("valid_for_ms") else {
+                            return Err(Error::InvalidModifier {
+                                method: full_name.clone(),
+                                modifier: LEASE_EXTENSION,
+                                reason: "valid_for_ms is missing",
+                            });
+                        };
+                        let Value::U64(value) = value.as_ref() else {
+                            return Err(Error::InvalidModifier {
+                                method: full_name.clone(),
+                                modifier: LEASE_EXTENSION,
+                                reason: "valid_for_ms is not an unsigned integer",
+                            });
+                        };
+                        if *value == 0 {
+                            return Err(Error::InvalidModifier {
+                                method: full_name.clone(),
+                                modifier: LEASE_EXTENSION,
+                                reason: "valid_for_ms must be positive",
+                            });
+                        }
+                        Ok(*value)
+                    })
+                    .transpose()?;
 
                 let public_name = method.name().to_snake_case();
                 let constant_name = method.name().to_shouty_snake_case();
-                if !names.insert(public_name.clone()) {
+                if !public_names.insert(public_name.clone()) {
                     return Err(Error::NameCollision {
-                        what: "public port",
+                        what: "public method",
                         name: public_name,
                         owner: service.full_name().to_owned(),
                     });
@@ -674,151 +1117,124 @@ fn validate_owned_ports(
                         owner: service.full_name().to_owned(),
                     });
                 }
-                ports.insert(
+                methods.insert(
                     full_name,
-                    PortSpec {
-                        kind,
+                    MethodSpec {
+                        shape,
                         public_name,
                         constant_name,
+                        retained_latest: retained,
+                        lease_valid_for_ms,
                     },
                 );
             }
         }
     }
-    Ok(ports)
+    Ok(methods)
 }
 
-fn validate_shape(method: &prost_reflect::MethodDescriptor, kind: Kind) -> Result<(), Error> {
-    let full_name = method.full_name().to_owned();
+fn contract_shape(method: &prost_reflect::MethodDescriptor) -> Result<ContractShape, Error> {
+    let method_name = method.full_name().to_owned();
     if method.is_client_streaming() {
-        return Err(Error::InvalidShape {
-            method: full_name,
-            kind: kind.rust_type(),
+        return Err(Error::UnsupportedMethodShape {
+            method: method_name,
             reason: "client streaming is not supported",
         });
     }
-    if kind.is_publication() {
-        if !method.is_server_streaming() {
-            return Err(Error::InvalidShape {
-                method: full_name,
-                kind: kind.rust_type(),
-                reason: "publication ports must return a stream",
-            });
-        }
+    if method.is_server_streaming() {
         if method.input().full_name() != "google.protobuf.Empty" {
-            return Err(Error::InvalidShape {
-                method: full_name,
-                kind: kind.rust_type(),
-                reason: "publication ports must accept google.protobuf.Empty",
+            return Err(Error::UnsupportedMethodShape {
+                method: method_name,
+                reason: "an observation must accept google.protobuf.Empty",
             });
         }
-    } else if method.is_server_streaming() {
-        return Err(Error::InvalidShape {
-            method: full_name,
-            kind: kind.rust_type(),
-            reason: "read and command ports must be unary",
-        });
+        Ok(ContractShape::Observation)
+    } else {
+        Ok(ContractShape::Call)
     }
-    Ok(())
 }
 
-struct PortGenerator {
-    ports: HashMap<String, PortSpec>,
+struct ContractGenerator {
+    methods: HashMap<String, MethodSpec>,
 }
 
-impl prost_build::ServiceGenerator for PortGenerator {
+impl prost_build::ServiceGenerator for ContractGenerator {
     fn generate(&mut self, service: prost_build::Service, buffer: &mut String) {
-        // `protoc` hands Prost every service in the imported descriptor
-        // closure, while typed ports are generated only for the owner's
-        // service methods. Imported owner services are referenced through
-        // `extern_path` and must not be looked up in this owner's port map.
         if !service.methods.iter().any(|method| {
             let full_name = format!(
                 "{}.{}.{}",
                 service.package, service.proto_name, method.proto_name
             );
-            self.ports.contains_key(&full_name)
+            self.methods.contains_key(&full_name)
         }) {
-            // Prost still expects a generated module for every imported
-            // service package when it finalizes service output. Keep that
-            // module empty because the imported package is mapped through an
-            // `extern_path` and its service ports belong to its owner crate.
             let module_name = service.proto_name.to_snake_case();
             buffer.push_str(&format!("pub mod {module_name} {{}}\n"));
             return;
         }
+
         let module_name = service.proto_name.to_snake_case();
+        let service_name = if service.package.is_empty() {
+            service.proto_name.clone()
+        } else {
+            format!("{}.{}", service.package, service.proto_name)
+        };
         buffer.push_str(&format!("pub mod {module_name} {{\n"));
+        buffer.push_str("    pub mod methods {\n");
         for method in &service.methods {
             let full_name = format!(
                 "{}.{}.{}",
                 service.package, service.proto_name, method.proto_name
             );
-            let spec = &self.ports[&full_name];
-            let port_type = spec.kind.rust_type();
-            let input_type = nested_type(&method.input_type);
-            let output_type = nested_type(&method.output_type);
+            let spec = &self.methods[&full_name];
+            let input_type = nested_contract_type(&method.input_type);
+            let output_type = nested_contract_type(&method.output_type);
             let request_name = proto_type_name(&method.input_proto_type);
             let response_name = proto_type_name(&method.output_proto_type);
-            let service_name = if service.package.is_empty() {
-                service.proto_name.clone()
-            } else {
-                format!("{}.{}", service.package, service.proto_name)
-            };
-            if spec.kind.is_publication() {
-                buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal::port::{}<{}> = ::phoxal::port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
+            let lease = spec
+                .lease_valid_for_ms
+                .map_or_else(|| "None".to_owned(), |value| format!("Some({value})"));
+            match spec.shape {
+                ContractShape::Call => buffer.push_str(&format!(
+                    "        pub const {}: ::phoxal::contract::CallMethod<{}, {}> = ::phoxal::contract::CallMethod::new({:?}, {:?}, {:?}, {:?}, {:?}, {}, &super::super::__PHOXAL_DESCRIPTOR_SET);\n",
                     spec.constant_name,
-                    port_type,
-                    output_type,
-                    port_type,
-                    spec.public_name,
-                    service_name,
-                    method.proto_name,
-                    request_name,
-                    response_name,
-                ));
-                buffer.push('\n');
-            } else {
-                buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal::port::{}<{}, {}> = ::phoxal::port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
-                    spec.constant_name,
-                    port_type,
                     input_type,
                     output_type,
-                    port_type,
-                    spec.public_name,
                     service_name,
                     method.proto_name,
+                    spec.public_name,
                     request_name,
                     response_name,
-                ));
-                buffer.push('\n');
+                    lease,
+                )),
+                ContractShape::Observation => buffer.push_str(&format!(
+                    "        pub const {}: ::phoxal::contract::ObservationMethod<{}> = ::phoxal::contract::ObservationMethod::new({:?}, {:?}, {:?}, {:?}, {:?}, {}, {}, &super::super::__PHOXAL_DESCRIPTOR_SET);\n",
+                    spec.constant_name,
+                    output_type,
+                    service_name,
+                    method.proto_name,
+                    spec.public_name,
+                    request_name,
+                    response_name,
+                    spec.retained_latest,
+                    lease,
+                )),
             }
         }
-        buffer.push_str("    pub mod ports {\n");
-        for method in &service.methods {
-            let full_name = format!(
-                "{}.{}.{}",
-                service.package, service.proto_name, method.proto_name
-            );
-            let constant = &self.ports[&full_name].constant_name;
-            buffer.push_str(&format!("        pub use super::{constant};\n"));
-        }
-        buffer.push_str("    }\n}\n");
+        buffer.push_str("    }\n");
+        buffer.push_str("}\n");
+    }
+}
+
+fn nested_contract_type(rust_type: &str) -> String {
+    if rust_type.starts_with("::") || rust_type.starts_with('(') {
+        rust_type.to_owned()
+    } else {
+        format!("super::super::{rust_type}")
     }
 }
 
 fn proto_type_name(proto_type: &str) -> String {
     proto_type.trim_start_matches('.').to_owned()
-}
-
-fn nested_type(rust_type: &str) -> String {
-    if rust_type.starts_with("::") {
-        rust_type.to_owned()
-    } else {
-        format!("super::{rust_type}")
-    }
 }
 
 #[cfg(test)]
@@ -833,8 +1249,9 @@ mod tests {
     use prost_types::FileDescriptorSet;
 
     use super::{
-        DESCRIPTOR_FILE, DependencyDescriptor, Error, Kind, PORT_PROTO, compile_to,
-        compile_to_with_dependencies, include_dir, merge_dependency_descriptors,
+        API_PROTO, DESCRIPTOR_FILE, DependencyDescriptor, Error,
+        compile_contracts_to_with_dependencies, compile_to, compile_to_with_dependencies,
+        include_dir, merge_dependency_descriptors,
     };
 
     fn compile_sources(
@@ -854,21 +1271,29 @@ mod tests {
         (source, output, result)
     }
 
-    const MESSAGES: &str = r#"
-        syntax = "proto3";
-        package example.inspection.v1;
-        import "example/shared/v1/payload.proto";
-
-        message InspectionState { example.shared.v1.SharedPayload payload = 1; }
-        message InspectionSample { uint64 sequence = 1; }
-        message InspectionEvent { string kind = 1; }
-        message InspectionStream { uint64 sequence = 1; }
-        message InspectionSetpoint { double target = 1; }
-        message InspectionReadRequest { string key = 1; }
-        message InspectionReadResponse { example.shared.v1.SharedPayload payload = 1; }
-        message InspectionCommandRequest { string command = 1; }
-        message InspectionCommandResponse { bool accepted = 1; }
-    "#;
+    fn compile_contract_sources(
+        files: &[(&str, &str)],
+    ) -> (tempfile::TempDir, tempfile::TempDir, Result<(), Error>) {
+        let source = tempfile::tempdir().expect("temporary source");
+        let output = tempfile::tempdir().expect("temporary output");
+        let mut paths = Vec::with_capacity(files.len());
+        for (relative, contents) in files {
+            let path = source.path().join(relative);
+            fs::create_dir_all(path.parent().expect("fixture has a parent directory"))
+                .expect("fixture directory");
+            fs::write(&path, contents).expect("fixture source");
+            paths.push(path);
+        }
+        let result = compile_contracts_to_with_dependencies(
+            &paths,
+            &[source.path()],
+            output.path(),
+            &[],
+            &[],
+            DESCRIPTOR_FILE,
+        );
+        (source, output, result)
+    }
 
     const SHARED_PAYLOAD: &str = r#"
         syntax = "proto3";
@@ -876,50 +1301,111 @@ mod tests {
         message SharedPayload { uint64 value = 1; }
     "#;
 
-    const ALL_KINDS: &str = r#"
-        syntax = "proto3";
-        package example.inspection.v1;
-        import "google/protobuf/empty.proto";
-        import "phoxal/port.proto";
-        import "example/inspection/v1/messages.proto";
-
-        service Inspection {
-          rpc Status(google.protobuf.Empty) returns (stream InspectionState) {
-            option (phoxal.port.kind) = STATE;
-          }
-          rpc Samples(google.protobuf.Empty) returns (stream InspectionSample) {
-            option (phoxal.port.kind) = SAMPLE;
-          }
-          rpc Events(google.protobuf.Empty) returns (stream InspectionEvent) {
-            option (phoxal.port.kind) = EVENT;
-          }
-          rpc Records(google.protobuf.Empty) returns (stream InspectionStream) {
-            option (phoxal.port.kind) = STREAM;
-          }
-          rpc Target(google.protobuf.Empty) returns (stream InspectionSetpoint) {
-            option (phoxal.port.kind) = SETPOINT;
-          }
-          rpc Read(InspectionReadRequest) returns (InspectionReadResponse) {
-            option (phoxal.port.kind) = READ;
-          }
-          rpc Commands(InspectionCommandRequest) returns (InspectionCommandResponse) {
-            option (phoxal.port.kind) = COMMANDS;
-          }
-          rpc Current(google.protobuf.Empty) returns (stream InspectionState) {
-            option (phoxal.port.kind) = SAMPLE;
-          }
-        }
-    "#;
-
     #[test]
-    fn packaged_option_has_stable_public_identity() {
-        assert!(PORT_PROTO.contains("package phoxal.port;"));
-        assert!(PORT_PROTO.contains("PortKind kind = 50000;"));
-        assert!(include_dir().join("phoxal/port.proto").is_file());
+    fn packaged_api_options_have_stable_public_identity() {
+        assert!(API_PROTO.contains("package phoxal.api;"));
+        assert!(API_PROTO.contains("bool retained_latest = 50001;"));
+        assert!(API_PROTO.contains("Lease lease = 50002;"));
+        assert!(include_dir().join("phoxal/api.proto").is_file());
     }
 
     #[test]
-    fn compiles_message_only_contract_without_port_option_import() {
+    fn derives_calls_observations_and_modifiers_from_contract_shape() {
+        let (_source, output, result) = compile_contract_sources(&[(
+            "example/control/v1/control.proto",
+            r#"
+                syntax = "proto3";
+                package example.control.v1;
+                import "google/protobuf/empty.proto";
+                import "phoxal/api.proto";
+
+                message SetRequest { double value = 1; }
+                message SetResponse { bool accepted = 1; }
+                message Status { double value = 1; }
+
+                service Control {
+                  rpc Set(SetRequest) returns (SetResponse) {
+                    option (phoxal.api.lease) = { valid_for_ms: 125 };
+                  }
+                  rpc Statuses(google.protobuf.Empty) returns (stream Status) {
+                    option (phoxal.api.retained_latest) = true;
+                  }
+                }
+            "#,
+        )]);
+        result.expect("contract generation");
+
+        let generated = fs::read_to_string(output.path().join("example.control.v1.rs"))
+            .expect("generated Rust");
+        assert!(generated.contains("pub mod methods"));
+        assert!(generated.contains("contract::CallMethod<"));
+        assert!(generated.contains("super::super::SetRequest"));
+        assert!(generated.contains("super::super::SetResponse"));
+        assert!(generated.contains("\"Set\""));
+        assert!(generated.contains("\"example.control.v1.SetRequest\""));
+        assert!(generated.contains("Some(125)"));
+        assert!(generated.contains("contract::ObservationMethod<"));
+        assert!(generated.contains("super::super::Status"));
+        assert!(generated.contains("\"Statuses\""));
+        assert!(generated.contains("\"google.protobuf.Empty\""));
+        assert!(generated.contains("true,"));
+        assert!(
+            !output.path().join("google.protobuf.rs").exists(),
+            "contract packages use the canonical phoxal::contract::Empty instead of duplicating well-known types"
+        );
+
+        let descriptors = fs::read(output.path().join(DESCRIPTOR_FILE)).expect("descriptors");
+        let pool = DescriptorPool::decode(descriptors.as_slice()).expect("descriptor closure");
+        assert!(
+            pool.get_extension_by_name("phoxal.api.retained_latest")
+                .is_some()
+        );
+        assert!(pool.get_extension_by_name("phoxal.api.lease").is_some());
+    }
+
+    #[test]
+    fn rejects_invalid_new_contract_shapes_and_modifiers() {
+        let (_source, _output, streaming_request) = compile_contract_sources(&[(
+            "example/control/v1/control.proto",
+            r#"
+                syntax = "proto3";
+                package example.control.v1;
+                message Request {}
+                message Response {}
+                service Control {
+                  rpc Invalid(stream Request) returns (Response);
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            streaming_request,
+            Err(Error::UnsupportedMethodShape { .. })
+        ));
+
+        let (_source, _output, retained_call) = compile_contract_sources(&[(
+            "example/control/v1/control.proto",
+            r#"
+                syntax = "proto3";
+                package example.control.v1;
+                import "phoxal/api.proto";
+                message Request {}
+                message Response {}
+                service Control {
+                  rpc Invalid(Request) returns (Response) {
+                    option (phoxal.api.retained_latest) = true;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            retained_call,
+            Err(Error::InvalidModifier { modifier, .. })
+                if modifier == super::RETAINED_LATEST_EXTENSION
+        ));
+    }
+
+    #[test]
+    fn compiles_message_only_contract_without_method_descriptors() {
         let source = tempfile::tempdir().expect("temporary source");
         let output = tempfile::tempdir().expect("temporary output");
         let proto = source.path().join("vocabulary.proto");
@@ -939,68 +1425,11 @@ mod tests {
         let generated = fs::read_to_string(output.path().join("example.vocabulary.v1.rs"))
             .expect("generated Rust");
         assert!(generated.contains("pub struct Measurement"));
-        // A messages-only owner must not pull the typed-port vocabulary into
-        // its generated code. Both the legacy bare-crate spelling and the
-        // current `phoxal::port` SDK path are absent; a regression that
-        // silently added a port annotation would fail at least one of these.
-        assert!(!generated.contains("phoxal_port"));
-        assert!(!generated.contains("phoxal::port"));
+        // A messages-only owner must not invent a service-method surface.
+        assert!(!generated.contains("CallMethod"));
+        assert!(!generated.contains("ObservationMethod"));
         assert!(!generated.contains("descriptor_frame"));
         assert!(output.path().join(DESCRIPTOR_FILE).is_file());
-    }
-
-    #[test]
-    fn generates_typed_ports_and_original_descriptors() {
-        let (_source, output, result) = compile_sources(&[
-            ("example/shared/v1/payload.proto", SHARED_PAYLOAD),
-            ("example/inspection/v1/messages.proto", MESSAGES),
-            ("example/inspection/v1/inspection.proto", ALL_KINDS),
-        ]);
-        result.expect("contract generation");
-
-        let generated = fs::read_to_string(output.path().join("example.inspection.v1.rs"))
-            .expect("generated Rust");
-        assert!(generated.contains("pub mod inspection"));
-        assert!(generated.contains("phoxal::port::State<super::InspectionState>"));
-        assert!(generated.contains("phoxal::port::Sample<super::InspectionSample>"));
-        assert!(generated.contains("phoxal::port::Event<super::InspectionEvent>"));
-        assert!(generated.contains("phoxal::port::Stream<super::InspectionStream>"));
-        assert!(generated.contains("phoxal::port::Setpoint<super::InspectionSetpoint>"));
-        assert!(generated.contains("phoxal::port::Read<"));
-        assert!(generated.contains("super::InspectionReadRequest"));
-        assert!(generated.contains("super::InspectionReadResponse"));
-        assert!(generated.contains("phoxal::port::Commands<"));
-        assert!(generated.contains("super::InspectionCommandRequest"));
-        assert!(generated.contains("super::InspectionCommandResponse"));
-        assert!(generated.contains("pub use super::STATUS"));
-        assert!(generated.contains("pub use super::CURRENT"));
-        assert!(output.path().join(DESCRIPTOR_FILE).is_file());
-
-        let descriptors = fs::read(output.path().join(DESCRIPTOR_FILE)).expect("descriptors");
-        let pool = DescriptorPool::decode(descriptors.as_slice()).expect("descriptor closure");
-        assert!(
-            pool.files()
-                .any(|file| file.name() == "example/shared/v1/payload.proto")
-        );
-        assert!(
-            pool.files()
-                .any(|file| file.name() == "google/protobuf/empty.proto")
-        );
-        let extension = pool
-            .get_extension_by_name("phoxal.port.kind")
-            .expect("packaged kind extension");
-        let service = pool
-            .get_service_by_name("example.inspection.v1.Inspection")
-            .expect("inspection service");
-        let status = service
-            .methods()
-            .find(|method| method.name() == "Status")
-            .expect("status method");
-        assert_eq!(
-            status.options().get_extension(&extension).as_ref(),
-            &Value::EnumNumber(1)
-        );
-        assert!(pool.get_message_by_name("google.protobuf.Empty").is_some());
     }
 
     #[test]
@@ -1248,244 +1677,6 @@ sys.stdout.buffer.write(bytes((0x08, 0xAC, 0x02)))
                     && first == "first-owner"
                     && second == "second-owner"
         ));
-    }
-
-    #[test]
-    fn rejects_a_missing_kind() {
-        let (_source, _output, result) = compile_sources(&[(
-            "missing.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Missing {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {}
-                }
-            "#,
-        )]);
-        assert!(
-            matches!(result, Err(Error::MissingKind(method)) if method == "example.invalid.Missing.Status")
-        );
-    }
-
-    #[test]
-    fn rejects_unspecified_and_unknown_kinds() {
-        let (_source, _output, unspecified) = compile_sources(&[(
-            "unspecified.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Unspecified {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = PORT_KIND_UNSPECIFIED;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            unspecified,
-            Err(Error::InvalidKind { value: 0, .. })
-        ));
-
-        let (_source, _output, unknown) = compile_sources(&[(
-            "unknown.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Unknown {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = 42;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(unknown, Err(Error::ProtocFailed(_))));
-        assert!(matches!(
-            Kind::from_number("example.invalid.Unknown.Status", 42),
-            Err(Error::InvalidKind { value: 42, .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_publication_with_unary_or_non_empty_input() {
-        let (_source, _output, unary) = compile_sources(&[(
-            "unary.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Unary {
-                  rpc Status(google.protobuf.Empty) returns (State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            unary,
-            Err(Error::InvalidShape {
-                reason: "publication ports must return a stream",
-                ..
-            })
-        ));
-
-        let (_source, _output, non_empty) = compile_sources(&[(
-            "non_empty.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                message Request {}
-                service NonEmpty {
-                  rpc Status(Request) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            non_empty,
-            Err(Error::InvalidShape {
-                reason: "publication ports must accept google.protobuf.Empty",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_read_and_command_streaming_shapes() {
-        let (_source, _output, server_stream) = compile_sources(&[(
-            "server_stream.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "phoxal/port.proto";
-                message Request {}
-                message Response {}
-                service ServerStream {
-                  rpc Read(Request) returns (stream Response) {
-                    option (phoxal.port.kind) = READ;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            server_stream,
-            Err(Error::InvalidShape {
-                reason: "read and command ports must be unary",
-                ..
-            })
-        ));
-
-        let (_source, _output, client_stream) = compile_sources(&[(
-            "client_stream.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "phoxal/port.proto";
-                message Request {}
-                message Response {}
-                service ClientStream {
-                  rpc Read(stream Request) returns (Response) {
-                    option (phoxal.port.kind) = READ;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            client_stream,
-            Err(Error::InvalidShape {
-                reason: "client streaming is not supported",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_normalized_method_name_collisions() {
-        let (_source, _output, result) = compile_sources(&[(
-            "methods.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Methods {
-                  rpc FooBar(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                  rpc Foo_Bar(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            result,
-            Err(Error::NameCollision { what: "public port", name, .. }) if name == "foo_bar"
-        ));
-    }
-
-    #[test]
-    fn rejects_normalized_service_module_collisions() {
-        let (_source, _output, result) = compile_sources(&[(
-            "services.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service FooBar {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                }
-                service Foo_Bar {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(
-            result,
-            Err(Error::NameCollision { what: "service module", name, .. }) if name == "foo_bar"
-        ));
-    }
-
-    #[test]
-    fn protoc_rejects_duplicate_singular_kind_options() {
-        let (_source, _output, result) = compile_sources(&[(
-            "duplicate.proto",
-            r#"
-                syntax = "proto3";
-                package example.invalid;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message State {}
-                service Duplicate {
-                  rpc Status(google.protobuf.Empty) returns (stream State) {
-                    option (phoxal.port.kind) = STATE;
-                    option (phoxal.port.kind) = SAMPLE;
-                  }
-                }
-            "#,
-        )]);
-        assert!(matches!(result, Err(Error::ProtocFailed(_))));
     }
 
     #[test]

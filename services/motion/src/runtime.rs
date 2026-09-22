@@ -4,6 +4,8 @@ use crate::drive::setpoint_from_twist;
 use crate::drive::{setpoint_from_intent, stopped_setpoint};
 use crate::inputs::MotionInputs;
 use crate::outputs::MotionOutputs;
+use crate::validation;
+use phoxal::contract::Empty;
 #[cfg(test)]
 use phoxal::runtime::input::{Latest, Setpoint};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
@@ -11,9 +13,9 @@ use phoxal_service_kinematics::OdometryState;
 #[cfg(test)]
 use phoxal_service_motion::actuator_target;
 use phoxal_service_motion::{
-    ActuatorSetpoint, ApplyEmergencyRequest, ApplyEmergencyResponse, Arm, ControlMode,
-    EmergencyAccepted, EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus,
-    apply_emergency_request, apply_emergency_response, ports,
+    ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyAccepted,
+    EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus, ReleaseEmergencyRequest,
+    apply_emergency_response, motion,
 };
 #[cfg(test)]
 use phoxal_service_motion::{Constraint, ConstraintReason};
@@ -99,7 +101,19 @@ impl Runtime for Motion {
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
         inputs
-            .emergency
+            .arm
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        inputs
+            .disarm
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        inputs
+            .engage_emergency
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        inputs
+            .release_emergency
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
 
@@ -107,21 +121,66 @@ impl Runtime for Motion {
         state.protective_state_clear = fresh_safety(inputs, ctx.now())
             .is_some_and(|safety| safety_is_clear(safety, ctx.now()));
         state.measurement_available = fresh_measurement(inputs, ctx.now())
-            .is_some_and(|measurement| measurement.available && measurement.validate().is_ok());
+            .is_some_and(|measurement| measurement.available && valid_measurement(measurement));
         let mut outputs = MotionOutputs::default();
         let protective_state_clear = state.protective_state_clear;
         let measurement_available = state.measurement_available;
 
-        for command in inputs.emergency.items() {
-            let response = apply_emergency_command(
-                &mut state,
-                command.request(),
-                protective_state_clear,
-                measurement_available,
-                inputs,
-                ctx.now(),
-            );
-            outputs.emergency_replies.push(command.reply(response));
+        let mut calls = Vec::new();
+        calls.extend(inputs.arm.items().iter().map(MotionCall::Arm));
+        calls.extend(inputs.disarm.items().iter().map(MotionCall::Disarm));
+        calls.extend(
+            inputs
+                .engage_emergency
+                .items()
+                .iter()
+                .map(MotionCall::EngageEmergency),
+        );
+        calls.extend(
+            inputs
+                .release_emergency
+                .items()
+                .iter()
+                .map(MotionCall::ReleaseEmergency),
+        );
+        calls.sort_by_key(MotionCall::order);
+        for call in calls {
+            match call {
+                MotionCall::Arm(command) => {
+                    let response = apply_arm(
+                        &mut state,
+                        command.request(),
+                        command.source(),
+                        protective_state_clear,
+                        measurement_available,
+                        inputs,
+                        ctx.now(),
+                    );
+                    outputs.arm_replies.push(command.reply(response));
+                }
+                MotionCall::Disarm(command) => {
+                    state.disarm();
+                    outputs.disarm_replies.push(command.reply(accepted()));
+                }
+                MotionCall::EngageEmergency(command) => {
+                    state.emergency_latched = true;
+                    state.engaged_this_invocation = true;
+                    outputs
+                        .engage_emergency_replies
+                        .push(command.reply(accepted()));
+                }
+                MotionCall::ReleaseEmergency(command) => {
+                    let response = apply_release(
+                        &mut state,
+                        command.request(),
+                        protective_state_clear,
+                        measurement_available,
+                    );
+                    outputs
+                        .release_emergency_replies
+                        .push(command.reply(response));
+                }
+            }
         }
 
         if state.engaged_this_invocation || state.emergency_latched {
@@ -129,6 +188,17 @@ impl Runtime for Motion {
         } else {
             select_and_limit_intent(&mut state, inputs, ctx.now());
         }
+
+        validation::actuator_setpoint(
+            &state.actuator_setpoint,
+            state
+                .config
+                .left_wheels
+                .iter()
+                .chain(&state.config.right_wheels)
+                .map(|wheel| wheel.actuator_id.as_str()),
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
 
         Ok((state, outputs))
     }
@@ -142,7 +212,7 @@ impl Runtime for Motion {
 impl Motion {
     /// Projects the final actuator intent with an independent validity bound.
     #[phoxal::runtime::outputs::setpoint(
-        port = ports::ACTUATORS,
+        port = motion::methods::ACTUATORS.__setpoint_port(),
         max_bytes = 1_024,
         valid_for_ms = 100
     )]
@@ -153,7 +223,7 @@ impl Motion {
     /// Renews authority and protective status at each invocation so Safety
     /// can apply its freshness bound even while the robot remains disarmed.
     #[phoxal::runtime::outputs::state(
-        port = ports::STATUS,
+        port = motion::methods::STATUS.__state_port(),
         max_bytes = 512,
         bootstrap
     )]
@@ -182,7 +252,7 @@ fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionCons
         .then(|| inputs.safety.value())
         .flatten()
         .filter(|safety| {
-            safety.validate().is_ok()
+            validation::constraints(safety).is_ok()
                 && safety.valid_from_nanos <= now.as_nanos()
                 && safety.expires_at_nanos > now.as_nanos()
                 && fresh_capture(safety.oldest_capture_time_nanos, now)
@@ -190,7 +260,7 @@ fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionCons
 }
 
 fn safety_is_clear(safety: &MotionConstraints, now: ExecutionTime) -> bool {
-    safety.validate().is_ok()
+    validation::constraints(safety).is_ok()
         && Permission::try_from(safety.permission).ok() == Some(Permission::Clear)
         && safety.valid_from_nanos <= now.as_nanos()
         && safety.expires_at_nanos > now.as_nanos()
@@ -206,60 +276,84 @@ fn fresh_measurement(inputs: &MotionInputs, now: ExecutionTime) -> Option<&Odome
         .filter(|measurement| fresh_capture(measurement.oldest_capture_time_nanos, now))
 }
 
+fn valid_measurement(measurement: &OdometryState) -> bool {
+    (!measurement.available || measurement.oldest_capture_time_nanos.is_some())
+        && measurement.x_m.is_finite()
+        && measurement.y_m.is_finite()
+        && measurement.yaw_rad.is_finite()
+        && (-std::f64::consts::PI..=std::f64::consts::PI).contains(&measurement.yaw_rad)
+        && measurement.linear_x_mps.is_finite()
+        && measurement.angular_z_radps.is_finite()
+}
+
 fn fresh_capture(capture: Option<u64>, now: ExecutionTime) -> bool {
     capture
         .and_then(|capture| now.as_nanos().checked_sub(capture))
         .is_some_and(|age| age <= INPUT_MAX_AGE_MS.saturating_mul(1_000_000))
 }
 
-fn apply_emergency_command(
+enum MotionCall<'a> {
+    Arm(&'a phoxal::runtime::Command<ArmRequest, ApplyEmergencyResponse>),
+    Disarm(&'a phoxal::runtime::Command<Empty, ApplyEmergencyResponse>),
+    EngageEmergency(&'a phoxal::runtime::Command<Empty, ApplyEmergencyResponse>),
+    ReleaseEmergency(&'a phoxal::runtime::Command<ReleaseEmergencyRequest, ApplyEmergencyResponse>),
+}
+
+impl MotionCall<'_> {
+    fn order(&self) -> phoxal::runtime::CommandOrder {
+        match self {
+            Self::Arm(command) => command.order(),
+            Self::Disarm(command) => command.order(),
+            Self::EngageEmergency(command) => command.order(),
+            Self::ReleaseEmergency(command) => command.order(),
+        }
+    }
+}
+
+fn apply_arm(
     state: &mut ArbiterState,
-    request: &ApplyEmergencyRequest,
+    request: &ArmRequest,
+    owner: &str,
     protective_state_clear: bool,
     measurement_available: bool,
     inputs: &MotionInputs,
     now: ExecutionTime,
 ) -> ApplyEmergencyResponse {
-    if request.validate().is_err() {
+    if validation::arm_request(request).is_err() {
         state.emergency_latched = true;
         state.engaged_this_invocation = true;
         state.disarm();
         return refused(EmergencyRefusalReason::InvalidRequest);
     }
-    match request.command.as_ref() {
-        Some(apply_emergency_request::Command::Engage(_)) => {
-            state.emergency_latched = true;
-            state.engaged_this_invocation = true;
-            accepted()
-        }
-        Some(apply_emergency_request::Command::Release(_)) => {
-            if !protective_state_clear || !measurement_available {
-                return refused(EmergencyRefusalReason::ProtectiveState);
-            }
-            state.emergency_latched = false;
-            state.disarm();
-            accepted()
-        }
-        Some(apply_emergency_request::Command::Arm(Arm { mode, owner_id })) => {
-            let Some(mode) = armed_mode(*mode) else {
-                return refused(EmergencyRefusalReason::InvalidRequest);
-            };
-            if state.emergency_latched
-                || !protective_state_clear
-                || !measurement_available
-                || !intent_matches(mode, owner_id, inputs, now)
-            {
-                return refused(EmergencyRefusalReason::ProtectiveState);
-            }
-            state.arm(mode, owner_id.clone());
-            accepted()
-        }
-        Some(apply_emergency_request::Command::Disarm(_)) => {
-            state.disarm();
-            accepted()
-        }
-        None => refused(EmergencyRefusalReason::InvalidRequest),
+    let Some(mode) = armed_mode(request.mode) else {
+        return refused(EmergencyRefusalReason::InvalidRequest);
+    };
+    if state.emergency_latched
+        || !protective_state_clear
+        || !measurement_available
+        || !intent_matches(mode, owner, inputs, now)
+    {
+        return refused(EmergencyRefusalReason::ProtectiveState);
     }
+    state.arm(mode, owner.to_owned());
+    accepted()
+}
+
+fn apply_release(
+    state: &mut ArbiterState,
+    request: &ReleaseEmergencyRequest,
+    protective_state_clear: bool,
+    measurement_available: bool,
+) -> ApplyEmergencyResponse {
+    if validation::release_request(request).is_err() {
+        return refused(EmergencyRefusalReason::InvalidRequest);
+    }
+    if !protective_state_clear || !measurement_available {
+        return refused(EmergencyRefusalReason::ProtectiveState);
+    }
+    state.emergency_latched = false;
+    state.disarm();
+    accepted()
 }
 
 fn armed_mode(mode: i32) -> Option<ArmedMode> {
@@ -281,8 +375,11 @@ fn intent_matches(
         ArmedMode::Autonomous => inputs.autonomous.value(),
     };
     intent
-        .filter(|intent| intent.owner_id == owner_id)
-        .is_some_and(|_intent| match mode {
+        .filter(|_| match mode {
+            ArmedMode::Manual => inputs.manual.source() == Some(owner_id),
+            ArmedMode::Autonomous => inputs.autonomous.source() == Some(owner_id),
+        })
+        .is_some_and(|_| match mode {
             ArmedMode::Manual => inputs.manual.is_valid_at(now),
             ArmedMode::Autonomous => inputs.autonomous.is_valid_at(now),
         })
@@ -318,22 +415,29 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
             .then(|| inputs.autonomous.value())
             .flatten(),
     };
-    let Some(intent) = intent.filter(|intent| intent.validate().is_ok()) else {
+    let Some(intent) = intent.filter(|intent| validation::intent(intent).is_ok()) else {
+        state.disarm();
+        return;
+    };
+    let owner = match mode {
+        ArmedMode::Manual => inputs.manual.source(),
+        ArmedMode::Autonomous => inputs.autonomous.source(),
+    };
+    let Some(owner) = owner else {
         state.disarm();
         return;
     };
     if state
         .selected_owner_id
         .as_deref()
-        .is_some_and(|selected_owner| selected_owner != intent.owner_id)
+        .is_some_and(|selected_owner| selected_owner != owner)
     {
         state.disarm();
         return;
     }
-    let owner_id = intent.owner_id.clone();
-    state.selected_owner_id = Some(owner_id);
-    state.selected_intent = Some(intent.clone());
-    let mut limited = intent.clone();
+    state.selected_owner_id = Some(owner.to_owned());
+    state.selected_intent = Some(*intent);
+    let mut limited = *intent;
     for constraint in &safety.constraints {
         if let Some(maximum) = constraint.max_linear_speed_mps {
             limited.linear_x_mps = limited.linear_x_mps.clamp(-maximum, maximum);
@@ -372,12 +476,12 @@ pub fn manual_intent(
     angular_z_radps: f64,
     issued_at: ExecutionTime,
 ) -> Setpoint<MotionIntent> {
-    Setpoint::new(
+    Setpoint::from_source(
         MotionIntent {
-            owner_id: owner_id.into(),
             linear_x_mps,
             angular_z_radps,
         },
+        owner_id,
         issued_at,
         SETPOINT_VALID_FOR_MS,
     )
@@ -473,15 +577,37 @@ mod tests {
     fn inputs(
         manual: Setpoint<MotionIntent>,
         autonomous: Setpoint<MotionIntent>,
-        commands: Vec<Command<ApplyEmergencyRequest, ApplyEmergencyResponse>>,
+        calls: Vec<TestCall>,
     ) -> MotionInputs {
+        let mut arm = Vec::new();
+        let mut disarm = Vec::new();
+        let mut engage_emergency = Vec::new();
+        let mut release_emergency = Vec::new();
+        for call in calls {
+            match call {
+                TestCall::Arm(command) => arm.push(command),
+                TestCall::Disarm(command) => disarm.push(command),
+                TestCall::EngageEmergency(command) => engage_emergency.push(command),
+                TestCall::ReleaseEmergency(command) => release_emergency.push(command),
+            }
+        }
         MotionInputs {
             manual,
             autonomous,
             safety: safety_state(true, at(0)),
             measurements: measurement(at(0)),
-            emergency: Commands::new(commands),
+            arm: Commands::new(arm),
+            disarm: Commands::new(disarm),
+            engage_emergency: Commands::new(engage_emergency),
+            release_emergency: Commands::new(release_emergency),
         }
+    }
+
+    enum TestCall {
+        Arm(Command<ArmRequest, ApplyEmergencyResponse>),
+        Disarm(Command<Empty, ApplyEmergencyResponse>),
+        EngageEmergency(Command<Empty, ApplyEmergencyResponse>),
+        ReleaseEmergency(Command<ReleaseEmergencyRequest, ApplyEmergencyResponse>),
     }
 
     fn context(index: u64, nanos: u64) -> StepContext {
@@ -494,31 +620,29 @@ mod tests {
         )
     }
 
-    fn arm(mode: ControlMode, owner_id: &str) -> ApplyEmergencyRequest {
-        ApplyEmergencyRequest {
-            command: Some(apply_emergency_request::Command::Arm(Arm {
-                mode: mode.into(),
-                owner_id: owner_id.to_owned(),
-            })),
-        }
+    fn arm(id: u64, mode: ControlMode, owner_id: &str) -> TestCall {
+        TestCall::Arm(Command::with_source_order(
+            CommandOrder::new(0, 0, CommandId::new(id)),
+            owner_id,
+            ArmRequest { mode: mode.into() },
+        ))
     }
 
-    fn engage() -> ApplyEmergencyRequest {
-        ApplyEmergencyRequest {
-            command: Some(apply_emergency_request::Command::Engage(
-                phoxal_service_motion::EngageEmergency {},
-            )),
-        }
+    fn engage(order: CommandOrder) -> TestCall {
+        TestCall::EngageEmergency(Command::with_order(order, Empty {}))
     }
 
-    fn release() -> ApplyEmergencyRequest {
-        ApplyEmergencyRequest {
-            command: Some(apply_emergency_request::Command::Release(
-                phoxal_service_motion::ReleaseEmergency {
-                    reset_token: "physical-reset".into(),
-                },
-            )),
-        }
+    fn disarm(order: CommandOrder) -> TestCall {
+        TestCall::Disarm(Command::with_order(order, Empty {}))
+    }
+
+    fn release(order: CommandOrder) -> TestCall {
+        TestCall::ReleaseEmergency(Command::with_order(
+            order,
+            ReleaseEmergencyRequest {
+                reset_token: "physical-reset".into(),
+            },
+        ))
     }
 
     #[test]
@@ -537,8 +661,7 @@ mod tests {
         validate_motion_config(&cfg).unwrap();
         for direction in [-1.0, 1.0] {
             let output = setpoint_from_twist(0.22 * direction, 0.0, &cfg);
-            output
-                .validate_for(["left", "left-rear", "right", "right-rear"])
+            validation::actuator_setpoint(&output, ["left", "left-rear", "right", "right-rear"])
                 .unwrap();
             let expected = [2.0, -4.0, -2.0, 6.0];
             for (target, expected) in output.targets.iter().zip(expected) {
@@ -597,10 +720,7 @@ mod tests {
                 let mut input = inputs(
                     manual_intent("operator", 0.2, 0.0, now),
                     Setpoint::withdrawn(),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator")],
                 );
                 input.safety = safety_state(true, now);
                 input.measurements = measurement(now);
@@ -634,10 +754,7 @@ mod tests {
         let mut input = inputs(
             manual_intent("operator", 0.2, 0.0, at(0)),
             Setpoint::withdrawn(),
-            vec![Command::new(
-                CommandId::new(1),
-                arm(ControlMode::Manual, "operator"),
-            )],
+            vec![arm(1, ControlMode::Manual, "operator")],
         );
         input.measurements = Latest::from_sample(phoxal::runtime::Sample::new(
             OdometryState {
@@ -655,10 +772,7 @@ mod tests {
         let mut input = inputs(
             manual_intent("operator", 0.4, 0.0, at(0)),
             Setpoint::withdrawn(),
-            vec![Command::new(
-                CommandId::new(1),
-                arm(ControlMode::Manual, "operator"),
-            )],
+            vec![arm(1, ControlMode::Manual, "operator")],
         );
         let initial = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
         let (armed, _) = Motion.step(&context(0, 0), initial, &input).unwrap();
@@ -678,7 +792,7 @@ mod tests {
         let fresh = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
         let (refused, _) = Motion.step(&context(0, 20_000_000), fresh, &input).unwrap();
         assert_eq!(Motion.status(&refused).mode, ControlMode::Disarmed as i32);
-        input.emergency = Commands::default();
+        input.arm = Commands::default();
         let (limited, _) = Motion.step(&context(1, 20_000_000), armed, &input).unwrap();
         assert_eq!(Motion.status(&limited).mode, ControlMode::Manual as i32);
         assert!(!Motion.status(&limited).protective_state_clear);
@@ -708,14 +822,11 @@ mod tests {
                 &inputs(
                     manual_intent("operator", 0.2, 0.0, at(0)),
                     Setpoint::withdrawn(),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator")],
                 ),
             )
             .expect("arm command");
-        assert_eq!(outputs.emergency_replies.len(), 1);
+        assert_eq!(outputs.arm_replies.len(), 1);
         assert_eq!(service.status(&state).mode, ControlMode::Manual as i32);
     }
 
@@ -731,10 +842,7 @@ mod tests {
                 &inputs(
                     manual_intent("operator", 0.2, 0.0, at(0)),
                     Setpoint::withdrawn(),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator")],
                 ),
             )
             .expect("arm command");
@@ -746,17 +854,39 @@ mod tests {
                     manual_intent("operator", 0.2, 0.0, at(20_000_000)),
                     Setpoint::withdrawn(),
                     vec![
-                        Command::with_order(CommandOrder::new(1, 0, CommandId::new(2)), engage()),
-                        Command::with_order(CommandOrder::new(1, 0, CommandId::new(3)), release()),
+                        engage(CommandOrder::new(1, 0, CommandId::new(2))),
+                        release(CommandOrder::new(1, 0, CommandId::new(3))),
                     ],
                 ),
             )
             .expect("engage and release batch");
-        assert_eq!(outputs.emergency_replies.len(), 2);
+        assert_eq!(outputs.engage_emergency_replies.len(), 1);
+        assert_eq!(outputs.release_emergency_replies.len(), 1);
         let status = service.status(&state);
         assert_eq!(status.mode, ControlMode::Disarmed as i32);
         assert!(!status.emergency_latched);
         assert!(status.stopped);
+    }
+
+    #[test]
+    fn disarm_is_ordered_with_other_service_calls() {
+        let service = Motion;
+        let initial = phoxal::runtime::initialize(&service, at(0), config()).unwrap();
+        let input = inputs(
+            manual_intent("operator", 0.2, 0.0, at(0)),
+            Setpoint::withdrawn(),
+            vec![
+                arm(1, ControlMode::Manual, "operator"),
+                disarm(CommandOrder::new(1, 0, CommandId::new(2))),
+            ],
+        );
+
+        let (state, outputs) = service.step(&context(0, 0), initial, &input).unwrap();
+
+        assert_eq!(outputs.arm_replies.len(), 1);
+        assert_eq!(outputs.disarm_replies.len(), 1);
+        assert_eq!(service.status(&state).mode, ControlMode::Disarmed as i32);
+        assert!(service.status(&state).stopped);
     }
 
     #[test]
@@ -771,10 +901,7 @@ mod tests {
                 &inputs(
                     manual_intent("operator", 0.2, 0.0, at(0)),
                     autonomous_intent("planner", 0.1, 0.0, at(0)),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator")],
                 ),
             )
             .expect("arm manual");
@@ -806,10 +933,7 @@ mod tests {
                 &inputs(
                     manual_intent("operator-a", 0.2, 0.0, at(0)),
                     Setpoint::withdrawn(),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator-a"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator-a")],
                 ),
             )
             .expect("arm first operator");
@@ -867,10 +991,7 @@ mod tests {
                 &inputs(
                     manual_intent("operator", 0.5, 0.5, at(0)),
                     Setpoint::withdrawn(),
-                    vec![Command::new(
-                        CommandId::new(1),
-                        arm(ControlMode::Manual, "operator"),
-                    )],
+                    vec![arm(1, ControlMode::Manual, "operator")],
                 ),
             )
             .expect("configured motion step");
@@ -894,7 +1015,6 @@ mod tests {
         let service = Motion;
         let initial =
             phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        let invalid = ApplyEmergencyRequest { command: None };
         let (state, outputs) = service
             .step(
                 &context(0, 0),
@@ -902,12 +1022,12 @@ mod tests {
                 &inputs(
                     manual_intent("operator", 0.2, 0.0, at(0)),
                     Setpoint::withdrawn(),
-                    vec![Command::new(CommandId::new(1), invalid)],
+                    vec![arm(1, ControlMode::Unspecified, "operator")],
                 ),
             )
             .expect("invalid command returns typed refusal");
         assert!(matches!(
-            outputs.emergency_replies[0].response().decision,
+            outputs.arm_replies[0].response().decision,
             Some(apply_emergency_response::Decision::Refused(_))
         ));
         let status = service.status(&state);

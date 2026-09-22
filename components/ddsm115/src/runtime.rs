@@ -9,7 +9,7 @@ use phoxal::runtime::StepContext;
 #[cfg(test)]
 use phoxal_component_ddsm115::FILE_DESCRIPTOR_SET;
 #[cfg(test)]
-use phoxal_component_ddsm115::ports;
+use phoxal_component_ddsm115::ddsm115;
 
 const BACKEND_UNAVAILABLE: &str = "ddsm115 hardware backend unavailable: refusing to model motor or publish fabricated encoder measurements";
 
@@ -50,29 +50,33 @@ impl Runtime for Ddsm115 {
 mod tests {
     use super::{
         BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, Ddsm115Inputs, Ddsm115Outputs,
-        FILE_DESCRIPTOR_SET, ports,
+        FILE_DESCRIPTOR_SET, ddsm115,
     };
-    use phoxal::port::{PortDescriptor, PortKind};
+    use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::input::InputSet;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
-    fn generated_encoder_port_uses_the_shared_robotics_payload() {
-        assert_eq!(ports::ENCODER.name(), "encoder");
+    fn generated_encoder_method_uses_the_shared_robotics_payload() {
+        assert_eq!(ddsm115::methods::ENCODER.signature().endpoint, "encoder");
         assert_eq!(
-            ports::ENCODER.signature().service,
+            ddsm115::methods::ENCODER.signature().service,
             "phoxal.component.ddsm115.v1.Ddsm115"
         );
-        assert_eq!(ports::ENCODER.signature().kind, PortKind::Sample);
+        assert_eq!(
+            ddsm115::methods::ENCODER.signature().shape,
+            MethodShape::Observation
+        );
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
-        assert!(!ports::ENCODER.signature().descriptor_set().is_empty());
+        assert!(
+            !ddsm115::methods::ENCODER
+                .signature()
+                .descriptor_set()
+                .is_empty()
+        );
         let actuator = &Ddsm115Inputs::FIELDS[0];
         assert_eq!(actuator.name, "actuator");
-        assert_eq!(
-            <phoxal::port::Setpoint<phoxal_service_motion::ActuatorSetpoint> as PortDescriptor>::KIND,
-            PortKind::Setpoint
-        );
         assert_eq!(
             Ddsm115Outputs::FIELDS
                 .iter()

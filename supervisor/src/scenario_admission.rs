@@ -1,7 +1,4 @@
-//! Scenario-only bundle admission policy owned by the supervisor binary.
-
-/// Stable marker carried by controlled scenario bundles.
-pub(super) const SCENARIO_NONDEPLOYABLE: &str = "phoxal/scenario/nondeployable@1";
+//! Simulation-run admission policy owned by the supervisor binary.
 
 /// Launch mode requested for a bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,62 +7,18 @@ pub(super) enum ScenarioLaunchMode {
     Hardware,
 }
 
-/// Admission verdict returned by [`evaluate_scenario_admission`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ScenarioAdmission {
-    Accept {
-        scenario_name: String,
-        digest: String,
-    },
-    RefuseNondeployableOnHardware,
-    RefuseMissingIdentity,
-    RefuseMalformedDigest(String),
-}
-
-/// Evaluate the pure admission policy before the runtime starts a bundle.
-pub(super) fn evaluate_scenario_admission(
+/// Refuse a simulation run specification on a hardware launch before any
+/// participant process starts.
+pub(super) fn admit_simulation_run(
     mode: ScenarioLaunchMode,
-    scenario_name: &str,
-    program_byte_length: u32,
-    program_digest: &str,
-    bundle_marker: Option<&str>,
-) -> ScenarioAdmission {
-    if bundle_marker == Some(SCENARIO_NONDEPLOYABLE) && matches!(mode, ScenarioLaunchMode::Hardware)
-    {
-        return ScenarioAdmission::RefuseNondeployableOnHardware;
+    has_run_specification: bool,
+) -> anyhow::Result<()> {
+    if has_run_specification && matches!(mode, ScenarioLaunchMode::Hardware) {
+        anyhow::bail!(
+            "simulation run specifications are nondeployable and cannot be used for hardware launch"
+        );
     }
-    if bundle_marker == Some(SCENARIO_NONDEPLOYABLE) && program_byte_length == 0 {
-        return ScenarioAdmission::RefuseMissingIdentity;
-    }
-    if bundle_marker == Some(SCENARIO_NONDEPLOYABLE)
-        && (program_digest.len() != 64
-            || !program_digest
-                .chars()
-                .all(|character| character.is_ascii_hexdigit()))
-    {
-        return ScenarioAdmission::RefuseMalformedDigest(program_digest.to_owned());
-    }
-    ScenarioAdmission::Accept {
-        scenario_name: scenario_name.to_owned(),
-        digest: program_digest.to_owned(),
-    }
-}
-
-/// Render a stable refusal diagnostic, or `None` for an accepted bundle.
-pub(super) fn admission_diagnostic(verdict: &ScenarioAdmission) -> Option<String> {
-    match verdict {
-        ScenarioAdmission::Accept { .. } => None,
-        ScenarioAdmission::RefuseNondeployableOnHardware => Some(format!(
-            "scenario bundle carries `{SCENARIO_NONDEPLOYABLE}`; hardware launch refuses scenario bundles outright"
-        )),
-        ScenarioAdmission::RefuseMissingIdentity => Some(
-            "scenario bundle has no program identity; byte_length and program_digest are required"
-                .to_owned(),
-        ),
-        ScenarioAdmission::RefuseMalformedDigest(digest) => Some(format!(
-            "scenario bundle digest `{digest}` is not 64 lowercase hex characters"
-        )),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -73,80 +26,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nondeployable_marker_is_stable() {
-        assert_eq!(SCENARIO_NONDEPLOYABLE, "phoxal/scenario/nondeployable@1");
+    fn hardware_launch_refuses_a_run_specification() {
+        let error =
+            admit_simulation_run(ScenarioLaunchMode::Hardware, true).expect_err("hardware refusal");
+        assert!(error.to_string().contains("nondeployable"));
     }
 
     #[test]
-    fn hardware_launch_refuses_nondeployable() {
-        let verdict = evaluate_scenario_admission(
-            ScenarioLaunchMode::Hardware,
-            "scenarios/First",
-            16,
-            &"a".repeat(64),
-            Some(SCENARIO_NONDEPLOYABLE),
-        );
-        assert_eq!(verdict, ScenarioAdmission::RefuseNondeployableOnHardware);
-        assert!(admission_diagnostic(&verdict).is_some());
+    fn controlled_launch_accepts_a_run_specification() {
+        admit_simulation_run(ScenarioLaunchMode::Controlled, true).expect("controlled admission");
     }
 
     #[test]
-    fn controlled_launch_admits_nondeployable() {
-        let verdict = evaluate_scenario_admission(
-            ScenarioLaunchMode::Controlled,
-            "scenarios/First",
-            16,
-            &"a".repeat(64),
-            Some(SCENARIO_NONDEPLOYABLE),
-        );
-        match verdict {
-            ScenarioAdmission::Accept {
-                scenario_name,
-                digest,
-            } => {
-                assert_eq!(scenario_name, "scenarios/First");
-                assert_eq!(digest.len(), 64);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn missing_identity_refuses() {
-        let verdict = evaluate_scenario_admission(
-            ScenarioLaunchMode::Controlled,
-            "scenarios/First",
-            0,
-            &"a".repeat(64),
-            Some(SCENARIO_NONDEPLOYABLE),
-        );
-        assert_eq!(verdict, ScenarioAdmission::RefuseMissingIdentity);
-    }
-
-    #[test]
-    fn malformed_digest_refuses() {
-        let verdict = evaluate_scenario_admission(
-            ScenarioLaunchMode::Controlled,
-            "scenarios/First",
-            16,
-            "not-hex",
-            Some(SCENARIO_NONDEPLOYABLE),
-        );
-        assert!(matches!(
-            verdict,
-            ScenarioAdmission::RefuseMalformedDigest(_)
-        ));
-    }
-
-    #[test]
-    fn ordinary_bundles_pass_unmodified() {
-        let verdict = evaluate_scenario_admission(
-            ScenarioLaunchMode::Hardware,
-            "scenarios/Other",
-            0,
-            "",
-            None,
-        );
-        assert!(matches!(verdict, ScenarioAdmission::Accept { .. }));
+    fn ordinary_hardware_bundle_is_accepted() {
+        admit_simulation_run(ScenarioLaunchMode::Hardware, false).expect("ordinary hardware");
     }
 }

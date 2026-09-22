@@ -173,15 +173,61 @@ pub struct CapabilityDeclaration {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSelection {
-    /// Cargo dependency key selecting the implementation.
-    #[serde(default)]
-    pub implementation: Option<String>,
+    /// Optional Cargo source override. Absence selects the official package
+    /// for this explicit service instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ServiceSource>,
     /// Binary target when the package exposes more than one executable.
     #[serde(default)]
     pub binary: Option<String>,
     /// Service-owned configuration object.
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub config: Option<serde_json::Value>,
+}
+
+/// Cargo source override for one selected service package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceSource {
+    /// Mutable local development source relative to the robot root.
+    Path(ServicePathSource),
+    /// Immutable Git revision, optionally selecting a package below the checkout.
+    Git(ServiceGitSource),
+    /// Cargo registry package requirement.
+    Registry(ServiceRegistrySource),
+}
+
+/// A local service package source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServicePathSource {
+    /// Package or workspace path.
+    pub path: String,
+}
+
+/// An immutable Git service package source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceGitSource {
+    /// Repository URL.
+    pub git: String,
+    /// Immutable commit revision.
+    pub rev: String,
+    /// Exact Cargo package selected from the repository.
+    pub package: String,
+    /// Package path below the repository root.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// A registry service package source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceRegistrySource {
+    /// Registry name.
+    pub registry: String,
+    /// Cargo version requirement.
+    pub version: String,
 }
 
 /// One or more ordered producer endpoints for a local consuming input.

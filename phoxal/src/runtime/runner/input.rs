@@ -1,7 +1,7 @@
 //! Receiver queues, immutable input cuts, and command admission.
 use super::exchange::{
     ActivationStateMap, CorrelationMap, ExchangeCompletion, ExchangeCompletionQueue,
-    ExpiredCorrelationSet, OperationQueue,
+    ExpiredCorrelationSet, GeneratedCompletionQueue, GeneratedCorrelationMap, OperationQueue,
 };
 use super::{
     InputDirection, InputSource, ResolvedInputRoute, RuntimeInputReceipt, RuntimeLaunchManifest,
@@ -21,6 +21,12 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zenoh::bytes::Encoding;
 
+type GeneratedReplyControl = (
+    CancellationToken,
+    Arc<AtomicBool>,
+    Arc<Mutex<Option<String>>>,
+);
+
 pub(super) struct ExecutionInputAdapter<R> {
     pub(super) bus: Option<crate::runtime::connection::Connection>,
     pub(super) subscriptions: Vec<BoundSubscription>,
@@ -33,6 +39,9 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) operation_completions: Option<OperationQueue>,
     pub(super) exchange_completions: Option<ExchangeCompletionQueue>,
     pub(super) activation_states: Option<ActivationStateMap>,
+    pub(super) generated_correlations: Option<GeneratedCorrelationMap>,
+    pub(super) generated_completions: Option<GeneratedCompletionQueue>,
+    pub(super) generated_reply_control: Option<GeneratedReplyControl>,
     pub(super) managed_inputs: BTreeMap<&'static str, TransportValue>,
     pub(super) observed_attempts: BTreeMap<&'static str, u64>,
     pub(super) stream_terminal: BTreeSet<&'static str>,
@@ -421,7 +430,7 @@ pub(super) struct DeliveryReceiver {
     pub(super) subscriber: RuntimeSubscription,
     pub(super) queue: Arc<Mutex<DeliveryQueue>>,
     pub(super) bus: crate::runtime::connection::Connection,
-    pub(super) expected_source: String,
+    pub(super) expected_sources: BTreeSet<String>,
     pub(super) expected_callers: BTreeSet<String>,
     pub(super) target: String,
     pub(super) port: String,
@@ -481,7 +490,7 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         subscriber,
         queue,
         bus,
-        expected_source,
+        expected_sources,
         expected_callers,
         target,
         port,
@@ -515,8 +524,13 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         let source = metadata
             .publisher()
             .filter(|source| !source.is_empty())
-            .unwrap_or(&expected_source)
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| expected_sources.iter().next().cloned())
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: "runtime delivery has no admitted source".to_owned(),
+                })
+            })?;
 
         let has_controlled_identity = metadata.execution_id.is_some()
             || metadata.timeline_id.is_some()
@@ -532,10 +546,10 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         if !has_controlled_identity {
             if direction == "request" && source != "supervisor" {
                 validate_controlled_request_source(metadata, &source, &port, &expected_callers)?;
-            } else if direction != "request" && source != expected_source {
+            } else if direction != "request" && !expected_sources.contains(&source) {
                 return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
                     detail: format!(
-                        "runtime delivery source `{source}` does not match `{expected_source}`"
+                        "runtime delivery source `{source}` is not admitted for `{port}`"
                     ),
                 }));
             }
@@ -553,15 +567,13 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
 
         if direction == "request" {
             validate_controlled_request_source(metadata, &source, &port, &expected_callers)?;
-        } else if source != expected_source {
+        } else if !expected_sources.contains(&source) {
             // A sample from a different producer cannot satisfy this route.
             // Failing the worker makes the owning bus enter its fatal state;
             // the supervisor then reports a bounded required-delivery failure
             // instead of accepting an identity-spoofed record.
             return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
-                detail: format!(
-                    "runtime delivery source `{source}` does not match `{expected_source}`"
-                ),
+                detail: format!("runtime delivery source `{source}` is not admitted for `{port}`"),
             }));
         }
 
@@ -622,6 +634,134 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
             Err(DeliveryAdmissionError::Malformed(error)) => {
                 return Err(anyhow::anyhow!(error));
             }
+        }
+    }
+}
+
+async fn generated_reply_receive_loop(
+    subscriber: RuntimeSubscription,
+    bus: crate::runtime::connection::Connection,
+    correlations: GeneratedCorrelationMap,
+    completions: GeneratedCompletionQueue,
+    timeline: Arc<Mutex<Option<String>>>,
+    cancel: CancellationToken,
+) -> crate::Result<()> {
+    loop {
+        let sample = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            result = subscriber.recv_async() => result.map_err(|error| {
+                anyhow::anyhow!(TransportError::Transport(error.to_string()))
+            })?,
+        };
+        let wire = WireSample::from_zenoh(sample)?;
+        let metadata = wire.metadata();
+        let command_id = metadata.command_id.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(
+                "generated reply is missing command id".to_owned()
+            ))
+        })?;
+        let controlled = metadata.execution_id.is_some()
+            || metadata.timeline_id.is_some()
+            || metadata.boundary.is_some()
+            || metadata.item.is_some();
+        let active_timeline = timeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let current_execution = bus.execution().to_string();
+        let fenced = controlled
+            && (metadata.execution_id.as_deref() != Some(current_execution.as_str())
+                || metadata.timeline_id.as_deref() != active_timeline.as_deref());
+
+        let correlation = if fenced {
+            None
+        } else {
+            correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&command_id)
+        };
+        let Some(correlation) = correlation else {
+            if controlled {
+                let target = metadata
+                    .caller
+                    .clone()
+                    .unwrap_or_else(|| "unknown.generated_call".to_owned());
+                let port = wire
+                    .key()
+                    .rsplit('/')
+                    .nth(1)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let queue =
+                    DeliveryQueue::new(1, u64::MAX, crate::runtime::input::InputKind::Completions);
+                if let Ok(identity) = queue.identity(&wire, &target, &port, "reply") {
+                    publish_delivery_ack(
+                        &bus,
+                        &identity,
+                        "delivery-ack",
+                        false,
+                        Some("generated reply belongs to a retired or unknown call".to_owned()),
+                    )
+                    .await?;
+                }
+            }
+            continue;
+        };
+
+        let source = metadata.publisher().unwrap_or_default();
+        let expected_suffix = format!("/ports/{}/reply", correlation.endpoint);
+        if source != correlation.expected_source
+            || metadata.caller.as_deref() != Some(correlation.caller.as_str())
+            || metadata.caller_rank != Some(correlation.caller_rank)
+            || !wire.key().ends_with(&expected_suffix)
+        {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                "generated reply identity does not match its admitted call".to_owned()
+            )));
+        }
+        let result = match metadata.wire_control()? {
+            transport::WireControl::Data => {
+                if wire.payload().len() as u64 > correlation.max_response_bytes {
+                    Err(crate::runtime::RequestError::Oversized)
+                } else {
+                    Ok(wire.payload().to_vec())
+                }
+            }
+            transport::WireControl::Rejected => {
+                Err(crate::runtime::RequestError::RejectedBeforeAdmission(
+                    metadata.reason.clone().unwrap_or_else(|| {
+                        "generated call was rejected before admission".to_owned()
+                    }),
+                ))
+            }
+            transport::WireControl::Failed => Err(crate::runtime::RequestError::OutcomeUnknown(
+                metadata
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "generated call provider failed".to_owned()),
+            )),
+            transport::WireControl::Oversized => Err(crate::runtime::RequestError::Oversized),
+            control => {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("generated call reply used incompatible {control:?} control"),
+                }));
+            }
+        };
+        completions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(crate::runtime::input::TransportCallCompletion {
+                ticket: correlation.ticket,
+                result,
+            });
+        if controlled {
+            let queue =
+                DeliveryQueue::new(1, u64::MAX, crate::runtime::input::InputKind::Completions);
+            let identity =
+                queue.identity(&wire, &correlation.caller, &correlation.endpoint, "reply")?;
+            publish_delivery_ack(&bus, &identity, "delivery-ack", true, None).await?;
         }
     }
 }
@@ -713,6 +853,9 @@ impl<R> ExecutionInputAdapter<R> {
             operation_completions: None,
             exchange_completions: None,
             activation_states: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            generated_correlations: None,
+            generated_completions: None,
+            generated_reply_control: None,
             managed_inputs: BTreeMap::new(),
             observed_attempts: BTreeMap::new(),
             stream_terminal: BTreeSet::new(),
@@ -735,6 +878,16 @@ impl<R> ExecutionInputAdapter<R> {
         self.operation_completions = Some(operation_completions);
         self.exchange_completions = Some(exchange_completions);
         self.activation_states = Some(activation_states);
+        self
+    }
+
+    pub(super) fn with_generated_calls(
+        mut self,
+        correlations: GeneratedCorrelationMap,
+        completions: GeneratedCompletionQueue,
+    ) -> Self {
+        self.generated_correlations = Some(correlations);
+        self.generated_completions = Some(completions);
         self
     }
 
@@ -795,7 +948,7 @@ impl<R> ExecutionInputAdapter<R> {
                 let worker_cancel = cancel.clone();
                 let worker_expected = Arc::clone(&expected);
                 let worker_bus = bus.clone();
-                let worker_source = route.source_instance.clone();
+                let worker_sources = route.admitted_sources.clone();
                 let worker_callers = if route.direction == InputDirection::Request {
                     command_ranks
                         .iter()
@@ -832,7 +985,7 @@ impl<R> ExecutionInputAdapter<R> {
                         subscriber,
                         queue: worker_queue,
                         bus: worker_bus,
-                        expected_source: worker_source,
+                        expected_sources: worker_sources,
                         expected_callers: worker_callers,
                         target: worker_target,
                         port: worker_port,
@@ -878,6 +1031,71 @@ impl<R> ExecutionInputAdapter<R> {
                     }),
                 });
             }
+        }
+        if <R::Inputs as crate::runtime::input::InputSet>::FIELDS
+            .iter()
+            .any(|field| field.kind == crate::runtime::input::InputKind::Completions)
+        {
+            let correlations = self.generated_correlations.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: "generated completion input has no correlation owner".to_owned(),
+                })
+            })?;
+            let completions = self.generated_completions.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: "generated completion input has no completion queue".to_owned(),
+                })
+            })?;
+            let key = bus.full_key("runtime/*/ports/*/reply");
+            let key_expr = zenoh::key_expr::OwnedKeyExpr::new(key.clone()).map_err(|error| {
+                anyhow::anyhow!(TransportError::Transport(format!(
+                    "invalid generated reply key `{key}`: {error}"
+                )))
+            })?;
+            let subscriber = session
+                .declare_subscriber(key_expr)
+                .with(zenoh::handlers::FifoChannel::new(64))
+                .await
+                .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
+            let cancel = CancellationToken::new();
+            let expected = Arc::new(AtomicBool::new(false));
+            let timeline = Arc::new(Mutex::new(None));
+            let worker = tokio::spawn({
+                let bus = bus.clone();
+                let correlations = Arc::clone(correlations);
+                let completions = Arc::clone(completions);
+                let cancel = cancel.clone();
+                let expected = Arc::clone(&expected);
+                let timeline = Arc::clone(&timeline);
+                async move {
+                    let result = generated_reply_receive_loop(
+                        subscriber,
+                        bus,
+                        correlations,
+                        completions,
+                        timeline,
+                        cancel,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        panic!("generated call reply receiver failed: {error:#}");
+                    }
+                    if !expected.load(Ordering::Acquire) {
+                        panic!("generated call reply receiver exited without cancellation");
+                    }
+                }
+            });
+            if let Err(worker) = bus.register_named_worker(
+                format!("generated-reply-receiver-{}", manifest.instance_id),
+                Arc::clone(&expected),
+                worker,
+            ) {
+                worker.abort();
+                return Err(anyhow::anyhow!(TransportError::Transport(
+                    "generated call reply receiver could not be registered".to_owned(),
+                )));
+            }
+            self.generated_reply_control = Some((cancel, expected, timeline));
         }
         self.command_ranks = command_ranks;
         self.bus = Some(bus);
@@ -1317,6 +1535,16 @@ where
                     completion.result,
                 )?;
             }
+        }
+        if let Some(queue) = &self.generated_completions {
+            let completions = {
+                let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
+                std::mem::take(&mut *queue)
+            };
+            <R::Inputs as crate::runtime::input::TransportInputSink>::set_call_completions(
+                &mut inputs,
+                completions,
+            )?;
         }
         if let Some(queue) = &self.exchange_completions {
             let completions = {
@@ -1765,6 +1993,10 @@ where
                 queue.set_timeline(timeline_id);
             }
         }
+        if let Some((_cancel, _expected, timeline)) = &self.generated_reply_control {
+            *timeline.lock().unwrap_or_else(|error| error.into_inner()) =
+                Some(timeline_id.to_owned());
+        }
         Ok(())
     }
 
@@ -1782,6 +2014,22 @@ where
             }
         }
         self.subscriptions.clear();
+        if let Some((cancel, expected, _timeline)) = self.generated_reply_control.take() {
+            expected.store(true, Ordering::Release);
+            cancel.cancel();
+        }
+        if let Some(correlations) = &self.generated_correlations {
+            correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        if let Some(completions) = &self.generated_completions {
+            completions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         self.command_high_watermarks.clear();
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();
@@ -1789,6 +2037,18 @@ where
         self.managed_inputs.clear();
         self.observed_attempts.clear();
         self.last_input_receipts.clear();
+        if let Some(correlations) = &self.generated_correlations {
+            correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        if let Some(completions) = &self.generated_completions {
+            completions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         self.command_ranks.clear();
         self.bus = None;
         Ok(())

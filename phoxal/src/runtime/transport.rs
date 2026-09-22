@@ -542,9 +542,60 @@ pub struct PreparedOutput {
     reply: bool,
     field: Option<&'static str>,
     change_token: Option<ChangeToken>,
+    generated_operation: bool,
 }
 
 impl PreparedOutput {
+    /// Stage an already encoded ordinary publication.
+    #[doc(hidden)]
+    pub fn encoded_response(
+        signature: PortSignature,
+        payload: Vec<u8>,
+        max_bytes: u64,
+        metadata: RuntimeWireMetadata,
+    ) -> Result<Self, TransportError> {
+        Self::encoded(signature, payload, max_bytes, metadata, false)
+    }
+
+    /// Stage an already encoded request.
+    #[doc(hidden)]
+    pub fn encoded_request(
+        signature: PortSignature,
+        payload: Vec<u8>,
+        max_bytes: u64,
+        metadata: RuntimeWireMetadata,
+    ) -> Result<Self, TransportError> {
+        Self::encoded(signature, payload, max_bytes, metadata, true)
+    }
+
+    fn encoded(
+        signature: PortSignature,
+        payload: Vec<u8>,
+        max_bytes: u64,
+        metadata: RuntimeWireMetadata,
+        request: bool,
+    ) -> Result<Self, TransportError> {
+        if payload.len() as u64 > max_bytes {
+            return Err(TransportError::BodyTooLarge {
+                port: signature.name.to_owned(),
+                bytes: payload.len(),
+                maximum: max_bytes,
+            });
+        }
+        Ok(Self {
+            endpoint: PreparedEndpoint::Signature(signature),
+            target_instance: None,
+            payload,
+            metadata,
+            control: WireControl::Data,
+            request,
+            reply: false,
+            field: None,
+            change_token: None,
+            generated_operation: false,
+        })
+    }
+
     /// Encode one ordinary response/publication body with its generated
     /// Protobuf message implementation.
     pub fn response<T: ProstPayload>(
@@ -564,6 +615,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            generated_operation: false,
         })
     }
 
@@ -586,6 +638,7 @@ impl PreparedOutput {
             reply: true,
             field: None,
             change_token: None,
+            generated_operation: false,
         })
     }
 
@@ -608,6 +661,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            generated_operation: false,
         })
     }
 
@@ -637,6 +691,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            generated_operation: false,
         })
     }
 
@@ -656,6 +711,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            generated_operation: false,
         }
     }
 
@@ -701,6 +757,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            generated_operation: false,
         }
     }
 
@@ -734,6 +791,50 @@ impl PreparedOutput {
     pub fn for_instance(mut self, instance: impl Into<String>) -> Self {
         self.target_instance = Some(instance.into());
         self
+    }
+
+    /// Mark a record as originating from the generated robot API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn generated_operation(mut self) -> Self {
+        self.generated_operation = true;
+        self
+    }
+
+    pub(crate) fn generated_identity(&self) -> Option<(String, PortSignature, u64, usize, bool)> {
+        if !self.generated_operation {
+            return None;
+        }
+        let PreparedEndpoint::Signature(signature) = self.endpoint else {
+            return None;
+        };
+        Some((
+            self.target_instance.clone()?,
+            signature,
+            self.metadata.command_id.or(self.metadata.sequence)?,
+            self.payload.len(),
+            self.request,
+        ))
+    }
+
+    pub(crate) fn bind_generated_request(
+        &mut self,
+        caller: &str,
+        caller_rank: u64,
+        command_id: u64,
+        max_request_bytes: u64,
+    ) -> Result<(), TransportError> {
+        if self.payload.len() as u64 > max_request_bytes {
+            return Err(TransportError::BodyTooLarge {
+                port: self.endpoint.name().to_owned(),
+                bytes: self.payload.len(),
+                maximum: max_request_bytes,
+            });
+        }
+        self.metadata.caller = Some(caller.to_owned());
+        self.metadata.caller_rank = Some(caller_rank);
+        self.metadata.command_id = Some(command_id);
+        Ok(())
     }
 
     /// Returns the generated output field identity, when one was supplied.

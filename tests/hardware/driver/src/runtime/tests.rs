@@ -10,12 +10,13 @@ use phoxal::runtime::{
 };
 
 use super::*;
+use phoxal::contract::{MethodDescriptor, MethodShape};
 use phoxal::runtime::{
     Sample,
     input::{Samples, Setpoint},
 };
 use phoxal_hardware_driver_fixture::{
-    FILE_DESCRIPTOR_SET, FixtureObservation, FixtureSetpoint, ports,
+    FILE_DESCRIPTOR_SET, FixtureObservation, FixtureSetpoint, hardware_fixture,
 };
 
 const SETPOINT_VALID_FOR_MS: u64 = 50;
@@ -288,23 +289,42 @@ fn runner(
 }
 
 #[test]
-fn generated_contract_owns_the_fixture_ports() {
-    assert_eq!(ports::OBSERVATIONS.name(), "observations");
-    assert_eq!(ports::ACTUATOR.name(), "actuator");
+fn generated_contract_owns_the_fixture_methods() {
     assert_eq!(
-        ports::OBSERVATIONS.signature().service,
+        hardware_fixture::methods::OBSERVATIONS.signature().endpoint,
+        "observations"
+    );
+    assert_eq!(
+        hardware_fixture::methods::ACTUATOR.signature().endpoint,
+        "actuator"
+    );
+    assert_eq!(
+        hardware_fixture::methods::OBSERVATIONS.signature().service,
         "phoxal.fixture.hardware.v1.HardwareFixture"
     );
     assert_eq!(
-        ports::OBSERVATIONS.signature().kind,
-        phoxal::port::PortKind::Sample
+        hardware_fixture::methods::OBSERVATIONS.signature().shape,
+        MethodShape::Observation
     );
     assert_eq!(
-        ports::ACTUATOR.signature().kind,
-        phoxal::port::PortKind::Setpoint
+        hardware_fixture::methods::ACTUATOR.signature().shape,
+        MethodShape::Observation
+    );
+    assert_eq!(
+        hardware_fixture::methods::ACTUATOR
+            .signature()
+            .lease
+            .expect("actuator lease")
+            .valid_for_ms(),
+        100
     );
     assert!(!FILE_DESCRIPTOR_SET.is_empty());
-    assert!(!ports::OBSERVATIONS.signature().descriptor_set().is_empty());
+    assert!(
+        !hardware_fixture::methods::OBSERVATIONS
+            .signature()
+            .descriptor_set()
+            .is_empty()
+    );
 }
 
 #[test]

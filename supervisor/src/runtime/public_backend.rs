@@ -4,7 +4,7 @@
 //! Rust types.  This module therefore forwards the already-encoded generated
 //! Protobuf body to the exact Runtime port selected by the admitted bundle
 //! graph, and maps Runtime wire metadata back into the public observation
-//! record.  The bundle remains the only source of public port identity and
+//! record.  The bundle remains the only source of public method identity and
 //! bounds.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 
 use phoxal::communication::PublicOperation;
 use phoxal::communication::session::{
-    PortKind, PortMetadata, RecordKind, SubscriptionRecord, SubscriptionRequest,
+    MethodMetadata, MethodShape, RecordKind, SubscriptionRecord, SubscriptionRequest,
 };
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
@@ -33,7 +33,7 @@ use phoxal::communication::simulation::{
 };
 
 use crate::runtime::adapter::{
-    ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
+    ExecutionDefinition, ServiceMethods, SimulationDefinition, SimulationProviderDefinition,
 };
 use phoxal::communication_transport::PublicTransportLimits;
 
@@ -55,11 +55,35 @@ const PUBLIC_INGRESS_FIELD: &str = "public";
 const MAX_RUNTIME_SUBSCRIBER_ITEMS: usize = 4_096;
 const MAX_RUNTIME_METADATA_BYTES: usize = 1_024;
 
-/// The exact runtime-facing facts for one admitted public port.
+/// Private execution role retained by the supervisor while public contracts
+/// expose only Protobuf call and observation shapes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeMethodRole {
+    State,
+    Sample,
+    Event,
+    Stream,
+    Setpoint,
+    Read,
+    Commands,
+}
+
+impl RuntimeMethodRole {
+    const fn shape(self) -> MethodShape {
+        match self {
+            Self::State | Self::Sample | Self::Event | Self::Stream => MethodShape::Observation,
+            Self::Setpoint | Self::Read | Self::Commands => MethodShape::Call,
+        }
+    }
+}
+
+/// The exact runtime-facing facts for one admitted public method.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RuntimePortContract {
-    /// Public metadata returned by `ListPorts` and `Bind`.
-    pub(crate) metadata: PortMetadata,
+pub(crate) struct RuntimeMethodContract {
+    /// Public metadata returned by `ListMethods` and `Bind`.
+    pub(crate) metadata: MethodMetadata,
+    /// Private runtime execution role, never serialized as public contract metadata.
+    role: RuntimeMethodRole,
     /// Maximum encoded request body accepted by the generated runtime.
     request_max_bytes: u64,
     /// Maximum encoded response/publication body accepted by the generated runtime.
@@ -93,7 +117,7 @@ pub(crate) trait RuntimeExternalIngress: Send + Sync {
         target_instance: &str,
         target_port: &str,
         caller: &RuntimeIngressIdentity,
-        contract: &RuntimePortContract,
+        contract: &RuntimeMethodContract,
     ) -> Result<ExternalIngressTicket, PublicBackendError>;
 
     /// Release a reservation after a definitive target response or a local
@@ -187,7 +211,7 @@ impl RuntimeExecutionCoordinator {
         Ok(())
     }
 
-    fn admission_capacity(contract: &RuntimePortContract) -> usize {
+    fn admission_capacity(contract: &RuntimeMethodContract) -> usize {
         usize::try_from(contract.metadata.max_buffered_items)
             .unwrap_or(usize::MAX)
             .clamp(1, MAX_EXTERNAL_INGRESS_PER_PORT)
@@ -216,7 +240,7 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
         target_instance: &str,
         target_port: &str,
         caller: &RuntimeIngressIdentity,
-        contract: &RuntimePortContract,
+        contract: &RuntimeMethodContract,
     ) -> Result<ExternalIngressTicket, PublicBackendError> {
         self.validate_external_identity(caller)?;
         if !self.state.is_ready() {
@@ -224,12 +248,9 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
                 "runtime graph is not Ready for external ingress".to_owned(),
             ));
         }
-        if !matches!(
-            PortKind::try_from(contract.metadata.kind),
-            Ok(PortKind::Read | PortKind::Commands)
-        ) {
+        if contract.metadata.shape != MethodShape::Call as i32 {
             return Err(PublicBackendError::RejectedBeforeAdmission(
-                "external ingress requires a Read or Commands port".to_owned(),
+                "external ingress requires a call method".to_owned(),
             ));
         }
         let key = (target_instance.to_owned(), target_port.to_owned());
@@ -270,9 +291,9 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
 #[derive(Clone)]
 pub(crate) struct RuntimePublicSurface {
     /// Exact service/driver inventory used by the public adapter.
-    pub(crate) services: Vec<ServicePorts>,
+    pub(crate) services: Vec<ServiceMethods>,
     /// Exact port contracts used by the transport bridge.
-    pub(crate) ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
+    pub(crate) ports: Arc<BTreeMap<(String, String), RuntimeMethodContract>>,
     /// Explicit supervisor external caller identity.
     pub(crate) ingress: RuntimeIngressIdentity,
     /// Immutable simulation authority contract, when the bundle carries one.
@@ -292,7 +313,7 @@ impl std::fmt::Debug for RuntimePublicSurface {
 }
 
 impl RuntimePublicSurface {
-    /// Extract exact public ports from the source bundle's retained artifact
+    /// Extract exact public methods from the source bundle's retained artifact
     /// summaries.  No public metadata is synthesized from implementation
     /// names or from an empty service placeholder.
     pub(crate) fn from_bundle(bundle: &Bundle) -> Result<Self> {
@@ -305,7 +326,7 @@ impl RuntimePublicSurface {
         let mut services = Vec::new();
         let mut ports = BTreeMap::new();
         // The root-local brain is an ordinary Runtime in the graph.  If it
-        // owns a generated public port, that exact artifact contract belongs
+        // owns a generated public method, that exact artifact contract belongs
         // in the same inventory as a service or driver; role is not a public
         // visibility boundary.
         for executable in source.executables() {
@@ -317,8 +338,8 @@ impl RuntimePublicSurface {
             })?;
             let artifact: ArtifactSummary = serde_json::from_value(artifact.clone())
                 .with_context(|| format!("invalid Runtime artifact contract for `{instance}`"))?;
-            let mut service_ports = Vec::new();
-            let mut runtime_ports = BTreeMap::new();
+            let mut service_methods = Vec::new();
+            let mut runtime_methods = BTreeMap::new();
 
             for output in artifact
                 .runtime
@@ -331,30 +352,30 @@ impl RuntimePublicSurface {
                 };
                 let Some(signature) = output.signature.as_ref() else {
                     bail!(
-                        "Runtime output `{instance}.{}` has a public port without a signature",
+                        "Runtime output `{instance}.{}` has a public method without a signature",
                         output.name
                     );
                 };
-                let kind = output_kind(&output.kind).with_context(|| {
-                    format!(
-                        "Runtime output `{instance}.{}` has an invalid public kind",
-                        output.name
-                    )
-                })?;
-                if kind == PortKind::Commands {
+                if output.role != "method" {
                     bail!(
-                        "Runtime output `{instance}.{}` cannot serve Commands",
-                        output.name
+                        "Runtime output `{instance}.{}` exposes a signature from private role `{}`",
+                        output.name,
+                        output.role
                     );
                 }
-                validate_signature(signature, port, kind)?;
+                let role = output_role(signature);
+                validate_signature(signature, port, signature.shape)?;
+                let public_shape = match signature.shape {
+                    phoxal::artifact::MethodShape::Call => MethodShape::Call,
+                    phoxal::artifact::MethodShape::Observation => MethodShape::Observation,
+                };
                 let response_max_bytes = positive_bound(
                     output.max_bytes,
                     &format!("Runtime output `{instance}.{port}` response bytes"),
                 )?;
                 let max_buffered_items = output
                     .max_items
-                    .or_else(|| singular_public_item_bound(kind))
+                    .or_else(|| singular_public_item_bound(signature))
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "Runtime output `{instance}.{port}` has no bounded item count"
@@ -364,9 +385,9 @@ impl RuntimePublicSurface {
                     max_buffered_items,
                     &format!("Runtime output `{instance}.{port}` item count"),
                 )?;
-                let metadata = PortMetadata {
-                    name: port.to_owned(),
-                    kind: kind as i32,
+                let metadata = MethodMetadata {
+                    endpoint: port.to_owned(),
+                    shape: public_shape as i32,
                     input_fqn: signature.request.clone(),
                     output_fqn: signature.response.clone(),
                     max_message_bytes: bounded_u32(
@@ -374,29 +395,32 @@ impl RuntimePublicSurface {
                         &format!("Runtime output `{instance}.{port}` response bytes"),
                     )?,
                     max_buffered_items,
+                    retained_latest: signature.retained_latest,
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
                 };
-                let contract = RuntimePortContract {
+                let contract = RuntimeMethodContract {
                     metadata: metadata.clone(),
+                    role,
                     request_max_bytes: output.max_request_bytes.unwrap_or(response_max_bytes),
                     response_max_bytes,
                 };
-                insert_runtime_port(&mut runtime_ports, &mut service_ports, port, contract)?;
+                insert_runtime_port(&mut runtime_methods, &mut service_methods, port, contract)?;
             }
 
             for input in &artifact.runtime.inputs {
-                if input.kind != "commands" {
+                if input.role != "call_ingress" {
                     continue;
                 }
                 let port = input.port.as_deref().ok_or_else(|| {
                     anyhow::anyhow!(
-                        "Commands input `{instance}.{}` has no public port",
+                        "Commands input `{instance}.{}` has no public method",
                         input.name
                     )
                 })?;
                 let signature = input.signature.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("Commands input `{instance}.{port}` has no generated signature")
                 })?;
-                validate_signature(signature, port, PortKind::Commands)?;
+                validate_signature(signature, port, phoxal::artifact::MethodShape::Call)?;
                 let request_max_bytes = positive_bound(
                     input.max_bytes,
                     &format!("Commands input `{instance}.{port}` request bytes"),
@@ -413,7 +437,7 @@ impl RuntimePublicSurface {
                     .transient_outputs
                     .iter()
                     .filter(|output| {
-                        output.kind == "reply"
+                        output.role == "reply"
                             && output.input.as_deref() == Some(input.name.as_str())
                     })
                     .collect::<Vec<_>>();
@@ -430,9 +454,9 @@ impl RuntimePublicSurface {
                     reply.max_bytes,
                     &format!("Commands input `{instance}.{port}` response bytes"),
                 )?;
-                let metadata = PortMetadata {
-                    name: port.to_owned(),
-                    kind: PortKind::Commands as i32,
+                let metadata = MethodMetadata {
+                    endpoint: port.to_owned(),
+                    shape: MethodShape::Call as i32,
                     input_fqn: signature.request.clone(),
                     output_fqn: signature.response.clone(),
                     max_message_bytes: bounded_u32(
@@ -440,18 +464,21 @@ impl RuntimePublicSurface {
                         &format!("Commands input `{instance}.{port}` response bytes"),
                     )?,
                     max_buffered_items,
+                    retained_latest: signature.retained_latest,
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
                 };
-                let contract = RuntimePortContract {
+                let contract = RuntimeMethodContract {
                     metadata: metadata.clone(),
+                    role: RuntimeMethodRole::Commands,
                     request_max_bytes,
                     response_max_bytes,
                 };
-                insert_runtime_port(&mut runtime_ports, &mut service_ports, port, contract)?;
+                insert_runtime_port(&mut runtime_methods, &mut service_methods, port, contract)?;
             }
 
-            service_ports.sort_by(|left, right| left.name.cmp(&right.name));
-            let service = ServicePorts::new(instance.clone(), service_ports)?;
-            for (port, contract) in runtime_ports {
+            service_methods.sort_by(|left, right| left.endpoint.cmp(&right.endpoint));
+            let service = ServiceMethods::new(instance.clone(), service_methods)?;
+            for (port, contract) in runtime_methods {
                 let key = (instance.clone(), port);
                 if ports.insert(key.clone(), contract).is_some() {
                     bail!(
@@ -463,26 +490,26 @@ impl RuntimePublicSurface {
             }
             services.push(service);
         }
-        let mut service_ports_by_instance = services
+        let mut service_methods_by_instance = services
             .into_iter()
-            .map(|service| (service.instance().to_owned(), service.ports().to_vec()))
+            .map(|service| (service.instance().to_owned(), service.methods().to_vec()))
             .collect::<BTreeMap<_, _>>();
         let simulation = source
             .simulation()
             .map(|simulation| {
                 add_simulation_provider_metadata(
                     simulation,
-                    &mut service_ports_by_instance,
+                    &mut service_methods_by_instance,
                     &mut ports,
                 )?;
                 validate_simulation_actuation_bindings(simulation, &ports)?;
                 simulation_definition(simulation)
             })
             .transpose()?;
-        let mut services = service_ports_by_instance
+        let mut services = service_methods_by_instance
             .into_iter()
             .map(|(instance, ports)| {
-                ServicePorts::new(instance, ports).map_err(anyhow::Error::from)
+                ServiceMethods::new(instance, ports).map_err(anyhow::Error::from)
             })
             .collect::<Result<Vec<_>>>()?;
         services.sort_by(|left, right| left.instance().cmp(right.instance()));
@@ -524,18 +551,10 @@ fn simulation_definition(source: &SourceSimulation) -> Result<SimulationDefiniti
         .providers
         .iter()
         .map(|provider| {
-            let kind = output_kind(&provider.kind).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "simulation provider `{}.{}` has an unsupported public kind `{}`",
-                    provider.service_instance,
-                    provider.port,
-                    provider.kind
-                )
-            })?;
             SimulationProviderDefinition::new(
                 provider.service_instance.clone(),
                 provider.port.clone(),
-                kind,
+                MethodShape::Observation,
                 provider.input_fqn.clone(),
                 provider.payload_fqn.clone(),
                 provider.rate_microhertz,
@@ -549,46 +568,45 @@ fn simulation_definition(source: &SourceSimulation) -> Result<SimulationDefiniti
 
 fn add_simulation_provider_metadata(
     source: &SourceSimulation,
-    service_ports: &mut BTreeMap<String, Vec<PortMetadata>>,
-    runtime_ports: &mut BTreeMap<(String, String), RuntimePortContract>,
+    service_methods: &mut BTreeMap<String, Vec<MethodMetadata>>,
+    runtime_methods: &mut BTreeMap<(String, String), RuntimeMethodContract>,
 ) -> Result<()> {
     for provider in &source.providers {
-        let kind = output_kind(&provider.kind).ok_or_else(|| {
-            anyhow::anyhow!(
-                "simulation provider `{}.{}` has an unsupported public kind `{}`",
-                provider.service_instance,
-                provider.port,
-                provider.kind
-            )
-        })?;
-        let metadata = PortMetadata {
-            name: provider.port.clone(),
-            kind: kind as i32,
+        let metadata = MethodMetadata {
+            endpoint: provider.port.clone(),
+            shape: MethodShape::Observation as i32,
             input_fqn: provider.input_fqn.clone(),
             output_fqn: provider.payload_fqn.clone(),
             max_message_bytes: provider.max_message_bytes,
             max_buffered_items: provider.max_buffered_items,
+            retained_latest: provider.retained_latest,
+            lease_valid_for_ms: provider.lease_valid_for_ms,
         };
         let key = (provider.service_instance.clone(), provider.port.clone());
-        if let Some(existing) = runtime_ports.get(&key) {
+        if let Some(existing) = runtime_methods.get(&key) {
             if existing.metadata != metadata {
                 bail!(
-                    "simulation provider metadata for `{}.{}` conflicts with the compiled public port",
+                    "simulation provider metadata for `{}.{}` conflicts with the compiled public method",
                     key.0,
                     key.1
                 );
             }
             continue;
         }
-        runtime_ports.insert(
+        runtime_methods.insert(
             key,
-            RuntimePortContract {
+            RuntimeMethodContract {
                 request_max_bytes: u64::from(provider.max_message_bytes),
                 response_max_bytes: u64::from(provider.max_message_bytes),
+                role: if provider.retained_latest {
+                    RuntimeMethodRole::State
+                } else {
+                    RuntimeMethodRole::Sample
+                },
                 metadata: metadata.clone(),
             },
         );
-        service_ports
+        service_methods
             .entry(provider.service_instance.clone())
             .or_default()
             .push(metadata);
@@ -598,11 +616,11 @@ fn add_simulation_provider_metadata(
 
 fn validate_simulation_actuation_bindings(
     source: &SourceSimulation,
-    runtime_ports: &BTreeMap<(String, String), RuntimePortContract>,
+    runtime_methods: &BTreeMap<(String, String), RuntimeMethodContract>,
 ) -> Result<()> {
     let mut expected = BTreeSet::new();
-    for ((instance, port), contract) in runtime_ports {
-        if contract.metadata.kind == PortKind::Setpoint as i32 {
+    for ((instance, port), contract) in runtime_methods {
+        if contract.role == RuntimeMethodRole::Setpoint {
             expected.insert((instance.clone(), port.clone()));
         }
     }
@@ -616,14 +634,14 @@ fn validate_simulation_actuation_bindings(
     }
     for binding in &source.actuation_bindings {
         let key = (binding.service_instance.clone(), binding.port.clone());
-        let contract = runtime_ports.get(&key).ok_or_else(|| {
+        let contract = runtime_methods.get(&key).ok_or_else(|| {
             anyhow::anyhow!(
-                "simulation actuation `{}.{}` is not a compiled public port",
+                "simulation actuation `{}.{}` is not a compiled public method",
                 binding.service_instance,
                 binding.port
             )
         })?;
-        if contract.metadata.kind != PortKind::Setpoint as i32
+        if contract.role != RuntimeMethodRole::Setpoint
             || contract.metadata.output_fqn != binding.payload_fqn
         {
             bail!(
@@ -637,42 +655,39 @@ fn validate_simulation_actuation_bindings(
 }
 
 fn insert_runtime_port(
-    runtime_ports: &mut BTreeMap<String, RuntimePortContract>,
-    service_ports: &mut Vec<PortMetadata>,
+    runtime_methods: &mut BTreeMap<String, RuntimeMethodContract>,
+    service_methods: &mut Vec<MethodMetadata>,
     port: &str,
-    contract: RuntimePortContract,
+    contract: RuntimeMethodContract,
 ) -> Result<()> {
-    if runtime_ports
+    if runtime_methods
         .insert(port.to_owned(), contract.clone())
         .is_some()
     {
-        bail!("compiled Runtime graph serves duplicate public port `{port}`");
+        bail!("compiled Runtime graph serves duplicate public method `{port}`");
     }
-    service_ports.push(contract.metadata);
+    service_methods.push(contract.metadata);
     Ok(())
 }
 
-fn output_kind(value: &str) -> Option<PortKind> {
-    Some(match value {
-        "state" => PortKind::State,
-        "sample" => PortKind::Sample,
-        "event" => PortKind::Event,
-        "stream" => PortKind::Stream,
-        "setpoint" => PortKind::Setpoint,
-        "read" => PortKind::Read,
-        _ => return None,
-    })
+fn output_role(signature: &ArtifactSignature) -> RuntimeMethodRole {
+    match signature.shape {
+        phoxal::artifact::MethodShape::Call => RuntimeMethodRole::Read,
+        phoxal::artifact::MethodShape::Observation if signature.lease_valid_for_ms.is_some() => {
+            RuntimeMethodRole::Setpoint
+        }
+        phoxal::artifact::MethodShape::Observation if signature.retained_latest => {
+            RuntimeMethodRole::State
+        }
+        phoxal::artifact::MethodShape::Observation => RuntimeMethodRole::Sample,
+    }
 }
 
-fn singular_public_item_bound(kind: PortKind) -> Option<u64> {
-    match kind {
-        PortKind::State | PortKind::Setpoint | PortKind::Read => Some(1),
-        PortKind::Sample
-        | PortKind::Event
-        | PortKind::Stream
-        | PortKind::Commands
-        | PortKind::Unspecified => None,
-    }
+fn singular_public_item_bound(signature: &ArtifactSignature) -> Option<u64> {
+    (signature.shape == phoxal::artifact::MethodShape::Call
+        || signature.retained_latest
+        || signature.lease_valid_for_ms.is_some())
+    .then_some(1)
 }
 
 fn positive_bound(value: Option<u64>, label: &str) -> Result<u64> {
@@ -687,13 +702,17 @@ fn bounded_u32(value: u64, label: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{label} exceeds the public u32 bound"))
 }
 
-fn validate_signature(signature: &ArtifactSignature, port: &str, expected: PortKind) -> Result<()> {
-    if signature.name != port
-        || signature.kind != artifact_kind(expected)
+fn validate_signature(
+    signature: &ArtifactSignature,
+    port: &str,
+    expected: phoxal::artifact::MethodShape,
+) -> Result<()> {
+    if signature.endpoint != port
+        || signature.shape != expected
         || signature.service.is_empty()
         || signature.method.is_empty()
     {
-        bail!("generated Runtime signature for `{port}` does not match its compiled public kind");
+        bail!("generated Runtime signature for `{port}` does not match its compiled method shape");
     }
     if signature.request.is_empty() || signature.response.is_empty() {
         bail!("generated Runtime signature for `{port}` has an empty message identity");
@@ -701,24 +720,11 @@ fn validate_signature(signature: &ArtifactSignature, port: &str, expected: PortK
     Ok(())
 }
 
-fn artifact_kind(kind: PortKind) -> &'static str {
-    match kind {
-        PortKind::State => "state",
-        PortKind::Sample => "sample",
-        PortKind::Event => "event",
-        PortKind::Stream => "stream",
-        PortKind::Setpoint => "setpoint",
-        PortKind::Read => "read",
-        PortKind::Commands => "commands",
-        PortKind::Unspecified => "unspecified",
-    }
-}
-
 /// A production service bridge over the supervisor's internal Runtime bus.
 #[derive(Clone)]
 pub(crate) struct RuntimePublicBackend {
     bus: Connection,
-    ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
+    ports: Arc<BTreeMap<(String, String), RuntimeMethodContract>>,
     ingress: RuntimeIngressIdentity,
     external_ingress: Arc<dyn RuntimeExternalIngress>,
     next_command: Arc<AtomicU64>,
@@ -758,7 +764,7 @@ impl RuntimePublicBackend {
     ) -> Result<PublicBackendOutcome, PublicBackendError> {
         let key = (
             binding.service_instance.clone(),
-            binding.metadata.name.clone(),
+            binding.metadata.endpoint.clone(),
         );
         let contract = self.ports.get(&key).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(format!(
@@ -766,16 +772,13 @@ impl RuntimePublicBackend {
                 key.0, key.1
             ))
         })?;
-        let expected_kind = match operation {
-            PublicOperation::Read => PortKind::Read,
-            PublicOperation::Command => PortKind::Commands,
-            _ => {
-                return Err(PublicBackendError::RejectedBeforeAdmission(
-                    "Runtime backend received a non-unary public operation".to_owned(),
-                ));
-            }
-        };
-        if binding.metadata.kind != expected_kind as i32 || binding.metadata != contract.metadata {
+        if operation != PublicOperation::Call
+            || !matches!(
+                contract.role,
+                RuntimeMethodRole::Read | RuntimeMethodRole::Commands | RuntimeMethodRole::Setpoint
+            )
+            || binding.metadata != contract.metadata
+        {
             return Err(PublicBackendError::RejectedBeforeAdmission(
                 "public Runtime binding metadata does not match the compiled artifact".to_owned(),
             ));
@@ -823,7 +826,7 @@ impl RuntimePublicBackend {
         };
         let reply_key = self.bus.full_key(&port_key(
             &binding.service_instance,
-            &binding.metadata.name,
+            &binding.metadata.endpoint,
             "reply",
         ));
         let reply_key_expr = match OwnedKeyExpr::new(reply_key.clone()) {
@@ -848,7 +851,7 @@ impl RuntimePublicBackend {
         };
         let request_key = self.bus.full_key(&port_key(
             &binding.service_instance,
-            &binding.metadata.name,
+            &binding.metadata.endpoint,
             "request",
         ));
         if let Err(error) = session
@@ -899,7 +902,7 @@ impl RuntimePublicBackend {
             }
             match wire.metadata().wire_control() {
                 Ok(WireControl::Busy | WireControl::Oversized)
-                    if contract.metadata.kind == PortKind::Read as i32 =>
+                    if contract.role == RuntimeMethodRole::Read =>
                 {
                     self.external_ingress.release(&key.0, &key.1, ticket);
                     return Ok(PublicBackendOutcome::RejectedBeforeAdmission(format!(
@@ -957,32 +960,24 @@ impl PublicSessionBackend for RuntimePublicBackend {
         request: SubscriptionRequest,
         capacity: usize,
     ) -> Result<PublicBackendSubscription, PublicBackendError> {
-        let expected_kind = match operation {
-            PublicOperation::Watch => PortKind::State,
-            PublicOperation::Subscribe => match PortKind::try_from(binding.metadata.kind) {
-                Ok(kind @ (PortKind::Sample | PortKind::Event | PortKind::Stream)) => kind,
-                _ => {
-                    return Err(PublicBackendError::RejectedBeforeAdmission(
-                        "public Runtime subscription kind is not observable".to_owned(),
-                    ));
-                }
-            },
-            _ => {
-                return Err(PublicBackendError::RejectedBeforeAdmission(
-                    "Runtime backend received a non-subscription operation".to_owned(),
-                ));
-            }
-        };
         let key = (
             binding.service_instance.clone(),
-            binding.metadata.name.clone(),
+            binding.metadata.endpoint.clone(),
         );
         let contract = self.ports.get(&key).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(
                 "public Runtime subscription port is absent from the bundle".to_owned(),
             )
         })?;
-        if binding.metadata.kind != expected_kind as i32 || binding.metadata != contract.metadata {
+        let role_matches = operation == PublicOperation::Observe
+            && matches!(
+                contract.role,
+                RuntimeMethodRole::State
+                    | RuntimeMethodRole::Sample
+                    | RuntimeMethodRole::Event
+                    | RuntimeMethodRole::Stream
+            );
+        if !role_matches || binding.metadata != contract.metadata {
             return Err(PublicBackendError::RejectedBeforeAdmission(
                 "public Runtime subscription metadata does not match the bundle".to_owned(),
             ));
@@ -1007,7 +1002,11 @@ impl PublicSessionBackend for RuntimePublicBackend {
                     return;
                 }
             };
-            let relative = port_key(&binding.service_instance, &binding.metadata.name, "publish");
+            let relative = port_key(
+                &binding.service_instance,
+                &binding.metadata.endpoint,
+                "publish",
+            );
             let key = bus.full_key(&relative);
             let subscriber = match OwnedKeyExpr::new(key.clone()) {
                 Ok(key) => match session
@@ -1060,7 +1059,7 @@ impl PublicSessionBackend for RuntimePublicBackend {
 
 fn runtime_record(
     sample: zenoh::sample::Sample,
-    contract: &RuntimePortContract,
+    contract: &RuntimeMethodContract,
     request: &SubscriptionRequest,
 ) -> Result<SubscriptionRecord, PublicBackendError> {
     let wire = WireSample::from_zenoh(sample).map_err(|error| {
@@ -1191,7 +1190,7 @@ type BoundaryFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>
 /// one admitted boundary to [`RuntimeBoundaryHook`].
 pub(crate) struct RuntimeSimulationBridge {
     bus: Connection,
-    ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
+    ports: Arc<BTreeMap<(String, String), RuntimeMethodContract>>,
     definition: Option<SimulationDefinition>,
     boundary: Arc<dyn RuntimeBoundaryHook>,
 }
@@ -1282,7 +1281,7 @@ impl RuntimeSimulationBridge {
                         "simulation provider is absent from the compiled Runtime graph".to_owned(),
                     )
                 })?;
-            if contract.metadata.kind != provider.kind() as i32
+            if contract.metadata.shape != provider.shape() as i32
                 || contract.metadata.input_fqn != provider.input_fqn()
                 || contract.metadata.output_fqn != provider.payload_fqn()
                 || observation.payload.len() as u64 > contract.response_max_bytes
@@ -1394,7 +1393,7 @@ impl PublicSimulationBackend for RuntimeSimulationBridge {
                     (
                         provider.service_instance().to_owned(),
                         provider.port().to_owned(),
-                        provider.kind() as i32,
+                        provider.shape() as i32,
                         provider.input_fqn().to_owned(),
                         provider.payload_fqn().to_owned(),
                     )
@@ -1407,7 +1406,7 @@ impl PublicSimulationBackend for RuntimeSimulationBridge {
                     (
                         provider.service_instance.clone(),
                         provider.port.clone(),
-                        provider.kind,
+                        provider.shape,
                         provider.input_fqn.clone(),
                         provider.payload_fqn.clone(),
                     )
@@ -1590,7 +1589,7 @@ struct ArtifactRuntime {
 struct ArtifactInput {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     max_items: Option<u64>,
     #[serde(default)]
@@ -1605,7 +1604,7 @@ struct ArtifactInput {
 struct ArtifactOutput {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     port: Option<String>,
     #[serde(default)]
@@ -1622,12 +1621,14 @@ struct ArtifactOutput {
 
 #[derive(Debug, Deserialize)]
 struct ArtifactSignature {
-    name: String,
+    endpoint: String,
     service: String,
     method: String,
-    kind: String,
+    shape: phoxal::artifact::MethodShape,
     request: String,
     response: String,
+    retained_latest: bool,
+    lease_valid_for_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -1645,27 +1646,60 @@ mod tests {
         state
     }
 
-    fn external_contract(kind: PortKind, max_buffered_items: u32) -> RuntimePortContract {
-        let metadata = PortMetadata {
-            name: "operation".to_owned(),
-            kind: kind as i32,
+    fn external_contract(
+        role: RuntimeMethodRole,
+        max_buffered_items: u32,
+    ) -> RuntimeMethodContract {
+        let metadata = MethodMetadata {
+            endpoint: "operation".to_owned(),
+            shape: role.shape() as i32,
             input_fqn: "fixture.Request".to_owned(),
             output_fqn: "fixture.Response".to_owned(),
             max_message_bytes: 128,
             max_buffered_items,
+            retained_latest: role == RuntimeMethodRole::State,
+            lease_valid_for_ms: None,
         };
-        RuntimePortContract {
+        RuntimeMethodContract {
             metadata,
+            role,
             request_max_bytes: 128,
             response_max_bytes: 128,
         }
     }
 
     #[test]
-    fn metadata_kind_mapping_is_explicit() {
-        assert_eq!(output_kind("state"), Some(PortKind::State));
-        assert_eq!(output_kind("read"), Some(PortKind::Read));
-        assert_eq!(output_kind("commands"), None);
+    fn private_runtime_role_mapping_is_explicit() {
+        let signature = |shape, retained_latest, lease_valid_for_ms| ArtifactSignature {
+            endpoint: "method".to_owned(),
+            service: "fixture.Service".to_owned(),
+            method: "Method".to_owned(),
+            shape,
+            request: "fixture.Request".to_owned(),
+            response: "fixture.Response".to_owned(),
+            retained_latest,
+            lease_valid_for_ms,
+        };
+        assert_eq!(
+            output_role(&signature(
+                phoxal::artifact::MethodShape::Observation,
+                true,
+                None
+            )),
+            RuntimeMethodRole::State
+        );
+        assert_eq!(
+            output_role(&signature(
+                phoxal::artifact::MethodShape::Observation,
+                false,
+                Some(100)
+            )),
+            RuntimeMethodRole::Setpoint
+        );
+        assert_eq!(
+            output_role(&signature(phoxal::artifact::MethodShape::Call, false, None)),
+            RuntimeMethodRole::Read
+        );
     }
 
     #[test]
@@ -1681,7 +1715,9 @@ mod tests {
                 method: "Sample".into(),
                 service_instance: "imu".to_owned(),
                 port: "sample".to_owned(),
-                kind: "sample".to_owned(),
+                shape: phoxal::artifact::MethodShape::Observation,
+                retained_latest: false,
+                lease_valid_for_ms: None,
                 input_fqn: "google.protobuf.Empty".to_owned(),
                 payload_fqn: "fixture.Imu".to_owned(),
                 max_message_bytes: 1024,
@@ -1694,30 +1730,33 @@ mod tests {
                 actuator_ids: vec!["left".to_owned(), "right".to_owned()],
             }],
         };
-        let mut service_ports = BTreeMap::new();
-        let mut runtime_ports = BTreeMap::from([(
+        let mut service_methods = BTreeMap::new();
+        let mut runtime_methods = BTreeMap::from([(
             ("motion".to_owned(), "actuators".to_owned()),
-            RuntimePortContract {
-                metadata: PortMetadata {
-                    name: "actuators".to_owned(),
-                    kind: PortKind::Setpoint as i32,
+            RuntimeMethodContract {
+                metadata: MethodMetadata {
+                    endpoint: "actuators".to_owned(),
+                    shape: MethodShape::Call as i32,
                     input_fqn: "fixture.Empty".to_owned(),
                     output_fqn: "fixture.Actuators".to_owned(),
                     max_message_bytes: 2048,
                     max_buffered_items: 1,
+                    retained_latest: false,
+                    lease_valid_for_ms: Some(100),
                 },
+                role: RuntimeMethodRole::Setpoint,
                 request_max_bytes: 2048,
                 response_max_bytes: 2048,
             },
         )]);
 
-        add_simulation_provider_metadata(&source, &mut service_ports, &mut runtime_ports)
+        add_simulation_provider_metadata(&source, &mut service_methods, &mut runtime_methods)
             .expect("provider metadata is admitted");
-        validate_simulation_actuation_bindings(&source, &runtime_ports)
+        validate_simulation_actuation_bindings(&source, &runtime_methods)
             .expect("exact setpoint binding is admitted");
         let definition = simulation_definition(&source).expect("public simulation definition");
 
-        assert_eq!(service_ports["imu"][0].name, "sample");
+        assert_eq!(service_methods["imu"][0].endpoint, "sample");
         assert_eq!(definition.providers()[0].payload_fqn(), "fixture.Imu");
         assert_eq!(definition.model_identity(), "model-digest");
         assert_eq!(definition.quantum_ns(), 10_000_000);
@@ -1733,7 +1772,7 @@ mod tests {
     #[test]
     fn external_coordinator_uses_ready_boundary_sequence_and_bounded_capacity() {
         let coordinator = RuntimeExecutionCoordinator::new(ready_state());
-        let contract = external_contract(PortKind::Commands, 2);
+        let contract = external_contract(RuntimeMethodRole::Commands, 2);
         let caller = RuntimeIngressIdentity::default();
         let first = coordinator
             .admit("service", "operation", &caller, &contract)
@@ -1764,17 +1803,19 @@ mod tests {
             "runtime": {
                 "service_outputs": [{
                     "name": "state_output",
-                    "kind": "state",
+                    "role": "method",
                     "port": "state",
                     "max_items": 1,
                     "max_bytes": 64,
                     "signature": {
-                        "name": "state",
+                        "endpoint": "state",
                         "service": "fixture.Brain",
                         "method": "State",
-                        "kind": "state",
+                        "shape": "observation",
                         "request": "google.protobuf.Empty",
-                        "response": "fixture.State"
+                        "response": "fixture.State",
+                        "retained_latest": true,
+                        "lease_valid_for_ms": null
                     }
                 }]
             }
@@ -1783,22 +1824,24 @@ mod tests {
             "runtime": {
                 "inputs": [{
                     "name": "request",
-                    "kind": "commands",
+                    "role": "call_ingress",
                     "port": "command",
                     "max_items": 2,
                     "max_bytes": 128,
                     "signature": {
-                        "name": "command",
+                        "endpoint": "command",
                         "service": "fixture.Service",
                         "method": "Command",
-                        "kind": "commands",
+                        "shape": "call",
                         "request": "fixture.Request",
-                        "response": "fixture.Response"
+                        "response": "fixture.Response",
+                        "retained_latest": false,
+                        "lease_valid_for_ms": null
                     }
                 }],
                 "transient_outputs": [{
                     "name": "reply",
-                    "kind": "reply",
+                    "role": "reply",
                     "input": "request",
                     "max_bytes": 256
                 }]
@@ -1827,14 +1870,14 @@ mod tests {
             surface
                 .services
                 .iter()
-                .map(ServicePorts::instance)
+                .map(ServiceMethods::instance)
                 .collect::<Vec<_>>(),
             vec!["brain", "service"]
         );
         let brain_state = surface
             .ports
             .get(&("brain".to_owned(), "state".to_owned()))
-            .expect("brain public port");
+            .expect("brain public method");
         assert_eq!(brain_state.metadata.input_fqn, "google.protobuf.Empty");
         assert_eq!(brain_state.metadata.output_fqn, "fixture.State");
         assert_eq!(brain_state.metadata.max_message_bytes, 64);
@@ -1860,7 +1903,7 @@ mod tests {
             target_instance: &str,
             target_port: &str,
             caller: &RuntimeIngressIdentity,
-            _contract: &RuntimePortContract,
+            _contract: &RuntimeMethodContract,
         ) -> Result<ExternalIngressTicket, PublicBackendError> {
             assert_eq!(caller.source, "supervisor");
             assert_eq!(caller.caller, "supervisor.public");
@@ -1888,16 +1931,19 @@ mod tests {
         )
         .await
         .expect("test bus opens");
-        let metadata = PortMetadata {
-            name: "command".to_owned(),
-            kind: PortKind::Commands as i32,
+        let metadata = MethodMetadata {
+            endpoint: "command".to_owned(),
+            shape: MethodShape::Call as i32,
             input_fqn: "fixture.Request".to_owned(),
             output_fqn: "fixture.Response".to_owned(),
             max_message_bytes: 256,
             max_buffered_items: 2,
+            retained_latest: false,
+            lease_valid_for_ms: None,
         };
-        let contract = RuntimePortContract {
+        let contract = RuntimeMethodContract {
             metadata: metadata.clone(),
+            role: RuntimeMethodRole::Commands,
             request_max_bytes: 128,
             response_max_bytes: 256,
         };
@@ -1966,7 +2012,7 @@ mod tests {
         };
         let first = backend
             .call_inner(
-                PublicOperation::Command,
+                PublicOperation::Call,
                 binding.clone(),
                 vec![1],
                 Duration::from_secs(1),
@@ -1975,7 +2021,7 @@ mod tests {
             .expect("first call");
         let second = backend
             .call_inner(
-                PublicOperation::Command,
+                PublicOperation::Call,
                 binding,
                 vec![2],
                 Duration::from_secs(1),
@@ -2014,20 +2060,23 @@ mod tests {
         )
         .await
         .expect("test bus opens");
-        let metadata = PortMetadata {
-            name: "read".to_owned(),
-            kind: PortKind::Read as i32,
+        let metadata = MethodMetadata {
+            endpoint: "read".to_owned(),
+            shape: MethodShape::Call as i32,
             input_fqn: "fixture.Request".to_owned(),
             output_fqn: "fixture.Response".to_owned(),
             max_message_bytes: 256,
             max_buffered_items: 1,
+            retained_latest: false,
+            lease_valid_for_ms: None,
         };
         let surface = RuntimePublicSurface {
             services: Vec::new(),
             ports: Arc::new(BTreeMap::from([(
                 ("provider".to_owned(), "read".to_owned()),
-                RuntimePortContract {
+                RuntimeMethodContract {
                     metadata: metadata.clone(),
+                    role: RuntimeMethodRole::Read,
                     request_max_bytes: 128,
                     response_max_bytes: 256,
                 },
@@ -2082,7 +2131,7 @@ mod tests {
         };
         let result = backend
             .call_inner(
-                PublicOperation::Read,
+                PublicOperation::Call,
                 binding,
                 vec![4],
                 Duration::from_secs(1),
@@ -2208,16 +2257,19 @@ mod tests {
         )
         .await
         .expect("test bus opens");
-        let metadata = PortMetadata {
-            name: "state".to_owned(),
-            kind: PortKind::State as i32,
+        let metadata = MethodMetadata {
+            endpoint: "state".to_owned(),
+            shape: MethodShape::Observation as i32,
             input_fqn: "google.protobuf.Empty".to_owned(),
             output_fqn: "example.Payload".to_owned(),
             max_message_bytes: 1024,
             max_buffered_items: 1,
+            retained_latest: true,
+            lease_valid_for_ms: None,
         };
-        let contract = RuntimePortContract {
+        let contract = RuntimeMethodContract {
             metadata: metadata.clone(),
+            role: RuntimeMethodRole::State,
             request_max_bytes: 1024,
             response_max_bytes: 1024,
         };
@@ -2237,7 +2289,7 @@ mod tests {
                 SimulationProviderDefinition::new(
                     "sensor",
                     "state",
-                    PortKind::State,
+                    MethodShape::Observation,
                     "google.protobuf.Empty",
                     "example.Payload",
                     100_000_000,

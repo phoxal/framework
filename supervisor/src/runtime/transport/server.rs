@@ -32,12 +32,12 @@ use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 use phoxal::communication::bootstrap::SessionOffers;
 use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
 use phoxal::communication::session::{
-    BindPortRequest, BindPortResponse, CloseSessionRequest, CloseSessionResponse, ExecutionState,
-    ListExecutionsRequest, ListExecutionsResponse, ListPortsRequest, ListPortsResponse,
-    OpenSessionRequest, OpenSessionResponse, OperationOutcome, OperationRequest, OperationResponse,
-    PortMetadata, RecordKind, RenewSessionRequest, RenewSessionResponse, SubscriptionAdmission,
-    SubscriptionRecord, SubscriptionRequest, SupervisorInfoRequest, SupervisorInfoResponse,
-    SupervisorState, SupervisorStatusRequest, SupervisorStatusResponse,
+    BindMethodRequest, BindMethodResponse, CloseSessionRequest, CloseSessionResponse,
+    ExecutionState, ListExecutionsRequest, ListExecutionsResponse, ListMethodsRequest,
+    ListMethodsResponse, MethodMetadata, OpenSessionRequest, OpenSessionResponse, OperationOutcome,
+    OperationRequest, OperationResponse, RecordKind, RenewSessionRequest, RenewSessionResponse,
+    SubscriptionAdmission, SubscriptionRecord, SubscriptionRequest, SupervisorInfoRequest,
+    SupervisorInfoResponse, SupervisorState, SupervisorStatusRequest, SupervisorStatusResponse,
 };
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
@@ -60,19 +60,17 @@ use phoxal::communication_transport::{
     validate_subscription_record, validate_subscription_request,
 };
 
-const PUBLIC_OPERATION_QUERYABLES: [PublicOperation; 19] = [
+const PUBLIC_OPERATION_QUERYABLES: [PublicOperation; 17] = [
     PublicOperation::Open,
     PublicOperation::Renew,
     PublicOperation::Close,
     PublicOperation::Info,
     PublicOperation::Status,
     PublicOperation::ListExecutions,
-    PublicOperation::ListPorts,
-    PublicOperation::Bind,
-    PublicOperation::Read,
-    PublicOperation::Command,
-    PublicOperation::Watch,
-    PublicOperation::Subscribe,
+    PublicOperation::ListMethods,
+    PublicOperation::BindMethod,
+    PublicOperation::Call,
+    PublicOperation::Observe,
     PublicOperation::AcquireAuthority,
     PublicOperation::AdmitInitialObservations,
     PublicOperation::PrepareBoundary,
@@ -146,7 +144,7 @@ pub struct PublicBindingContext {
     /// Deployed service instance receiving the operation.
     pub service_instance: String,
     /// Generated descriptor admitted by the adapter.
-    pub metadata: PortMetadata,
+    pub metadata: MethodMetadata,
 }
 
 impl From<crate::runtime::adapter::BindingContext> for PublicBindingContext {
@@ -1023,15 +1021,18 @@ async fn serve_one_operation(
                     .list_executions(&route, &session_id, &request, now_ms);
             reply_adapter(query, result, operation_name, limits).await;
         }
-        PublicOperation::ListPorts => {
-            let request =
-                match decode_request::<ListPortsRequest>(&request_bytes, operation_name, limits) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        send_error(query, &error, limits).await;
-                        return;
-                    }
-                };
+        PublicOperation::ListMethods => {
+            let request = match decode_request::<ListMethodsRequest>(
+                &request_bytes,
+                operation_name,
+                limits,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    send_error(query, &error, limits).await;
+                    return;
+                }
+            };
             let session_id = request.session_id.clone();
             let result = adapter
                 .lock()
@@ -1039,9 +1040,9 @@ async fn serve_one_operation(
                 .list_ports(&route, &session_id, &request, now_ms);
             reply_adapter(query, result, operation_name, limits).await;
         }
-        PublicOperation::Bind => {
+        PublicOperation::BindMethod => {
             let request =
-                match decode_request::<BindPortRequest>(&request_bytes, operation_name, limits) {
+                match decode_request::<BindMethodRequest>(&request_bytes, operation_name, limits) {
                     Ok(request) => request,
                     Err(error) => {
                         send_error(query, &error, limits).await;
@@ -1051,7 +1052,7 @@ async fn serve_one_operation(
             let result = adapter.lock().await.bind(&route, &request, now_ms);
             reply_adapter(query, result, operation_name, limits).await;
         }
-        PublicOperation::Read | PublicOperation::Command => {
+        PublicOperation::Call => {
             let request =
                 match decode_request::<OperationRequest>(&request_bytes, operation_name, limits) {
                     Ok(request) => request,
@@ -1174,7 +1175,7 @@ async fn serve_one_operation(
             };
             reply_message(query, &response, operation_name, limits).await;
         }
-        PublicOperation::Watch | PublicOperation::Subscribe => {
+        PublicOperation::Observe => {
             let request =
                 match decode_request::<SubscriptionRequest>(&request_bytes, operation_name, limits)
                 {
@@ -1271,7 +1272,7 @@ async fn serve_one_operation(
                     }
                 };
             let source_initial = source.take_initial();
-            if operation == PublicOperation::Subscribe && source_initial.is_some() {
+            if operation == PublicOperation::Observe && source_initial.is_some() {
                 subscriptions.lock().await.remove(&subscription_id);
                 send_error(
                     query,
@@ -1284,7 +1285,7 @@ async fn serve_one_operation(
                 .await;
                 return;
             }
-            let initial = if operation == PublicOperation::Watch {
+            let initial = if operation == PublicOperation::Observe {
                 Some(source_initial.unwrap_or_else(|| SubscriptionRecord {
                     session_id: request.session_id.clone(),
                     binding_id: request.binding_id.clone(),

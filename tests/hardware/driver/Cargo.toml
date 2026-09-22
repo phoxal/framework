@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 description = "Production-shaped Runtime fixture for hardware driver acceptance."
 include = [
-    "build.rs",
+    "generated/**",
     "src/**",
     "proto/**",
     "Cargo.toml",
@@ -17,20 +17,27 @@ include = [
 
 [lib]
 name = "phoxal_hardware_driver_fixture"
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-hardware-driver-fixture"
 path = "src/main.rs"
+required-features = ["runtime"]
+
+[features]
+default = []
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-anyhow = { workspace = true }
-phoxal = { workspace = true, default-features = false, features = ["port", "runtime"] }
+anyhow = { workspace = true, optional = true }
+phoxal = { workspace = true, default-features = false, features = ["contract"] }
 prost = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/fixture/hardware/v1/hardware.proto"]
+includes = ["proto"]
+generated = "generated"
 
 [lints]
 workspace = true

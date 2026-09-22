@@ -3,35 +3,25 @@ syntax = "proto3";
 package example.inspection.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 import "example/inspection/v1/messages.proto";
 
 service Inspection {
   rpc Status(google.protobuf.Empty) returns (stream InspectionState) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 
-  rpc Samples(google.protobuf.Empty) returns (stream InspectionSample) {
-    option (phoxal.port.kind) = SAMPLE;
+  rpc Samples(google.protobuf.Empty) returns (stream InspectionSample);
+
+  rpc Events(google.protobuf.Empty) returns (stream InspectionEvent);
+
+  rpc Records(google.protobuf.Empty) returns (stream InspectionStream);
+
+  rpc Target(InspectionSetpoint) returns (google.protobuf.Empty) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
   }
 
-  rpc Events(google.protobuf.Empty) returns (stream InspectionEvent) {
-    option (phoxal.port.kind) = EVENT;
-  }
+  rpc Read(InspectionReadRequest) returns (InspectionReadResponse);
 
-  rpc Records(google.protobuf.Empty) returns (stream InspectionStream) {
-    option (phoxal.port.kind) = STREAM;
-  }
-
-  rpc Target(google.protobuf.Empty) returns (stream InspectionSetpoint) {
-    option (phoxal.port.kind) = SETPOINT;
-  }
-
-  rpc Read(InspectionReadRequest) returns (InspectionReadResponse) {
-    option (phoxal.port.kind) = READ;
-  }
-
-  rpc Commands(InspectionCommandRequest) returns (InspectionCommandResponse) {
-    option (phoxal.port.kind) = COMMANDS;
-  }
+  rpc Commands(InspectionCommandRequest) returns (InspectionCommandResponse);
 }

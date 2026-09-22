@@ -1,6 +1,7 @@
 use prost::Name;
 
-use phoxal_contract_owner_fixture::{InspectionState, inspection};
+use phoxal::contract::MethodDescriptor;
+use phoxal_contract_owner_fixture::{InspectionState, inspection::methods};
 
 fn main() {
     assert_eq!(InspectionState::NAME, "InspectionState");
@@ -8,5 +9,5 @@ fn main() {
         InspectionState::full_name(),
         "example.inspection.v1.InspectionState"
     );
-    assert_eq!(inspection::STATUS.name(), "status");
+    assert_eq!(methods::STATUS.signature().method, "Status");
 }

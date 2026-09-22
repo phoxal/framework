@@ -9,15 +9,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use phoxal::contract::MethodDescriptor;
 use phoxal::identity::ExecutionId;
 use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
 use phoxal::runtime::execution_protocol::{self, wire as execution_wire};
 use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireSample};
 use phoxal::runtime::{ExecutionTime, ObservationStamp};
-use phoxal_service_kinematics::{OdometryState, ports as kinematics_ports};
-use phoxal_service_world::{
-    Bounds, WindowRequest, WindowResponse, ports as world_ports, window_response,
-};
+use phoxal_service_kinematics::{OdometryState, kinematics};
+use phoxal_service_world::{Bounds, WindowRequest, WindowResponse, window_response, world};
 use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -56,7 +55,7 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
     std::fs::copy(binary, &installed).expect("copy world binary");
     let bytes = std::fs::read(&installed).expect("read world binary");
     let digest = Sha256::digest(&bytes);
-    let signature = kinematics_ports::ODOMETRY.signature();
+    let signature = kinematics::methods::ODOMETRY.signature();
     let manifest = json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "world-read-transport-proof",
@@ -73,10 +72,11 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
         "simulation": {
             "providers": [{
                 "service_instance": "kinematics",
-                "port": signature.name,
+                "port": signature.endpoint,
                 "service_fqn": signature.service,
                 "method": signature.method,
-                "kind": signature.kind.as_str(),
+                "shape": "observation",
+                "retained_latest": signature.retained_latest,
                 "input_fqn": signature.request,
                 "payload_fqn": signature.response,
                 "max_message_bytes": 512,
@@ -177,7 +177,7 @@ async fn publish_odometry(bus: &Connection, sequence: u64, elapsed: Duration) {
         .put(
             bus.full_key(&transport::port_key(
                 "kinematics",
-                kinematics_ports::ODOMETRY.name(),
+                kinematics::methods::ODOMETRY.signature().endpoint,
                 "publish",
             )),
             transport::encode_prost(&value).expect("odometry encodes"),
@@ -205,7 +205,7 @@ async fn query_window(bus: &Connection, replies: &Subscriber, command_id: u64) -
         .put(
             bus.full_key(&transport::port_key(
                 "world",
-                world_ports::WINDOW.name(),
+                world::methods::WINDOW.signature().endpoint,
                 "request",
             )),
             transport::encode_prost(&request).expect("window request encodes"),
@@ -228,7 +228,7 @@ async fn stop_child(child: &mut Child) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn real_world_window_read_runs_while_odometry_keeps_its_own_schedule() {
+async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
     let endpoint = reserve_tcp_endpoint();
     let router = open_router(&endpoint).await;
     let execution = ExecutionId::mint();
@@ -246,7 +246,7 @@ async fn real_world_window_read_runs_while_odometry_keeps_its_own_schedule() {
         .expect("session is open")
         .declare_subscriber(bus.full_key(&transport::port_key(
             "world",
-            world_ports::WINDOW.name(),
+            world::methods::WINDOW.signature().endpoint,
             "reply",
         )))
         .with(zenoh::handlers::FifoChannel::new(8))
@@ -305,11 +305,11 @@ async fn real_world_window_read_runs_while_odometry_keeps_its_own_schedule() {
     assert_eq!(window.frame_id, "odom");
 
     tokio::time::sleep(Duration::from_millis(30)).await;
-    let replay = query_window(&bus, &replies, completed_command_id).await;
-    assert_eq!(
-        replay, response,
-        "a duplicate correlation must replay the accepted response instead of observing newer state"
-    );
+    let later = query_window(&bus, &replies, completed_command_id + 100).await;
+    let Some(window_response::Result::Window(later_window)) = later.result else {
+        panic!("a later World call must return the current available window")
+    };
+    assert!(later_window.revision >= window.revision);
     running.store(false, Ordering::Release);
     assert!(provider.await.expect("provider joins") > 2);
 

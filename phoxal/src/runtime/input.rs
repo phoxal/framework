@@ -6,6 +6,7 @@
 //! receiver, socket, or background task to service code.
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -33,6 +34,8 @@ pub enum InputKind {
     Request,
     /// A keyed local operation completion.
     Operation,
+    /// Typed completions for generated service calls.
+    Completions,
 }
 
 impl InputKind {
@@ -49,6 +52,7 @@ impl InputKind {
             Self::Read => "read",
             Self::Request => "request",
             Self::Operation => "operation",
+            Self::Completions => "completions",
         }
     }
 }
@@ -424,8 +428,31 @@ pub enum TransportStreamItem {
 pub struct TransportCommand {
     /// The exact merge key attached to the originating request.
     pub order: CommandOrder,
+    /// Authenticated execution-scoped caller identity from the framework envelope.
+    pub source: String,
     /// The generated request value.
     pub request: TransportValue,
+}
+
+/// One decoded replaceable update retaining its authenticated owner identity.
+pub struct SetpointUpdate {
+    /// Decoded generated value.
+    pub value: TransportValue,
+    /// Authenticated execution-scoped publisher identity.
+    pub source: String,
+    /// Logical issue time.
+    pub issued_at: ExecutionTime,
+    /// Exact expiry time carried by the framework envelope.
+    pub valid_until: ExecutionTime,
+}
+
+/// One erased generated-call completion admitted into the next input cut.
+#[doc(hidden)]
+pub struct TransportCallCompletion {
+    /// Execution-local ticket identity.
+    pub ticket: u64,
+    /// Exact response body or definitive call failure.
+    pub result: Result<Vec<u8>, RequestError>,
 }
 
 /// One completion produced by a runner-owned local operation.
@@ -482,11 +509,7 @@ pub trait TransportInputSink {
     ) -> crate::Result<()>;
 
     /// Install a setpoint renewal or withdrawal.
-    fn set_setpoint(
-        &mut self,
-        field: &str,
-        value: Option<(TransportValue, ExecutionTime, ExecutionTime)>,
-    ) -> crate::Result<()>;
+    fn set_setpoint(&mut self, field: &str, value: Option<SetpointUpdate>) -> crate::Result<()>;
 
     /// Install a bounded stream batch.
     fn set_stream(&mut self, field: &str, values: Vec<TransportStreamItem>) -> crate::Result<()>;
@@ -566,6 +589,19 @@ pub trait TransportInputSink {
         key: TransportValue,
         result: Result<TransportValue, OperationInputError>,
     ) -> crate::Result<()>;
+
+    /// Install every generated-call completion admitted for this input cut.
+    fn set_call_completions(&mut self, values: Vec<TransportCallCompletion>) -> crate::Result<()> {
+        if values.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                super::transport::TransportError::InvalidMetadata {
+                    detail: "runtime inputs have no generated call completion field".to_owned(),
+                }
+            ))
+        }
+    }
 }
 
 impl InputSnapshot for () {
@@ -614,11 +650,7 @@ impl TransportInputSink for () {
         ))
     }
 
-    fn set_setpoint(
-        &mut self,
-        field: &str,
-        _value: Option<(TransportValue, ExecutionTime, ExecutionTime)>,
-    ) -> crate::Result<()> {
+    fn set_setpoint(&mut self, field: &str, _value: Option<SetpointUpdate>) -> crate::Result<()> {
         Err(anyhow::anyhow!(
             super::transport::TransportError::InvalidMetadata {
                 detail: format!("input field `{field}` has no generated transport sink"),
@@ -1044,6 +1076,7 @@ impl<T: 'static> InputSpec for Events<T> {
 /// A replaceable intent with an explicit validity interval.
 pub struct Setpoint<T> {
     value: Option<T>,
+    source: Option<String>,
     issued_at: Option<ExecutionTime>,
     valid_until: Option<ExecutionTime>,
 }
@@ -1054,6 +1087,7 @@ impl<T> Setpoint<T> {
     pub const fn withdrawn() -> Self {
         Self {
             value: None,
+            source: None,
             issued_at: None,
             valid_until: None,
         }
@@ -1062,9 +1096,21 @@ impl<T> Setpoint<T> {
     /// Creates an intent valid for the supplied duration.
     #[must_use]
     pub fn new(value: T, issued_at: ExecutionTime, valid_for_ms: u64) -> Self {
+        Self::from_source(value, "direct", issued_at, valid_for_ms)
+    }
+
+    /// Creates an intent with an explicit execution-scoped owner identity.
+    #[must_use]
+    pub fn from_source(
+        value: T,
+        source: impl Into<String>,
+        issued_at: ExecutionTime,
+        valid_for_ms: u64,
+    ) -> Self {
         let valid_until = issued_at.checked_add_millis(valid_for_ms);
         Self {
             value: Some(value),
+            source: Some(source.into()),
             issued_at: Some(issued_at),
             valid_until,
         }
@@ -1076,8 +1122,20 @@ impl<T> Setpoint<T> {
     /// receiver cannot accidentally renew an old intent while forwarding it.
     #[must_use]
     pub fn from_parts(value: T, issued_at: ExecutionTime, valid_until: ExecutionTime) -> Self {
+        Self::from_wire_parts(value, "direct", issued_at, valid_until)
+    }
+
+    /// Creates an admitted intent from its authenticated envelope owner and validity interval.
+    #[must_use]
+    pub fn from_wire_parts(
+        value: T,
+        source: impl Into<String>,
+        issued_at: ExecutionTime,
+        valid_until: ExecutionTime,
+    ) -> Self {
         Self {
             value: Some(value),
+            source: Some(source.into()),
             issued_at: Some(issued_at),
             valid_until: Some(valid_until),
         }
@@ -1087,6 +1145,12 @@ impl<T> Setpoint<T> {
     #[must_use]
     pub fn value(&self) -> Option<&T> {
         self.value.as_ref()
+    }
+
+    /// Returns the authenticated owner identity for the current value.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     /// Returns the issue instant.
@@ -1320,6 +1384,7 @@ pub enum CommandOrderError {
 /// One admitted behavioral request and its typed response family.
 pub struct Command<Request, Response> {
     order: CommandOrder,
+    source: String,
     request: Request,
     response: PhantomData<fn() -> Response>,
 }
@@ -1330,6 +1395,7 @@ impl<Request, Response> Command<Request, Response> {
     pub fn new(id: CommandId, request: Request) -> Self {
         Self {
             order: CommandOrder::new(0, 0, id),
+            source: "direct".to_owned(),
             request,
             response: PhantomData,
         }
@@ -1338,8 +1404,20 @@ impl<Request, Response> Command<Request, Response> {
     /// Creates an admitted command with an explicit deterministic order key.
     #[must_use]
     pub fn with_order(order: CommandOrder, request: Request) -> Self {
+        Self::with_source_order(order, "direct", request)
+    }
+
+    /// Creates an admitted command retaining its authenticated caller identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_source_order(
+        order: CommandOrder,
+        source: impl Into<String>,
+        request: Request,
+    ) -> Self {
         Self {
             order,
+            source: source.into(),
             request,
             response: PhantomData,
         }
@@ -1355,6 +1433,12 @@ impl<Request, Response> Command<Request, Response> {
     #[must_use]
     pub const fn order(&self) -> CommandOrder {
         self.order
+    }
+
+    /// Returns the authenticated execution-scoped caller identity.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     /// Returns the immutable request payload.
@@ -1774,6 +1858,80 @@ pub enum RequestError {
     /// The request timed out before response evidence was available.
     #[error("request timed out")]
     Timeout,
+}
+
+/// One typed generated-call completion in an immutable input cut.
+#[derive(Debug)]
+pub struct CallCompletion<Response> {
+    result: Result<Response, RequestError>,
+}
+
+impl<Response> CallCompletion<Response> {
+    /// Returns the decoded response or the exact terminal call state.
+    pub fn response(&self) -> Result<&Response, &RequestError> {
+        self.result.as_ref()
+    }
+
+    /// Consumes this completion into its typed result.
+    pub fn into_result(self) -> Result<Response, RequestError> {
+        self.result
+    }
+}
+
+/// Response decoding supported by generated service calls.
+#[doc(hidden)]
+pub trait CallResponse: Sized {
+    fn decode_call_response(bytes: &[u8]) -> Result<Self, RequestError>;
+}
+
+impl<T> CallResponse for T
+where
+    T: prost::Message + Default,
+{
+    fn decode_call_response(bytes: &[u8]) -> Result<Self, RequestError> {
+        T::decode(bytes).map_err(|error| {
+            RequestError::OutcomeUnknown(format!("generated response did not decode: {error}"))
+        })
+    }
+}
+
+/// Newly admitted generated-call completions for one runtime invocation.
+#[derive(Debug, Default)]
+pub struct Completions {
+    values: BTreeMap<u64, Result<Vec<u8>, RequestError>>,
+}
+
+impl Completions {
+    /// Looks up and decodes a completion using its response-typed ticket.
+    #[must_use]
+    pub fn get<Response>(
+        &self,
+        ticket: &super::outputs::CallTicket<Response>,
+    ) -> Option<CallCompletion<Response>>
+    where
+        Response: CallResponse,
+    {
+        self.values.get(&ticket.id()).map(|result| CallCompletion {
+            result: match result {
+                Ok(bytes) => Response::decode_call_response(bytes),
+                Err(error) => Err(error.clone()),
+            },
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn from_transport(values: Vec<TransportCallCompletion>) -> Self {
+        Self {
+            values: values
+                .into_iter()
+                .map(|value| (value.ticket, value.result))
+                .collect(),
+        }
+    }
+}
+
+impl InputSpec for Completions {
+    const KIND: InputKind = InputKind::Completions;
 }
 
 /// A first admitted completion for a keyed request.

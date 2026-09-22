@@ -45,6 +45,21 @@ pub(super) enum ExchangeCompletion {
 
 pub(super) type ExchangeCompletionQueue = Arc<Mutex<Vec<ExchangeCompletion>>>;
 
+pub(super) struct GeneratedCorrelation {
+    pub(super) ticket: u64,
+    pub(super) expected_source: String,
+    pub(super) endpoint: String,
+    pub(super) caller: String,
+    pub(super) caller_rank: u64,
+    pub(super) max_response_bytes: u64,
+    pub(super) deadline: Option<Instant>,
+}
+
+pub(super) type GeneratedCorrelationMap = Arc<Mutex<BTreeMap<u64, GeneratedCorrelation>>>;
+
+pub(super) type GeneratedCompletionQueue =
+    Arc<Mutex<Vec<crate::runtime::input::TransportCallCompletion>>>;
+
 #[derive(Clone)]
 pub(super) struct AcceptedActivation {
     pub(super) key: ActivationKey,

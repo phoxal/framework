@@ -3,7 +3,7 @@ syntax = "proto3";
 package phoxal.motion.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 
 message ActuatorTarget {
   string actuator_id = 1;
@@ -18,31 +18,16 @@ message ActuatorSetpoint {
 }
 
 message MotionIntent {
-  string owner_id = 1;
-  double linear_x_mps = 2;
-  double angular_z_radps = 3;
+  double linear_x_mps = 1;
+  double angular_z_radps = 2;
 }
 
-message EngageEmergency {}
-
-message ReleaseEmergency {
+message ReleaseEmergencyRequest {
   string reset_token = 1;
 }
 
-message Arm {
+message ArmRequest {
   ControlMode mode = 1;
-  string owner_id = 2;
-}
-
-message Disarm {}
-
-message ApplyEmergencyRequest {
-  oneof command {
-    EngageEmergency engage = 1;
-    ReleaseEmergency release = 2;
-    Arm arm = 3;
-    Disarm disarm = 4;
-  }
 }
 
 message EmergencyAccepted {}
@@ -82,22 +67,26 @@ message MotionStatus {
 
 service Motion {
   rpc Actuators(google.protobuf.Empty) returns (stream ActuatorSetpoint) {
-    option (phoxal.port.kind) = SETPOINT;
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
   }
 
-  rpc Manual(google.protobuf.Empty) returns (stream MotionIntent) {
-    option (phoxal.port.kind) = SETPOINT;
+  rpc Manual(MotionIntent) returns (google.protobuf.Empty) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
   }
 
-  rpc Autonomous(google.protobuf.Empty) returns (stream MotionIntent) {
-    option (phoxal.port.kind) = SETPOINT;
+  rpc Autonomous(MotionIntent) returns (google.protobuf.Empty) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
   }
 
   rpc Status(google.protobuf.Empty) returns (stream MotionStatus) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 
-  rpc Emergency(ApplyEmergencyRequest) returns (ApplyEmergencyResponse) {
-    option (phoxal.port.kind) = COMMANDS;
-  }
+  rpc Arm(ArmRequest) returns (ApplyEmergencyResponse);
+
+  rpc Disarm(google.protobuf.Empty) returns (ApplyEmergencyResponse);
+
+  rpc EngageEmergency(google.protobuf.Empty) returns (ApplyEmergencyResponse);
+
+  rpc ReleaseEmergency(ReleaseEmergencyRequest) returns (ApplyEmergencyResponse);
 }

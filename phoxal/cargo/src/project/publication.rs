@@ -1160,6 +1160,30 @@ impl LocalProjectSource {
         self.logical_path(staged)
     }
 
+    pub(crate) fn sync_project_file(
+        &self,
+        authored_project_root: &Path,
+        relative: &Path,
+    ) -> Result<(), Error> {
+        let source = authored_project_root.join(relative);
+        let contents = fs::read(&source).map_err(|source_error| Error::ArtifactFile {
+            path: source,
+            source: source_error,
+        })?;
+        let staged_project_root = self
+            .manifest
+            .parent()
+            .ok_or_else(|| Error::ArtifactInvalid {
+                path: self.manifest.clone(),
+                message: "staged project manifest has no parent directory".to_owned(),
+            })?;
+        let destination = staged_project_root.join(relative);
+        preparation::atomic_write(&destination, &contents).map_err(|source| Error::ManifestWrite {
+            path: destination,
+            source,
+        })
+    }
+
     fn logical_text(&self, value: &str) -> String {
         self.staged_to_authored.iter().fold(
             value.to_owned(),

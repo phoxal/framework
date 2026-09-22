@@ -23,7 +23,7 @@ use crate::project::error::{ValidationError, ValidationErrors};
 // tool's validation logic and reads YAML.
 pub use phoxal::artifact::document::{
     BrainSelection, ComponentDocument, ComponentInstance, ConnectionSources, PortReference,
-    RobotDocument, ServiceSelection,
+    RobotDocument, ServiceSelection, ServiceSource,
 };
 
 /// Parses and validates a `robot.yaml` document with its authored path
@@ -196,20 +196,8 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
                 field: "services".to_owned(),
             });
         }
-        if let Some(implementation) = &selection.implementation {
-            if implementation.trim().is_empty() {
-                errors.push(ValidationError::InvalidService {
-                    service: service.clone(),
-                    message: "implementation must not be empty".to_owned(),
-                });
-            } else if !is_identifier(implementation) {
-                errors.push(ValidationError::InvalidService {
-                    service: service.clone(),
-                    message: format!(
-                        "implementation '{implementation}' is not a valid Cargo dependency key"
-                    ),
-                });
-            }
+        if let Some(source) = &selection.source {
+            validate_service_source(service, source, errors);
         }
         if let Some(binary) = &selection.binary
             && (binary.trim().is_empty() || !is_identifier(binary))
@@ -222,6 +210,52 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
         if let Some(config) = &selection.config {
             push_config_errors(config, &format!("services.{service}.config"), errors);
         }
+    }
+}
+
+fn validate_service_source(
+    service: &str,
+    source: &ServiceSource,
+    errors: &mut Vec<ValidationError>,
+) {
+    let invalid = match source {
+        ServiceSource::Path(source) => source
+            .path
+            .trim()
+            .is_empty()
+            .then_some("path must not be empty"),
+        ServiceSource::Git(source) => {
+            if source.git.trim().is_empty() {
+                Some("git must not be empty")
+            } else if source.rev.trim().is_empty() {
+                Some("rev must select an immutable Git revision")
+            } else if source.package.trim().is_empty() {
+                Some("Git package must not be empty")
+            } else if source
+                .path
+                .as_ref()
+                .is_some_and(|path| path.trim().is_empty())
+            {
+                Some("Git package path must not be empty")
+            } else {
+                None
+            }
+        }
+        ServiceSource::Registry(source) => {
+            if source.registry.trim().is_empty() {
+                Some("registry must not be empty")
+            } else if source.version.trim().is_empty() {
+                Some("version must not be empty")
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(message) = invalid {
+        errors.push(ValidationError::InvalidService {
+            service: service.to_owned(),
+            message: message.to_owned(),
+        });
     }
 }
 

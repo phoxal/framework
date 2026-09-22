@@ -71,10 +71,16 @@ pub struct PortSignature {
     pub method: &'static str,
     /// Semantic port kind.
     pub kind: PortKind,
+    /// Cardinality-derived public method shape.
+    pub shape: crate::contract::MethodShape,
     /// Fully-qualified request message name.
     pub request: &'static str,
     /// Fully-qualified response message name.
     pub response: &'static str,
+    /// Whether an observation replays its latest accepted value.
+    pub retained_latest: bool,
+    /// Contract-owned lease interval for a replaceable call or observation.
+    pub lease_valid_for_ms: Option<u64>,
     descriptor_set: &'static [u8],
 }
 
@@ -84,8 +90,11 @@ impl PartialEq for PortSignature {
             && self.service == other.service
             && self.method == other.method
             && self.kind == other.kind
+            && self.shape == other.shape
             && self.request == other.request
             && self.response == other.response
+            && self.retained_latest == other.retained_latest
+            && self.lease_valid_for_ms == other.lease_valid_for_ms
             && self.descriptor_set == other.descriptor_set
     }
 }
@@ -98,8 +107,11 @@ impl std::hash::Hash for PortSignature {
         self.service.hash(state);
         self.method.hash(state);
         self.kind.hash(state);
+        self.shape.hash(state);
         self.request.hash(state);
         self.response.hash(state);
+        self.retained_latest.hash(state);
+        self.lease_valid_for_ms.hash(state);
         self.descriptor_set.hash(state);
     }
 }
@@ -134,9 +146,39 @@ impl PortSignature {
             service,
             method,
             kind,
+            shape: match kind {
+                PortKind::Setpoint | PortKind::Read | PortKind::Commands => {
+                    crate::contract::MethodShape::Call
+                }
+                PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream => {
+                    crate::contract::MethodShape::Observation
+                }
+            },
             request,
             response,
+            retained_latest: matches!(kind, PortKind::State),
+            lease_valid_for_ms: None,
             descriptor_set,
+        }
+    }
+
+    /// Creates an internal runtime endpoint from a generated method contract.
+    #[must_use]
+    pub const fn from_method(method: crate::contract::MethodSignature, kind: PortKind) -> Self {
+        Self {
+            name: method.endpoint,
+            service: method.service,
+            method: method.method,
+            kind,
+            shape: method.shape,
+            request: method.request,
+            response: method.response,
+            retained_latest: method.retained_latest,
+            lease_valid_for_ms: match method.lease {
+                Some(lease) => Some(lease.valid_for_ms()),
+                None => None,
+            },
+            descriptor_set: method.descriptor_set(),
         }
     }
 
@@ -234,6 +276,15 @@ macro_rules! payload_descriptor {
         }
 
         impl<T> $name<T> {
+            /// Creates an internal typed descriptor from complete method metadata.
+            #[must_use]
+            pub const fn from_signature(signature: PortSignature) -> Self {
+                Self {
+                    signature,
+                    payload: PhantomData,
+                }
+            }
+
             /// Creates an inert descriptor for a generated public port name.
             #[must_use]
             pub const fn new(name: &'static str) -> Self {
@@ -330,6 +381,15 @@ macro_rules! exchange_descriptor {
         }
 
         impl<Request, Response> $name<Request, Response> {
+            /// Creates an internal typed descriptor from complete method metadata.
+            #[must_use]
+            pub const fn from_signature(signature: PortSignature) -> Self {
+                Self {
+                    signature,
+                    exchange: PhantomData,
+                }
+            }
+
             /// Creates an inert descriptor for a generated public port name.
             #[must_use]
             pub const fn new(name: &'static str) -> Self {

@@ -23,7 +23,7 @@ use crate::project::selection::PackageSource;
 use crate::project::validation;
 use crate::project::{CargoOptions, Error, PreparedProject, RobotDocument};
 use phoxal::artifact::RuntimeRecord;
-use phoxal::scenario::{Action, Program};
+use phoxal::scenario::__internal::{Action, Program};
 
 // Re-exports from the framework artifact module. The module is the source of
 // truth for every record the bundle exchanges; this module
@@ -33,10 +33,9 @@ use phoxal::artifact::bundle::{BundleActuationBinding, SimulationProviderBinding
 pub use phoxal::artifact::bundle::{
     BundleCargoInvocation, BundleComponent, BundleEnvironment, BundleExecutable, BundleFile,
     BundleGitSource, BundleManifest, BundleModelClosure, BundleNativeTool, BundlePackage,
-    BundleProvenance, BundleResource, BundleScenarioProducer, BundleScenarioSection,
-    BundleSimulation, BundleSimulationProvider, BundleSource, BundleSourceClosure,
-    BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
-    DEFAULT_SCENARIO_PROGRAM_PATH, SimulationModelFacts, digest_source_files,
+    BundleProvenance, BundleResource, BundleSimulation, BundleSimulationProvider, BundleSource,
+    BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
+    SimulationModelFacts, digest_source_files,
 };
 
 /// Test helper for constructing validated simulation model facts.
@@ -109,10 +108,9 @@ impl CompiledBundle {
     }
 }
 
-/// One scenario bundle input handed to the tool assembler by the
-/// case-host path. Owned by the tool layer because the fixture
-/// reference and the prepared program live in the tool's runtime.
-pub(crate) struct ScenarioBundleInput<'a> {
+/// Run-only graph input used to validate a simulation specification without
+/// changing the immutable robot bundle.
+pub(crate) struct SimulationRunInput<'a> {
     pub(crate) program: &'a Program,
     pub(crate) fixture_instance_id: &'a str,
 }
@@ -135,7 +133,7 @@ pub(crate) fn assemble_with_inputs(
     output: impl AsRef<Path>,
     expected_inputs: Option<&BuildInputs>,
     simulation_facts: Option<&SimulationModelFacts>,
-    scenario: Option<ScenarioBundleInput<'_>>,
+    simulation_run: Option<SimulationRunInput<'_>>,
 ) -> Result<CompiledBundle, Error> {
     options.validate()?;
     let output = output.as_ref();
@@ -259,24 +257,34 @@ pub(crate) fn assemble_with_inputs(
         .iter()
         .map(|(key, (_, _, _, contract))| (key.clone(), contract.clone()))
         .collect::<BTreeMap<_, _>>();
-    let mut document = prepared.document().clone();
-    if let Some(scenario) = scenario.as_ref() {
+    let document = bundle_document(prepared.document());
+    let mut execution_document = document.clone();
+    if let Some(scenario) = simulation_run.as_ref() {
         apply_scenario_substitutions(
-            &mut document,
+            &mut execution_document,
             scenario.program,
             scenario.fixture_instance_id,
             &simulation_contracts,
         )?;
     }
     validation::validate_configurations(prepared, &contract_map)?;
-    let virtual_producers = scenario
+    crate::project::artifact::validate_descriptor_closure_consistency(
+        contract_map
+            .iter()
+            .map(|((_, instance), contract)| (instance.as_str(), contract)),
+    )
+    .map_err(|error| Error::ArtifactInvalid {
+        path: prepared.cargo_manifest_path().to_owned(),
+        message: error.to_string(),
+    })?;
+    let virtual_producers = simulation_run
         .as_ref()
         .map(|scenario| vec![scenario.fixture_instance_id])
         .unwrap_or_default();
     validation::validate_connections_for_document_with_virtual_producers(
         prepared,
         &contract_map,
-        &document,
+        &execution_document,
         &virtual_producers,
     )?;
     verify_build_inputs(prepared, &build_inputs)?;
@@ -330,28 +338,6 @@ pub(crate) fn assemble_with_inputs(
     let simulation = simulation_facts
         .map(|facts| build_simulation_definition(prepared, facts, &simulation_contracts))
         .transpose()?;
-    let scenario = scenario
-        .map(|scenario| {
-            let program_path = staged_root.join(DEFAULT_SCENARIO_PROGRAM_PATH);
-            scenario
-                .program
-                .write_to(&program_path)
-                .map_err(|error| Error::SimulationInvalid {
-                    message: format!(
-                        "cannot write scenario program `{}`: {error}",
-                        scenario.program.scenario_name()
-                    ),
-                })?;
-            let mut section = BundleScenarioSection::from_program_artifact(
-                scenario.program.scenario_name(),
-                scenario.fixture_instance_id,
-                DEFAULT_SCENARIO_PROGRAM_PATH,
-                scenario.program.program_bytes(),
-            )?;
-            section.producers = scenario_producers(scenario.program, scenario.fixture_instance_id)?;
-            Ok::<BundleScenarioSection, Error>(section)
-        })
-        .transpose()?;
     let RobotDocument::V0 { robot, .. } = prepared.document();
     let manifest = BundleManifest::V0 {
         robot_id: robot.id.clone(),
@@ -367,7 +353,6 @@ pub(crate) fn assemble_with_inputs(
         executables: executable_records,
         components,
         simulation,
-        scenario,
     };
     let provenance = provenance(
         prepared,
@@ -394,46 +379,13 @@ pub(crate) fn assemble_with_inputs(
     })
 }
 
-fn scenario_producers(
-    program: &Program,
-    instance: &str,
-) -> Result<Vec<BundleScenarioProducer>, Error> {
-    let mut producers = BTreeMap::new();
-    for step in program.steps() {
-        let (signature, bytes) = match &step.action {
-            Action::Setpoint {
-                consumer_signature,
-                encoded_payload,
-                ..
-            } => (consumer_signature, encoded_payload.len()),
-            Action::Withdraw {
-                producer_signature, ..
-            } => (producer_signature, 0),
-            Action::Command { .. } => continue,
-        };
-        let bytes = u32::try_from(bytes).map_err(|_| {
-            simulation_error(format!(
-                "scenario producer `{instance}.{}` payload exceeds u32",
-                signature.name
-            ))
-        })?;
-        producers
-            .entry(signature.name.to_owned())
-            .and_modify(|producer: &mut BundleScenarioProducer| {
-                producer.max_message_bytes = producer.max_message_bytes.max(bytes);
-            })
-            .or_insert_with(|| BundleScenarioProducer {
-                instance: instance.to_owned(),
-                port: signature.name.to_owned(),
-                service_fqn: signature.service.to_owned(),
-                method: signature.method.to_owned(),
-                kind: signature.kind.as_str().to_owned(),
-                request_fqn: signature.request.to_owned(),
-                response_fqn: signature.response.to_owned(),
-                max_message_bytes: bytes,
-            });
+fn bundle_document(document: &RobotDocument) -> RobotDocument {
+    let mut document = document.clone();
+    let RobotDocument::V0 { services, .. } = &mut document;
+    for service in services.values_mut() {
+        service.source = None;
     }
-    Ok(producers.into_values().collect())
+    document
 }
 
 fn apply_scenario_substitutions(
@@ -448,7 +400,7 @@ fn apply_scenario_substitutions(
             "scenario fixture instance id must not be empty",
         ));
     }
-    let mut substitutions = BTreeMap::<String, (String, phoxal::port::PortSignature)>::new();
+    let mut substitutions = BTreeMap::<String, (String, phoxal::__private::PortSignature)>::new();
     for step in program.steps() {
         let (target_instance, signature) = match &step.action {
             Action::Setpoint {
@@ -491,7 +443,7 @@ fn apply_scenario_substitutions(
                     "scenario target `{consumer}` has no compiled input port `{target_port}`"
                 ))
             })?;
-        if input.kind != crate::project::artifact::InputKind::Setpoint {
+        if input.role != crate::project::artifact::InputRole::LeasedValue {
             return Err(simulation_error(format!(
                 "scenario substitution `{consumer}` is not a setpoint input"
             )));
@@ -505,7 +457,7 @@ fn apply_scenario_substitutions(
                 .as_deref()
                 .is_none_or(|request| request == signature.request)
             && input.response_fqn.as_deref() == Some(signature.response)
-            && signature.kind == phoxal::port::PortKind::Setpoint;
+            && signature.kind == phoxal::__private::PortKind::Setpoint;
         if !signature_matches {
             return Err(simulation_error(format!(
                 "scenario substitution `{consumer}` expects {} -> {}, compiled consumer records {:?} -> {:?} on port {:?}",
@@ -555,7 +507,7 @@ fn build_simulation_definition(
             let Some(port) = output.port.as_ref() else {
                 continue;
             };
-            if output_port_kind(output).is_some() {
+            if is_observation_output(output) {
                 expected_provider_keys.insert((instance.clone(), port.clone()));
             }
         }
@@ -584,19 +536,20 @@ fn build_simulation_definition(
                 provider.service_instance, provider.port
             ))
         })?;
-        let Some(expected_kind) = output_port_kind(output) else {
+        if !is_observation_output(output) {
             return Err(simulation_error(format!(
                 "simulation provider `{}.{}` is not an observation output",
                 provider.service_instance, provider.port
             )));
-        };
+        }
         let signature = output.signature.as_ref().ok_or_else(|| {
             simulation_error(format!(
                 "simulation provider `{}.{}` has no generated signature",
                 provider.service_instance, provider.port
             ))
         })?;
-        if provider.kind != expected_kind
+        if provider.shape != crate::project::artifact::MethodShape::Observation
+            || signature.shape != crate::project::artifact::MethodShape::Observation
             || provider.input_fqn != signature.request
             || provider.payload_fqn != signature.response
         {
@@ -612,7 +565,7 @@ fn build_simulation_definition(
         .filter(|(instance, _)| !driver_instances.contains(*instance))
         .flat_map(|(instance, contract)| {
             public_outputs(contract)
-                .filter(|output| output.kind == crate::project::artifact::OutputKind::Setpoint)
+                .filter(|output| is_leased_method_output(output))
                 .filter_map(|output| output.port.clone().map(|port| (instance.clone(), port)))
         })
         .collect::<BTreeSet<_>>();
@@ -641,10 +594,10 @@ fn build_simulation_definition(
             .iter()
             .find(|input| input.name == consumer.port)
             .ok_or_else(|| simulation_error("native driver input has no compiled contract"))?;
-        if input.kind != crate::project::artifact::InputKind::Setpoint {
+        if input.role != crate::project::artifact::InputRole::LeasedValue {
             return Err(simulation_error(format!(
-                "native substitution does not support driver input `{}.{}` of kind {:?}",
-                consumer.instance, consumer.port, input.kind
+                "native substitution does not support driver input `{}.{}` with role {:?}",
+                consumer.instance, consumer.port, input.role
             )));
         }
         for source in sources.as_slice() {
@@ -671,7 +624,7 @@ fn build_simulation_definition(
                 binding.service_instance, binding.port
             ))
         })?;
-        if output.kind != crate::project::artifact::OutputKind::Setpoint {
+        if !is_leased_method_output(output) {
             return Err(simulation_error(format!(
                 "simulation actuation `{}.{}` is not a generated setpoint",
                 binding.service_instance, binding.port
@@ -728,7 +681,9 @@ fn build_simulation_definition(
                 port: provider.port.clone(),
                 service_fqn: signature.service.clone(),
                 method: signature.method.clone(),
-                kind: provider.kind,
+                shape: provider.shape,
+                retained_latest: signature.retained_latest,
+                lease_valid_for_ms: signature.lease_valid_for_ms,
                 input_fqn: provider.input_fqn.clone(),
                 payload_fqn: provider.payload_fqn.clone(),
                 max_message_bytes,
@@ -776,16 +731,19 @@ fn public_output<'a>(
     public_outputs(contract).find(|output| output.port.as_deref() == Some(port))
 }
 
-fn output_port_kind(
-    output: &crate::project::artifact::OutputRecord,
-) -> Option<crate::project::artifact::PortKind> {
-    Some(match output.kind {
-        crate::project::artifact::OutputKind::State => crate::project::artifact::PortKind::State,
-        crate::project::artifact::OutputKind::Sample => crate::project::artifact::PortKind::Sample,
-        crate::project::artifact::OutputKind::Event => crate::project::artifact::PortKind::Event,
-        crate::project::artifact::OutputKind::Stream => crate::project::artifact::PortKind::Stream,
-        _ => return None,
-    })
+fn is_observation_output(output: &crate::project::artifact::OutputRecord) -> bool {
+    output.role == crate::project::artifact::OutputRole::Method
+        && output.signature.as_ref().is_some_and(|signature| {
+            signature.shape == crate::project::artifact::MethodShape::Observation
+        })
+}
+
+fn is_leased_method_output(output: &crate::project::artifact::OutputRecord) -> bool {
+    output.role == crate::project::artifact::OutputRole::Method
+        && output
+            .signature
+            .as_ref()
+            .is_some_and(|signature| signature.lease_valid_for_ms.is_some())
 }
 
 fn provider_bounds(
@@ -809,9 +767,12 @@ fn provider_bounds(
     }
     let max_buffered_items = output
         .max_items
-        .or(match output.kind {
-            crate::project::artifact::OutputKind::State => Some(1),
-            _ => None,
+        .or_else(|| {
+            output
+                .signature
+                .as_ref()
+                .is_some_and(|signature| signature.retained_latest)
+                .then_some(1)
         })
         .ok_or_else(|| {
             simulation_error(format!(
@@ -845,13 +806,7 @@ fn validate_simulation_facts(facts: &SimulationModelFacts) -> Result<(), Error> 
     for provider in &facts.providers {
         validate_simulation_segment(&provider.service_instance, "provider service instance")?;
         validate_simulation_segment(&provider.port, "provider port")?;
-        if !matches!(
-            provider.kind,
-            crate::project::artifact::PortKind::State
-                | crate::project::artifact::PortKind::Sample
-                | crate::project::artifact::PortKind::Event
-                | crate::project::artifact::PortKind::Stream
-        ) {
+        if provider.shape != crate::project::artifact::MethodShape::Observation {
             return Err(simulation_error(format!(
                 "simulation provider `{}.{}` has an unsupported observation kind",
                 provider.service_instance, provider.port
@@ -3436,7 +3391,9 @@ mod tests {
                 rate_microhertz: 100_000_000,
                 service_instance: "imu".to_owned(),
                 port: "sample".to_owned(),
-                kind: crate::project::artifact::PortKind::Sample,
+                shape: crate::project::artifact::MethodShape::Observation,
+                retained_latest: false,
+                lease_valid_for_ms: None,
                 input_fqn: "google.protobuf.Empty".to_owned(),
                 payload_fqn: "example.Imu".to_owned(),
             }],
@@ -3741,37 +3698,5 @@ mod tests {
         ));
         drop(held);
         acquire_bundle_publication_lock(&output).expect("released publication lock");
-    }
-
-    #[test]
-    fn scenario_section_records_digest_and_is_round_trip_serializable() {
-        // The project side must hand the supervisor an exact identity
-        // for the program artifact it ships in the bundle. This is
-        // the contract that `ScenarioProgramRef::verify_against`
-        // checks on the supervisor side.
-        let bytes = b"phoxal scenario program bytes";
-        let section = BundleScenarioSection::from_program_artifact(
-            "scenarios/Demo",
-            "fixture",
-            "program.bin",
-            bytes,
-        )
-        .expect("scenario section");
-        assert_eq!(section.marker, "phoxal/scenario/nondeployable@1");
-        assert_eq!(section.program.scenario_name, "scenarios/Demo");
-        assert_eq!(section.program.program_path, "program.bin");
-        assert_eq!(section.program.program_byte_length, bytes.len() as u32);
-        assert_eq!(section.program.fixture_instance_id, "fixture");
-        assert!(section.program.controlled_execution);
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(section.program.program_digest, expected);
-
-        // The supervisor uses serde_json to deserialize the manifest.
-        // The section must round-trip without losing or renaming fields.
-        let json = serde_json::to_string(&section).expect("serialize");
-        let restored: BundleScenarioSection = serde_json::from_str(&json).expect("parse");
-        assert_eq!(restored, section);
     }
 }

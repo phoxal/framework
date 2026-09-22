@@ -3,7 +3,7 @@
 //! [`crate::session::connect`] opens one bounded physical connection from a [`crate::session::ConnectionConfig`].
 //! A [`crate::session::Connection`] can discover supervisors and open an independent logical [`crate::session::Supervisor`] session for each selected target.
 //! [`crate::session::Supervisor::management`] exposes lifecycle information, [`crate::session::Supervisor::execution`] selects an exact execution, and [`crate::session::Supervisor::simulation`] accesses the separately authorized simulation contract.
-//! An [`crate::session::Execution`] selects a [`crate::session::Service`], whose [`crate::session::Service::port`] method accepts generated service-owned port descriptors and returns only the operations valid for that port kind.
+//! An [`crate::session::Execution`] selects a [`crate::session::Service`], whose [`crate::session::Service::method`] function binds generated call and observation descriptors.
 //! Closing one logical supervisor session does not close its sibling sessions; [`crate::session::Connection::close`] owns the shared transport lifetime.
 //!
 //! Supervisor-owned server state is not re-exported through this client API.
@@ -19,8 +19,7 @@ pub use crate::communication_transport::{
 };
 pub use error::SessionError;
 pub use public::{
-    CommandHandle, CommandOutcome, Connection, ConnectionConfig, EventHandle, EventSubscription,
-    Execution, Management, ReadHandle, ReadOutcome, SampleHandle, SampleSubscription, Service,
-    Simulation, StateHandle, StateSubscription, StateSubscriptionItem, StreamHandle,
-    StreamSubscription, SubscriptionItem, Supervisor, connect,
+    CallHandle, CallOutcome, Connection, ConnectionConfig, Execution, Management,
+    ObservationHandle, ObservationItem, ObservationSubscription, PublicMethodDescriptor, Service,
+    Simulation, Supervisor, connect,
 };

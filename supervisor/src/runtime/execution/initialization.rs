@@ -37,7 +37,14 @@ impl RuntimeExecutionProtocol {
             let initialized_ports = self.inner.artifacts[&runtime.instance]
                 .service_outputs
                 .iter()
-                .filter(|output| output.kind == "state" && output.bootstrap)
+                .filter(|output| {
+                    output.role == "method"
+                        && output.bootstrap
+                        && output
+                            .signature
+                            .as_ref()
+                            .is_some_and(|signature| signature.retained_latest)
+                })
                 .filter_map(|output| output.port.as_deref())
                 .collect::<BTreeSet<_>>();
             if response.required_products.iter().any(|product| {

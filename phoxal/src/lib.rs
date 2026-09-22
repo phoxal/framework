@@ -13,6 +13,7 @@
 extern crate self as phoxal;
 
 pub mod geometry;
+#[cfg(feature = "runtime")]
 mod sample_schedule;
 
 /// Opaque execution, producer, and timeline identities used by the runtime
@@ -56,12 +57,18 @@ pub mod session;
 pub mod communication_transport;
 
 /// Framework result type backed by `anyhow`.
+#[cfg(any(feature = "runtime", feature = "scenario"))]
 pub use anyhow::{Result, anyhow};
 
-/// Inert generated public-port descriptors.
-#[cfg(feature = "port")]
-#[cfg_attr(docsrs, doc(cfg(feature = "port")))]
-pub mod port;
+/// Inert generated service-method descriptors and robot-instance operations.
+#[cfg(feature = "contract")]
+#[cfg_attr(docsrs, doc(cfg(feature = "contract")))]
+pub mod contract;
+
+// Private compatibility descriptors used only by runtime and scenario
+// implementation adapters during the direct generated-method cutover.
+#[cfg(any(feature = "runtime", feature = "scenario"))]
+mod port;
 
 /// Framework-owned shared robotics vocabulary: generated Protobuf messages
 /// and their domain validation. Independent of the protocol/transport
@@ -73,8 +80,7 @@ pub mod robotics;
 
 /// Authoring helper for Protobuf build scripts.
 ///
-/// Re-exports `compile_protos`, `compile_protos_with_dependencies`, the
-/// `DependencyDescriptor` input, the shared `PORT_PROTO` option definition,
+/// Re-exports the Protobuf contract compiler, dependency descriptor input,
 /// and the `include_dir` / `descriptor_set_path` lookups over the internal
 /// `phoxal-build` implementation helper.
 ///
@@ -90,45 +96,65 @@ pub mod build;
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::{Config, runtime};
 
-/// `#[phoxal::scenario]` attribute for `impl Scenario` blocks.
+/// `#[phoxal::scenario]` attribute for function-based simulation tests.
 #[cfg(feature = "scenario")]
 #[cfg_attr(docsrs, doc(cfg(feature = "scenario")))]
 pub use phoxal_macros::scenario;
 
+#[cfg(feature = "runtime")]
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// The current runtime attribute namespace.
-#[cfg(feature = "runtime")]
+#[cfg(any(feature = "runtime", feature = "scenario"))]
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::port::{PortDescriptor, PortKind};
+    pub use crate::port::*;
+    #[cfg(feature = "runtime")]
     pub use anyhow;
 
+    #[cfg(feature = "runtime")]
     pub trait StatePortValue<Value>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait SamplePortValue<Value>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait EventPortValue<Value>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait StreamPortValue<Value>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait SetpointPortValue<Value>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait ReadPortValue<Request, Response>: PortDescriptor {}
+    #[cfg(feature = "runtime")]
     pub trait CommandsPortValue<Request, Response>: PortDescriptor {}
 
+    #[cfg(feature = "runtime")]
     impl<T: 'static> StatePortValue<T> for crate::port::State<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> StatePortValue<crate::runtime::Sample<T>> for crate::port::State<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> SamplePortValue<T> for crate::port::Sample<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> EventPortValue<T> for crate::port::Event<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> StreamPortValue<T> for crate::port::Stream<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> SetpointPortValue<T> for crate::port::Setpoint<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> SetpointPortValue<Option<&T>> for crate::port::Setpoint<T> {}
+    #[cfg(feature = "runtime")]
     impl<T: 'static> SetpointPortValue<Option<T>> for crate::port::Setpoint<T> {}
+    #[cfg(feature = "runtime")]
     impl<Request: 'static, Response: 'static> ReadPortValue<Request, Response>
         for crate::port::Read<Request, Response>
     {
     }
+    #[cfg(feature = "runtime")]
     impl<Request: 'static, Response: 'static> CommandsPortValue<Request, Response>
         for crate::port::Commands<Request, Response>
     {
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_state_port<P, Value>(port: P)
     where
         P: StatePortValue<Value>,
@@ -137,6 +163,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::State);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_sample_port<P, Value>(port: P)
     where
         P: SamplePortValue<Value>,
@@ -145,6 +172,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Sample);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_event_port<P, Value>(port: P)
     where
         P: EventPortValue<Value>,
@@ -153,6 +181,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Event);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_stream_port<P, Value>(port: P)
     where
         P: StreamPortValue<Value>,
@@ -161,6 +190,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Stream);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_setpoint_port<P, Value>(port: P)
     where
         P: SetpointPortValue<Value>,
@@ -169,6 +199,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Setpoint);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_read_port<P, Request, Response>(port: P)
     where
         P: ReadPortValue<Request, Response>,
@@ -177,6 +208,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Read);
     }
 
+    #[cfg(feature = "runtime")]
     pub fn assert_commands_port<P, Request, Response>(port: P)
     where
         P: CommandsPortValue<Request, Response>,
@@ -185,6 +217,7 @@ pub mod __private {
         assert_kind::<P>(PortKind::Commands);
     }
 
+    #[cfg(feature = "runtime")]
     fn assert_kind<P: PortDescriptor>(expected: PortKind) {
         assert!(
             P::KIND == expected,

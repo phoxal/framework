@@ -80,7 +80,7 @@ enum ExecutionState {
   EXECUTION_STATE_STOPPED = 6;
 }
 
-message ListPortsRequest {
+message ListMethodsRequest {
   string execution_id = 1;
   string service_instance = 2;
   uint32 page_size = 3;
@@ -88,41 +88,38 @@ message ListPortsRequest {
   bytes session_id = 10;
 }
 
-message ListPortsResponse {
-  repeated PortMetadata ports = 1;
+message ListMethodsResponse {
+  repeated MethodMetadata methods = 1;
   bytes next_page_token = 2;
 }
 
-message PortMetadata {
-  string name = 1;
-  PortKind kind = 2;
+message MethodMetadata {
+  string endpoint = 1;
+  MethodShape shape = 2;
   string input_fqn = 3;
   string output_fqn = 4;
   uint32 max_message_bytes = 5;
   uint32 max_buffered_items = 6;
+  bool retained_latest = 7;
+  optional uint64 lease_valid_for_ms = 8;
 }
 
-enum PortKind {
-  PORT_KIND_UNSPECIFIED = 0;
-  PORT_KIND_STATE = 1;
-  PORT_KIND_SAMPLE = 2;
-  PORT_KIND_EVENT = 3;
-  PORT_KIND_STREAM = 4;
-  PORT_KIND_SETPOINT = 5;
-  PORT_KIND_READ = 6;
-  PORT_KIND_COMMANDS = 7;
+enum MethodShape {
+  METHOD_SHAPE_UNSPECIFIED = 0;
+  METHOD_SHAPE_CALL = 1;
+  METHOD_SHAPE_OBSERVATION = 2;
 }
 
-message BindPortRequest {
+message BindMethodRequest {
   bytes session_id = 1;
   string execution_id = 2;
   string service_instance = 3;
-  PortMetadata expected = 4;
+  MethodMetadata expected = 4;
 }
 
-message BindPortResponse {
+message BindMethodResponse {
   bytes binding_id = 1;
-  PortMetadata admitted = 2;
+  MethodMetadata admitted = 2;
 }
 
 message OperationRequest {

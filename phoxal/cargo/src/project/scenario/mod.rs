@@ -1,24 +1,9 @@
-//! Scenario tooling bridge.
+//! Command-scoped host for ordinary Rust simulation tests.
 //!
-//! The [`discovery`] module scans `<robot-root>/scenarios/` for two file
-//! layouts:
-//!
-//! - `scenarios/<name>.rs`
-//! - `scenarios/<name>/mod.rs`
-//!
-//! Public scenario identity is the struct name (`scenarios/<StructIdent>`,
-//! per the plan), so this module's job is to turn those paths into the
-//! generated harness `#[path = "..."] mod ...;` declarations.
-//!
-//! The auto Cargo integration (test target + dev-dep) lives in
-//! `phoxal/cargo/src/project/preparation.rs`; the actual
-//! `cargo metadata` / `cargo test --no-run` invocation lives in `run.rs`.
+//! [`fixture_host`] owns the bounded protocol shared with test processes.
+//! `run_host` starts the test command, serves fixture requests, launches the
+//! supervisor and simulator for an executing test, and returns the original
+//! Cargo test outcome.
 
-pub mod case_host;
-mod discovery;
-mod harness;
-mod run;
-
-pub use discovery::{DiscoveredScenario, discover_scenarios};
-pub use harness::generate_harness_source;
-pub use run::{ScenarioRunError, list_scenarios, run_scenario};
+pub(crate) mod fixture_host;
+mod run_host;

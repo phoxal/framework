@@ -2,7 +2,9 @@
 //! ordering, explicit validity, bounded occurrences, and validation that
 //! the schedule fits inside the requested duration.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -10,6 +12,7 @@ use crate::port::PortSignature;
 
 /// One finite simulated experiment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ScenarioPlan {
     pub scene: PathBuf,
     pub duration: Duration,
@@ -20,6 +23,7 @@ pub struct ScenarioPlan {
     pub captures: Vec<Capture>,
 }
 
+#[cfg(test)]
 impl ScenarioPlan {
     /// Construct a minimal plan with no actions or captures.
     pub fn new(scene: impl Into<PathBuf>, duration: Duration) -> Self {
@@ -187,9 +191,7 @@ pub enum Action {
         target_instance: String,
         consumer_signature: PortSignature,
         encoded_payload: Vec<u8>,
-        /// Authoritative validity of the resulting intent. `Permanent`
-        /// (the only supported variant today) means the intent remains
-        /// until a subsequent setpoint or an explicit withdraw.
+        /// Authoritative validity of the resulting intent.
         validity: Validity,
     },
     /// Withdraw the targeted producer's published state without
@@ -220,19 +222,20 @@ pub enum Action {
 }
 
 /// Authoritative validity of a setpoint's resulting intent.
-/// Only the persistent variant is currently supported; finite-lifetime intent (timeout-bound
-/// intents that revert on expiry) is a future expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Validity {
     /// The intent remains in effect until replaced by another setpoint
     /// or an explicit withdraw.
     Permanent,
+    /// The intent expires unless another accepted action renews it.
+    Lease { valid_for_ms: u64 },
 }
 
 impl Validity {
-    pub(crate) fn wire_label(self) -> &'static str {
+    pub(crate) fn wire_label(self) -> String {
         match self {
-            Validity::Permanent => "permanent",
+            Validity::Permanent => "permanent".to_owned(),
+            Validity::Lease { valid_for_ms } => format!("lease:{valid_for_ms}"),
         }
     }
 }
@@ -363,6 +366,7 @@ impl Action {
     }
 }
 
+#[cfg(test)]
 impl Action {
     fn validate(&self, step_label: &str) -> Result<(), PlanValidationError> {
         match self {
@@ -470,14 +474,17 @@ pub enum Capture {
     State {
         name: String,
         signature: PortSignature,
+        policy: CapturePolicy,
     },
     Sample {
         name: String,
         signature: PortSignature,
+        policy: CapturePolicy,
     },
     Event {
         name: String,
         signature: PortSignature,
+        policy: CapturePolicy,
     },
     /// Native simulator body data, identified by documented units and
     /// reference frame so the verifier can interpret the bytes
@@ -487,6 +494,54 @@ pub enum Capture {
         units: String,
         frame: String,
     },
+}
+
+/// Retention and completeness promised for one observation capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum CapturePolicy {
+    /// Retain only the newest observed value.
+    Latest,
+    /// Retain at most `capacity` ordered values and report any discarded prefix.
+    BestEffortHistory { capacity: u32 },
+    /// Retain every value and fail the run if the declared capacity is exceeded.
+    RequiredHistory { capacity: u32 },
+}
+
+impl CapturePolicy {
+    #[must_use]
+    pub const fn latest() -> Self {
+        Self::Latest
+    }
+
+    pub fn best_effort_history(capacity: u32) -> crate::Result<Self> {
+        nonzero_capture_capacity(capacity).map(|capacity| Self::BestEffortHistory { capacity })
+    }
+
+    pub fn required_history(capacity: u32) -> crate::Result<Self> {
+        nonzero_capture_capacity(capacity).map(|capacity| Self::RequiredHistory { capacity })
+    }
+
+    #[must_use]
+    pub const fn capacity(self) -> u32 {
+        match self {
+            Self::Latest => 1,
+            Self::BestEffortHistory { capacity } | Self::RequiredHistory { capacity } => capacity,
+        }
+    }
+
+    #[must_use]
+    pub const fn requires_complete_history(self) -> bool {
+        matches!(self, Self::RequiredHistory { .. })
+    }
+}
+
+fn nonzero_capture_capacity(capacity: u32) -> crate::Result<u32> {
+    if capacity == 0 {
+        Err(crate::anyhow!("capture history capacity must be positive"))
+    } else {
+        Ok(capacity)
+    }
 }
 
 /// Errors returned by the typed capture constructors. Each variant
@@ -524,6 +579,14 @@ impl Capture {
     /// are rejected at construction so the program never observes a
     /// mismatched wire form.
     pub fn state(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        Self::state_with_policy(name, signature, CapturePolicy::Latest)
+    }
+
+    pub(crate) fn state_with_policy(
+        name: impl Into<String>,
+        signature: PortSignature,
+        policy: CapturePolicy,
+    ) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::state",
             crate::port::PortKind::State,
@@ -532,9 +595,22 @@ impl Capture {
         Ok(Self::State {
             name: name.into(),
             signature,
+            policy,
         })
     }
     pub fn sample(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        Self::sample_with_policy(
+            name,
+            signature,
+            CapturePolicy::BestEffortHistory { capacity: 4096 },
+        )
+    }
+
+    pub(crate) fn sample_with_policy(
+        name: impl Into<String>,
+        signature: PortSignature,
+        policy: CapturePolicy,
+    ) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::sample",
             crate::port::PortKind::Sample,
@@ -543,9 +619,22 @@ impl Capture {
         Ok(Self::Sample {
             name: name.into(),
             signature,
+            policy,
         })
     }
     pub fn event(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        Self::event_with_policy(
+            name,
+            signature,
+            CapturePolicy::BestEffortHistory { capacity: 4096 },
+        )
+    }
+
+    pub(crate) fn event_with_policy(
+        name: impl Into<String>,
+        signature: PortSignature,
+        policy: CapturePolicy,
+    ) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::event",
             crate::port::PortKind::Event,
@@ -554,7 +643,18 @@ impl Capture {
         Ok(Self::Event {
             name: name.into(),
             signature,
+            policy,
         })
+    }
+
+    #[must_use]
+    pub const fn policy(&self) -> Option<CapturePolicy> {
+        match self {
+            Self::State { policy, .. }
+            | Self::Sample { policy, .. }
+            | Self::Event { policy, .. } => Some(*policy),
+            Self::NativeBody { .. } => None,
+        }
     }
     /// Capture a documented native simulator body. The verifier needs
     /// the units and frame to interpret the bytes; both must be

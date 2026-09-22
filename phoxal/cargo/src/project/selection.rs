@@ -9,6 +9,7 @@ use crate::project::document::{
 };
 use crate::project::error::SourceError;
 use crate::project::publication::{RuntimePackageRole, validate_runtime_package};
+use crate::project::robot_api;
 
 /// A role selected by `robot.yaml` and resolved through the root Cargo graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -142,8 +143,8 @@ pub struct SourceSelection {
 /// Resolves explicit composition entries against Cargo's already resolved graph.
 ///
 /// This function never searches a registry and never performs fuzzy matching.
-/// An implementation or component field is a direct dependency key, while a
-/// service shorthand uses the service instance id as that exact key.
+/// Services resolve through the generated `robot_api` dependency graph while
+/// component fields remain direct root dependency keys.
 pub fn resolve_sources(
     document: &RobotDocument,
     metadata: &Metadata,
@@ -168,11 +169,7 @@ pub fn resolve_sources(
     let supervisor = resolve_supervisor(root, metadata)?;
     let mut services = BTreeMap::new();
     for (instance, selection) in authored_services {
-        let key = selection
-            .implementation
-            .as_deref()
-            .unwrap_or(instance)
-            .to_owned();
+        let key = format!("service_{}", instance.replace('-', "_"));
         services.insert(
             instance.to_owned(),
             resolve_service(instance, &key, selection, root, metadata)?,
@@ -468,7 +465,14 @@ fn resolve_service(
     root: &Package,
     metadata: &Metadata,
 ) -> Result<SelectedService, SourceError> {
-    let package = resolve_dependency(TargetRole::Service, instance, key, root, metadata)?;
+    let api = resolve_dependency(
+        TargetRole::Service,
+        instance,
+        robot_api::DEPENDENCY_KEY,
+        root,
+        metadata,
+    )?;
+    let package = resolve_package_dependency(TargetRole::Service, instance, key, api, metadata)?;
     validate_dependency_role(
         TargetRole::Service,
         instance,
@@ -476,7 +480,7 @@ fn resolve_service(
         package,
         RuntimePackageRole::Service,
     )?;
-    let library = package
+    let mut library = package
         .targets
         .iter()
         .find(|target| target.is_lib())
@@ -488,14 +492,15 @@ fn resolve_service(
             package: package.name.to_string(),
             target_kind: "library".to_owned(),
         })?;
-    let binary = select_binary(
+    library.feature_dependency = None;
+    let mut binary = select_binary(
         TargetRole::Service,
         instance,
         key,
         package,
         selection.binary.as_deref(),
     )?;
-    ensure_target_features(TargetRole::Service, instance, &binary, package)?;
+    binary.feature_dependency = None;
     Ok(SelectedService {
         instance: instance.to_owned(),
         dependency_key: key.to_owned(),
@@ -924,9 +929,9 @@ mod tests {
     }
 
     #[test]
-    fn service_selection_default_has_no_implementation_override() {
+    fn service_selection_default_has_no_source_or_binary_override() {
         let selection = ServiceSelection::default();
-        assert!(selection.implementation.is_none());
+        assert!(selection.source.is_none());
         assert!(selection.binary.is_none());
     }
 }

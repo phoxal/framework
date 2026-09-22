@@ -3,7 +3,7 @@ syntax = "proto3";
 package phoxal.navigation.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 
 message GoalTarget {
   string frame_id = 1;
@@ -109,18 +109,12 @@ message GetGoalStatusResponse {
 
 service Navigation {
   rpc Status(google.protobuf.Empty) returns (stream NavigationState) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 
-  rpc Commands(ApplyCommandRequest) returns (ApplyCommandResponse) {
-    option (phoxal.port.kind) = COMMANDS;
-  }
+  rpc ApplyCommand(ApplyCommandRequest) returns (ApplyCommandResponse);
 
-  rpc Finished(google.protobuf.Empty) returns (stream GoalFinished) {
-    option (phoxal.port.kind) = EVENT;
-  }
+  rpc Finished(google.protobuf.Empty) returns (stream GoalFinished);
 
-  rpc GetGoalStatus(GetGoalStatusRequest) returns (GetGoalStatusResponse) {
-    option (phoxal.port.kind) = READ;
-  }
+  rpc GetGoalStatus(GetGoalStatusRequest) returns (GetGoalStatusResponse);
 }

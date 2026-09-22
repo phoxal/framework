@@ -29,7 +29,8 @@ use super::public_backend::RuntimeBoundaryHook;
 use super::state::{ExecutionState, TimeMode};
 use crate::runtime::transport::server::PublicSimulationContext;
 use phoxal::artifact::simulation::{
-    ScenarioCaptureEvidence, ScenarioExecutionReport, ScenarioStepEvidence,
+    ScenarioCaptureEvidence, ScenarioExecutionReport, ScenarioObservationEvidence,
+    ScenarioStepEvidence,
 };
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
@@ -41,7 +42,7 @@ use phoxal::runtime::ExecutionTime;
 use phoxal::runtime::connection::Connection;
 use phoxal::runtime::execution_protocol::{self, wire};
 use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireControl, WireSample};
-use phoxal::scenario::{Action as ScenarioAction, Capture as ScenarioCapture, Program};
+use phoxal::scenario::__internal::{Action as ScenarioAction, Capture as ScenarioCapture, Program};
 use serde::Serialize;
 
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
@@ -137,6 +138,7 @@ struct ScenarioDriver {
 
 struct ScenarioCaptureSubscription {
     kind: &'static str,
+    policy: phoxal::scenario::CapturePolicy,
     subscriber: Subscriber,
 }
 
@@ -180,10 +182,22 @@ impl ScenarioDriver {
         let delivery_ack = declare(bus, "scenario", "delivery-ack").await?;
         let mut captures = BTreeMap::new();
         for capture in program.captures() {
-            let (name, signature, kind) = match capture {
-                ScenarioCapture::State { name, signature } => (name, signature, "state"),
-                ScenarioCapture::Sample { name, signature } => (name, signature, "sample"),
-                ScenarioCapture::Event { name, signature } => (name, signature, "event"),
+            let (name, signature, kind, policy) = match capture {
+                ScenarioCapture::State {
+                    name,
+                    signature,
+                    policy,
+                } => (name, signature, "state", *policy),
+                ScenarioCapture::Sample {
+                    name,
+                    signature,
+                    policy,
+                } => (name, signature, "sample", *policy),
+                ScenarioCapture::Event {
+                    name,
+                    signature,
+                    policy,
+                } => (name, signature, "event", *policy),
                 ScenarioCapture::NativeBody { .. } => continue,
             };
             let (instance, _) = scenario_capture_target(name).with_context(|| {
@@ -196,12 +210,20 @@ impl ScenarioDriver {
                     signature.name,
                     "publish",
                 )))
-                .with(zenoh::handlers::FifoChannel::new(MAX_PRODUCT_RECEIPTS))
+                .with(zenoh::handlers::FifoChannel::new(
+                    usize::try_from(policy.capacity())
+                        .unwrap_or(MAX_PRODUCT_RECEIPTS)
+                        .min(MAX_PRODUCT_RECEIPTS),
+                ))
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             captures.insert(
                 name.clone(),
-                ScenarioCaptureSubscription { kind, subscriber },
+                ScenarioCaptureSubscription {
+                    kind,
+                    policy,
+                    subscriber,
+                },
             );
         }
         let mut command_replies = BTreeMap::new();
@@ -287,9 +309,9 @@ impl RuntimeExecutionProtocol {
                 .transient_outputs
                 .iter()
                 .chain(&artifact.runtime.service_outputs)
-                .filter(|output| !matches!(output.kind.as_str(), "read" | "activate" | "operation"))
+                .filter(|output| output.role == "reply" || is_observation_method(output))
                 .map(|output| {
-                    let port = if output.kind == "reply" {
+                    let port = if output.role == "reply" {
                         artifact
                             .runtime
                             .inputs
@@ -312,7 +334,7 @@ impl RuntimeExecutionProtocol {
                 .transient_outputs
                 .iter()
                 .chain(artifact.runtime.service_outputs.iter())
-                .filter(|output| output.kind == "setpoint")
+                .filter(|output| is_leased_method(output))
                 .filter(|output| {
                     source.simulation().is_some_and(|simulation| {
                         simulation.actuation_bindings.iter().any(|binding| {
@@ -328,7 +350,7 @@ impl RuntimeExecutionProtocol {
                 .transient_outputs
                 .iter()
                 .chain(artifact.runtime.service_outputs.iter())
-                .filter(|output| output.kind == "setpoint")
+                .filter(|output| is_leased_method(output))
                 .filter_map(|output| {
                     output
                         .port
@@ -348,7 +370,7 @@ impl RuntimeExecutionProtocol {
                 .runtime
                 .service_outputs
                 .iter()
-                .any(|output| output.kind == "read")
+                .any(|output| output.project.is_some())
             {
                 Some(declare(&bus, &instance, "pin-read-views-response").await?)
             } else {
@@ -582,7 +604,15 @@ impl RuntimeExecutionProtocol {
         Some(ScenarioExecutionReport::V0 {
             scenario_name: scenario.program.scenario_name().to_owned(),
             steps: state.steps.clone(),
-            captures: state.captures.values().cloned().collect(),
+            captures: state
+                .captures
+                .values()
+                .cloned()
+                .map(|mut capture| {
+                    capture.terminal = true;
+                    capture
+                })
+                .collect(),
             command_replies: state.command_replies.clone(),
         })
     }
@@ -597,7 +627,7 @@ impl RuntimeExecutionProtocol {
             return Ok(());
         };
         let quantum_ns = u64::from(scenario.program.quantum().micros()) * 1_000;
-        let valid_until_ns = u64::from(scenario.program.transition_count())
+        let run_valid_until_ns = u64::from(scenario.program.transition_count())
             .checked_add(1)
             .and_then(|count| count.checked_mul(quantum_ns))
             .ok_or_else(|| "scenario validity bound overflowed".to_owned())?;
@@ -617,7 +647,7 @@ impl RuntimeExecutionProtocol {
                     target_instance,
                     consumer_signature,
                     encoded_payload,
-                    ..
+                    validity,
                 } => {
                     let mut metadata = RuntimeWireMetadata::data(
                         "scenario",
@@ -631,7 +661,16 @@ impl RuntimeExecutionProtocol {
                         0,
                     )
                     .with_eligible_boundary(eligible_boundary);
-                    metadata.expires_at_nanos = Some(valid_until_ns);
+                    metadata.expires_at_nanos = Some(match validity {
+                        phoxal::scenario::__internal::Validity::Permanent => run_valid_until_ns,
+                        phoxal::scenario::__internal::Validity::Lease { valid_for_ms } => {
+                            logical_time_ns
+                                .checked_add(valid_for_ms.checked_mul(1_000_000).ok_or_else(
+                                    || "scenario lease validity overflowed".to_owned(),
+                                )?)
+                                .ok_or_else(|| "scenario lease expiry overflowed".to_owned())?
+                        }
+                    });
                     publish_scenario_sample(
                         &self.inner.bus,
                         "scenario",
@@ -792,11 +831,21 @@ impl RuntimeExecutionProtocol {
         };
         let mut state = scenario.state.lock().await;
         for (name, capture) in &scenario.captures {
+            state
+                .captures
+                .entry(name.clone())
+                .or_insert_with(|| ScenarioCaptureEvidence {
+                    name: name.clone(),
+                    kind: capture.kind.to_owned(),
+                    records: Vec::new(),
+                    gap_before_first: false,
+                    complete: true,
+                    terminal: false,
+                });
             while let Ok(Some(sample)) = capture.subscriber.try_recv() {
                 let Ok(sample) = WireSample::from_zenoh(sample) else {
                     continue;
                 };
-                let boundary = sample.metadata().delivery_boundary().unwrap_or_default();
                 let entry =
                     state
                         .captures
@@ -804,14 +853,52 @@ impl RuntimeExecutionProtocol {
                         .or_insert_with(|| ScenarioCaptureEvidence {
                             name: name.clone(),
                             kind: capture.kind.to_owned(),
-                            boundary,
-                            payloads: Vec::new(),
+                            records: Vec::new(),
+                            gap_before_first: false,
+                            complete: true,
+                            terminal: false,
                         });
-                entry.boundary = boundary;
-                if capture.kind == "state" {
-                    entry.payloads.clear();
+                let metadata = sample.metadata();
+                let Some(source) = metadata.publisher().map(str::to_owned) else {
+                    entry.complete = false;
+                    entry.gap_before_first = true;
+                    continue;
+                };
+                let Some(sequence) = metadata.sequence else {
+                    entry.complete = false;
+                    entry.gap_before_first = true;
+                    continue;
+                };
+                let Ok(capture_time) = metadata.logical_time() else {
+                    entry.complete = false;
+                    entry.gap_before_first = true;
+                    continue;
+                };
+                let capacity = usize::try_from(capture.policy.capacity()).unwrap_or(usize::MAX);
+                match capture.policy {
+                    phoxal::scenario::CapturePolicy::Latest => {
+                        entry.records.clear();
+                    }
+                    phoxal::scenario::CapturePolicy::BestEffortHistory { .. }
+                        if entry.records.len() >= capacity =>
+                    {
+                        entry.records.remove(0);
+                        entry.gap_before_first = true;
+                    }
+                    phoxal::scenario::CapturePolicy::RequiredHistory { .. }
+                        if entry.records.len() >= capacity =>
+                    {
+                        entry.complete = false;
+                        continue;
+                    }
+                    _ => {}
                 }
-                entry.payloads.push(sample.payload().to_vec());
+                entry.records.push(ScenarioObservationEvidence {
+                    payload: sample.payload().to_vec(),
+                    source,
+                    capture_time_ns: capture_time.as_nanos(),
+                    sequence,
+                });
             }
         }
         for subscriber in scenario.command_replies.values() {
@@ -1309,7 +1396,7 @@ fn input_sources(
                 .insert((source_instance.to_owned(), source_port.to_owned()));
         }
     }
-    for input in inputs.iter().filter(|input| input.kind == "commands") {
+    for input in inputs.iter().filter(|input| input.role == "call_ingress") {
         let port = input.port.as_deref().unwrap_or(&input.name);
         let callers = providers.entry(input.name.clone()).or_default();
         callers.insert(("supervisor".into(), port.to_owned()));
@@ -1368,7 +1455,7 @@ fn graph_delivery_routes(
         });
         let input = input
             .with_context(|| format!("connection consumer `{consumer}` has no declared input"))?;
-        let kind = input.kind.as_str();
+        let role = input.role.as_str();
         let receiving_field = format!("{consumer_instance}.{}", input.name);
         for source in connection_source_values(consumer, source_values)? {
             let (source_instance, source_port) = source
@@ -1377,17 +1464,17 @@ fn graph_delivery_routes(
             if source_instance.is_empty() || source_port.is_empty() {
                 bail!("connection source `{source}` has an empty instance or port");
             }
-            match kind {
-                "read" | "request" => {
+            match role {
+                "call_result" | "call_target" => {
                     let target = artifacts.get(source_instance).with_context(|| {
                         format!("request target `{source}` has no runtime artifact")
                     })?;
-                    let fields = if kind == "read" {
+                    let fields = if role == "call_result" {
                         target
                             .service_outputs
                             .iter()
                             .filter(|field| {
-                                field.kind == "read" && field.port.as_deref() == Some(source_port)
+                                is_call_method(field) && field.port.as_deref() == Some(source_port)
                             })
                             .map(|field| field.name.as_str())
                             .collect::<Vec<_>>()
@@ -1396,7 +1483,7 @@ fn graph_delivery_routes(
                             .inputs
                             .iter()
                             .filter(|field| {
-                                field.kind == "commands"
+                                field.role == "call_ingress"
                                     && field.port.as_deref() == Some(source_port)
                             })
                             .map(|field| field.name.as_str())
@@ -1424,7 +1511,7 @@ fn graph_delivery_routes(
                         .or_default()
                         .insert(receiving_field.clone());
                 }
-                "latest" | "samples" | "events" | "stream" | "setpoint" => {
+                "observation_latest" | "observation_history" | "leased_value" => {
                     routes
                         .entry((
                             source_instance.to_owned(),
@@ -2183,7 +2270,7 @@ struct ArtifactRuntime {
 struct ArtifactInput {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     max_items: Option<u64>,
     #[serde(default)]
@@ -2196,11 +2283,15 @@ struct ArtifactInput {
 struct ArtifactOutput {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     port: Option<String>,
     #[serde(default)]
+    signature: Option<ArtifactSignature>,
+    #[serde(default)]
     input: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
     #[serde(default)]
     max_items: Option<u64>,
     #[serde(default)]
@@ -2211,6 +2302,39 @@ struct ArtifactOutput {
     every_steps: Option<u64>,
     #[serde(default)]
     bootstrap: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ArtifactSignature {
+    shape: phoxal::artifact::MethodShape,
+    #[serde(default)]
+    retained_latest: bool,
+    #[serde(default)]
+    lease_valid_for_ms: Option<u64>,
+}
+
+fn is_observation_method(output: &ArtifactOutput) -> bool {
+    output.role == "method"
+        && output
+            .signature
+            .as_ref()
+            .is_some_and(|signature| signature.shape == phoxal::artifact::MethodShape::Observation)
+}
+
+fn is_call_method(output: &ArtifactOutput) -> bool {
+    output.role == "method"
+        && output
+            .signature
+            .as_ref()
+            .is_some_and(|signature| signature.shape == phoxal::artifact::MethodShape::Call)
+}
+
+fn is_leased_method(output: &ArtifactOutput) -> bool {
+    output.role == "method"
+        && output
+            .signature
+            .as_ref()
+            .is_some_and(|signature| signature.lease_valid_for_ms.is_some())
 }
 
 #[cfg(test)]
@@ -2560,7 +2684,8 @@ mod tests {
                                 "inputs": [],
                                 "transient_outputs": [],
                                 "service_outputs": [
-                                    {"name": "value", "kind": "state", "port": "value", "max_items": 1, "max_bytes": 1}
+                                    {"name": "value", "role": "method", "port": "value", "max_items": 1, "max_bytes": 1,
+                                     "signature": {"shape": "observation", "retained_latest": true, "lease_valid_for_ms": null}}
                                 ]
                             },
                             "descriptors": []
@@ -2575,7 +2700,7 @@ mod tests {
                                 "period_ms": 2,
                                 "timeout_ms": 500,
                                 "inputs": [
-                                    {"name": "value", "kind": "latest", "port": "value", "max_items": 1, "max_bytes": 1}
+                                    {"name": "value", "role": "observation_latest", "port": "value", "max_items": 1, "max_bytes": 1}
                                 ],
                                 "transient_outputs": [],
                                 "service_outputs": []
@@ -2933,8 +3058,10 @@ mod tests {
                             "inputs": [],
                             "transient_outputs": [],
                             "service_outputs": [
-                                {"name": "state", "kind": "state", "port": "state", "max_bytes": 64},
-                                {"name": "target", "kind": "setpoint", "port": "target", "max_bytes": 8}
+                                {"name": "state", "role": "method", "port": "state", "max_bytes": 64,
+                                 "signature": {"shape": "observation", "retained_latest": true, "lease_valid_for_ms": null}},
+                                {"name": "target", "role": "method", "port": "target", "max_bytes": 8,
+                                 "signature": {"shape": "observation", "retained_latest": false, "lease_valid_for_ms": 100}}
                             ]
                         },
                         "descriptors": []
@@ -3263,8 +3390,8 @@ mod tests {
     fn every_receiving_field_has_its_own_delivery_obligation() {
         let consumer: ArtifactRuntime = serde_json::from_value(serde_json::json!({
             "inputs": [
-                {"name": "near", "kind": "samples", "max_bytes": 1024},
-                {"name": "far", "kind": "samples", "max_bytes": 1024}
+                {"name": "near", "role": "observation_history", "max_bytes": 1024},
+                {"name": "far", "role": "observation_history", "max_bytes": 1024}
             ]
         }))
         .unwrap();
@@ -3327,15 +3454,16 @@ mod tests {
 
     #[test]
     fn keyed_connections_authorize_both_request_and_reply_delivery_legs() {
-        for kind in ["request", "read"] {
+        for role in ["call_target", "call_result"] {
             let caller: ArtifactRuntime = serde_json::from_value(serde_json::json!({
-                "inputs": [{"name": "emergency", "kind": kind, "max_bytes": 1024}]
+                "inputs": [{"name": "emergency", "role": role, "max_bytes": 1024}]
             }))
             .unwrap();
-            let target: ArtifactRuntime = serde_json::from_value(if kind == "read" {
-                serde_json::json!({"service_outputs": [{"name": "handler", "kind": "read", "port": "emergency"}]})
+            let target: ArtifactRuntime = serde_json::from_value(if role == "call_result" {
+                serde_json::json!({"service_outputs": [{"name": "handler", "role": "method", "port": "emergency",
+                    "signature": {"shape": "call", "retained_latest": false, "lease_valid_for_ms": null}}]})
             } else {
-                serde_json::json!({"inputs": [{"name": "handler", "kind": "commands", "port": "emergency"}]})
+                serde_json::json!({"inputs": [{"name": "handler", "role": "call_ingress", "port": "emergency"}]})
             }).unwrap();
             let artifacts =
                 BTreeMap::from([("brain".to_owned(), caller), ("motion".to_owned(), target)]);

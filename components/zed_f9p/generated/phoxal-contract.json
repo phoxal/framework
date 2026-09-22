@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "generator": "0.0.0-dev.2",
+  "descriptor_sha256": "ee1287f7c3504e711a3cc8cd0db948b03b85df3efda33382ecce9de58980afae",
+  "sources": [
+    {
+      "path": "phoxal/component/zed_f9p/v1/zed_f9p.proto",
+      "sha256": "abe23cb14b53d3252e64baefd8ca66d5fa10ae971c465af3dcaa24a2e062a3d3"
+    }
+  ],
+  "generated": [
+    {
+      "path": "lib.rs",
+      "sha256": "1074b54af1655a54a0498d2909a87f0d224556b5e9b910dddf9fefad319a5d30"
+    },
+    {
+      "path": "phoxal-descriptors.bin",
+      "sha256": "ee1287f7c3504e711a3cc8cd0db948b03b85df3efda33382ecce9de58980afae"
+    },
+    {
+      "path": "phoxal.api.rs",
+      "sha256": "c452b36102298dbddcbcaab6b8f4b7cf501b020c988e39da72df1ace9eca5d09"
+    },
+    {
+      "path": "phoxal.component.zed_f9p.v1.rs",
+      "sha256": "62a09ccc27111320ad5a4f3008a65858a69f22135ea3c8703f871bfadd99a06c"
+    }
+  ],
+  "dependencies": []
+}

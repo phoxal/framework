@@ -12,9 +12,10 @@ pub(super) fn assess_world(
         constraints.push(stop_constraint(ConstraintReason::WorldUnavailable));
         return;
     };
-    if world.validate().is_err()
+    if validation::world(world).is_err()
         || !world.available
-        || !world.capture_is_fresh_at(
+        || !validation::capture_is_fresh_at(
+            world.oldest_capture_time_nanos,
             now.as_nanos(),
             state.config.input_max_age_ms.saturating_mul(1_000_000),
         )
@@ -33,9 +34,10 @@ pub(super) fn assess_world(
         constraints.push(stop_constraint(ConstraintReason::MapUnavailable));
         return;
     };
-    if revision.validate().is_err()
+    if validation::world_revision(revision).is_err()
         || !revision.available
-        || !revision.capture_is_fresh_at(
+        || !validation::capture_is_fresh_at(
+            revision.oldest_capture_time_nanos,
             now.as_nanos(),
             state.config.input_max_age_ms.saturating_mul(1_000_000),
         )
@@ -54,7 +56,7 @@ pub(super) fn assess_motion(
         constraints.push(stop_constraint(ConstraintReason::MotionUnavailable));
         return;
     };
-    if motion.validate().is_err() {
+    if validation::motion_status(motion).is_err() {
         constraints.push(stop_constraint(ConstraintReason::MotionFault));
     }
 }

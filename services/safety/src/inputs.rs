@@ -1,6 +1,7 @@
+use phoxal::robotics::RangeSample;
 use phoxal::runtime::input::{Latest, Samples};
 use phoxal_service_motion::MotionStatus;
-use phoxal_service_safety::{RangeSample, WorldBelief, WorldRevision};
+use phoxal_service_world::{WorldBelief, WorldRevision};
 
 /// One immutable input cut for Safety.
 #[phoxal::runtime::inputs]

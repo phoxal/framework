@@ -8,7 +8,7 @@ use phoxal::runtime::StepContext;
 #[cfg(test)]
 use phoxal_component_oak_d_lite::FILE_DESCRIPTOR_SET;
 #[cfg(test)]
-use phoxal_component_oak_d_lite::ports;
+use phoxal_component_oak_d_lite::oak_d_lite;
 
 const BACKEND_UNAVAILABLE: &str = "oak_d_lite hardware backend unavailable: refusing to publish fabricated camera, depth, or IMU measurements";
 
@@ -48,29 +48,30 @@ impl Runtime for OakDLite {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, OakDLite, OakDLiteConfig, OakDLiteOutputs, ports,
+        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, OakDLite, OakDLiteConfig, OakDLiteOutputs,
+        oak_d_lite,
     };
-    use phoxal::port::{PortDescriptor, PortKind};
+    use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
-    fn generated_ports_cover_every_declared_capability() {
-        fn assert_sample_port<P: PortDescriptor>(port: P) {
-            assert_eq!(port.signature().kind, PortKind::Sample);
+    fn generated_methods_cover_every_declared_capability() {
+        fn assert_observation_method<P: MethodDescriptor>(method: P) {
+            assert_eq!(method.signature().shape, MethodShape::Observation);
             assert_eq!(
-                port.signature().service,
+                method.signature().service,
                 "phoxal.component.oak_d_lite.v1.OakDLite"
             );
-            assert!(!port.signature().descriptor_set().is_empty());
+            assert!(!method.signature().descriptor_set().is_empty());
         }
-        assert_sample_port(ports::LEFT_MONO);
-        assert_sample_port(ports::RGB);
-        assert_sample_port(ports::RIGHT_MONO);
-        assert_sample_port(ports::DEPTH);
-        assert_sample_port(ports::IMU);
-        assert_sample_port(ports::ACCELEROMETER);
-        assert_sample_port(ports::GYROSCOPE);
+        assert_observation_method(oak_d_lite::methods::LEFT_MONO);
+        assert_observation_method(oak_d_lite::methods::RGB);
+        assert_observation_method(oak_d_lite::methods::RIGHT_MONO);
+        assert_observation_method(oak_d_lite::methods::DEPTH);
+        assert_observation_method(oak_d_lite::methods::IMU);
+        assert_observation_method(oak_d_lite::methods::ACCELEROMETER);
+        assert_observation_method(oak_d_lite::methods::GYROSCOPE);
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert_eq!(
             OakDLiteOutputs::FIELDS

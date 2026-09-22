@@ -18,9 +18,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::communication::session::{
-    BindPortRequest, ExecutionSummary, ListExecutionsRequest, ListPortsRequest, OperationOutcome,
-    OperationRequest, PortMetadata, RecordKind, SubscriptionRecord, SubscriptionRequest,
-    SupervisorInfoResponse, SupervisorStatusResponse,
+    BindMethodRequest, ExecutionSummary, ListExecutionsRequest, ListMethodsRequest, MethodMetadata,
+    MethodShape as SessionMethodShape, OperationOutcome, OperationRequest, RecordKind,
+    SubscriptionRecord, SubscriptionRequest, SupervisorInfoResponse, SupervisorStatusResponse,
 };
 use crate::communication::simulation::{
     AcquireAuthorityRequest, AcquireAuthorityResponse, AdmitInitialObservationsRequest,
@@ -33,7 +33,9 @@ use crate::communication_transport::{
     PublicSessionConnection, PublicSessionTransport, PublicSubscription, PublicTlsCredentials,
     PublicTransportError, PublicTransportLimits, PublicTransportSecurity, SupervisorWatch,
 };
-use crate::port::{self, PortDescriptor, PortKind, PortSignature};
+use crate::contract::{
+    CallMethod, MethodDescriptor, MethodShape, MethodSignature, ObservationMethod,
+};
 use crate::session::error::SessionError;
 
 const MAX_SIMULATION_PRODUCT_BYTES: u64 = 4 * 1024 * 1024;
@@ -743,7 +745,7 @@ impl Execution {
         let instance = instance.as_ref().to_owned();
         let session_id = self.inner.session_id().await?;
         self.inner
-            .list_ports(ListPortsRequest {
+            .list_methods(ListMethodsRequest {
                 execution_id: self.summary.execution_id.clone(),
                 service_instance: instance.clone(),
                 page_size: 0,
@@ -782,16 +784,14 @@ impl Service {
         &self.instance
     }
 
-    /// Bind an owner-generated descriptor and return only the operations valid
-    /// for its static port kind.  Setpoint intentionally has no implementation
-    /// in this external-client trait and therefore cannot be passed here.
-    pub async fn port<P>(&self, descriptor: P) -> Result<P::Handle, SessionError>
+    /// Bind one owner-generated call or observation descriptor.
+    pub async fn method<M>(&self, descriptor: M) -> Result<M::Handle, SessionError>
     where
-        P: PublicPortDescriptor,
+        M: PublicMethodDescriptor,
     {
         self.inner.ensure_generation(self.generation, "service")?;
         let session_id = self.inner.session_id().await?;
-        let ports = list_all_ports(
+        let methods = list_all_methods(
             &self.inner,
             &self.execution_id,
             &self.instance,
@@ -799,16 +799,16 @@ impl Service {
         )
         .await?;
         let signature = descriptor.signature();
-        let metadata = ports
+        let metadata = methods
             .into_iter()
-            .find(|metadata| metadata.name == signature.name)
-            .ok_or_else(|| SessionError::PortNotAdmitted {
-                detail: format!("port `{}` is not advertised", signature.name),
+            .find(|metadata| metadata.endpoint == signature.endpoint)
+            .ok_or_else(|| SessionError::MethodNotAdmitted {
+                detail: format!("method `{}` is not advertised", signature.endpoint),
             })?;
-        validate_descriptor(signature, P::KIND, &metadata)?;
+        validate_method(signature, &metadata)?;
         let response = self
             .inner
-            .bind(BindPortRequest {
+            .bind_method(BindMethodRequest {
                 session_id,
                 execution_id: self.execution_id.clone(),
                 service_instance: self.instance.clone(),
@@ -817,11 +817,11 @@ impl Service {
             .await?;
         let binding_id = response.binding_id;
         if binding_id.len() != 32 {
-            return Err(SessionError::PortNotAdmitted {
+            return Err(SessionError::MethodNotAdmitted {
                 detail: "server returned an invalid binding identifier".to_owned(),
             });
         }
-        let core = PortHandleCore {
+        let core = MethodHandleCore {
             supervisor: self.inner.clone(),
             session_id: self.inner.session_id().await?,
             binding_id,
@@ -830,90 +830,42 @@ impl Service {
             metadata,
             generation: self.generation,
         };
-        Ok(P::from_core(core))
+        Ok(M::from_core(core))
     }
 }
 
 /// Sealed generated descriptor family accepted by the external session API.
-pub trait PublicPortDescriptor: PortDescriptor + private::Sealed {
+pub trait PublicMethodDescriptor: MethodDescriptor + private::Sealed {
     /// Handle type returned after remote binding.
     type Handle;
 
     #[doc(hidden)]
-    fn from_core(core: PortHandleCore) -> Self::Handle;
+    fn from_core(core: MethodHandleCore) -> Self::Handle;
 }
 
 mod private {
     pub trait Sealed {}
 }
 
-impl<T: 'static> private::Sealed for port::State<T> {}
-impl<T: 'static> private::Sealed for port::Sample<T> {}
-impl<T: 'static> private::Sealed for port::Event<T> {}
-impl<T: 'static> private::Sealed for port::Stream<T> {}
-impl<Request: 'static, Response: 'static> private::Sealed for port::Read<Request, Response> {}
-impl<Request: 'static, Response: 'static> private::Sealed for port::Commands<Request, Response> {}
+impl<Request: 'static, Response: 'static> private::Sealed for CallMethod<Request, Response> {}
+impl<Value: 'static> private::Sealed for ObservationMethod<Value> {}
 
 /// Opaque validated handle construction state.
-pub struct PortHandleCore {
+pub struct MethodHandleCore {
     supervisor: Arc<SupervisorInner>,
     session_id: Vec<u8>,
     binding_id: Vec<u8>,
     execution_id: String,
     timeline_id: String,
-    metadata: PortMetadata,
+    metadata: MethodMetadata,
     generation: u64,
 }
 
-impl<T: 'static> PublicPortDescriptor for port::State<T> {
-    type Handle = StateHandle<T>;
+impl<Request: 'static, Response: 'static> PublicMethodDescriptor for CallMethod<Request, Response> {
+    type Handle = CallHandle<Request, Response>;
 
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        StateHandle {
-            core,
-            payload: PhantomData,
-        }
-    }
-}
-
-impl<T: 'static> PublicPortDescriptor for port::Sample<T> {
-    type Handle = SampleHandle<T>;
-
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        SampleHandle {
-            core,
-            payload: PhantomData,
-        }
-    }
-}
-
-impl<T: 'static> PublicPortDescriptor for port::Event<T> {
-    type Handle = EventHandle<T>;
-
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        EventHandle {
-            core,
-            payload: PhantomData,
-        }
-    }
-}
-
-impl<T: 'static> PublicPortDescriptor for port::Stream<T> {
-    type Handle = StreamHandle<T>;
-
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        StreamHandle {
-            core,
-            payload: PhantomData,
-        }
-    }
-}
-
-impl<Request: 'static, Response: 'static> PublicPortDescriptor for port::Read<Request, Response> {
-    type Handle = ReadHandle<Request, Response>;
-
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        ReadHandle {
+    fn from_core(core: MethodHandleCore) -> Self::Handle {
+        CallHandle {
             core,
             request: PhantomData,
             response: PhantomData,
@@ -921,61 +873,33 @@ impl<Request: 'static, Response: 'static> PublicPortDescriptor for port::Read<Re
     }
 }
 
-impl<Request: 'static, Response: 'static> PublicPortDescriptor
-    for port::Commands<Request, Response>
-{
-    type Handle = CommandHandle<Request, Response>;
+impl<Value: 'static> PublicMethodDescriptor for ObservationMethod<Value> {
+    type Handle = ObservationHandle<Value>;
 
-    fn from_core(core: PortHandleCore) -> Self::Handle {
-        CommandHandle {
+    fn from_core(core: MethodHandleCore) -> Self::Handle {
+        ObservationHandle {
             core,
-            request: PhantomData,
-            response: PhantomData,
+            payload: PhantomData,
         }
     }
 }
 
-/// A statically typed State port handle.
-pub struct StateHandle<T> {
-    core: PortHandleCore,
+/// A statically typed generated observation handle.
+pub struct ObservationHandle<T> {
+    core: MethodHandleCore,
     payload: PhantomData<fn() -> T>,
 }
 
-/// A statically typed Sample port handle.
-pub struct SampleHandle<T> {
-    core: PortHandleCore,
-    payload: PhantomData<fn() -> T>,
-}
-
-/// A statically typed Event port handle.
-pub struct EventHandle<T> {
-    core: PortHandleCore,
-    payload: PhantomData<fn() -> T>,
-}
-
-/// A statically typed Stream port handle.
-pub struct StreamHandle<T> {
-    core: PortHandleCore,
-    payload: PhantomData<fn() -> T>,
-}
-
-/// A statically typed Read port handle.
-pub struct ReadHandle<Request, Response> {
-    core: PortHandleCore,
+/// A statically typed generated unary call handle.
+pub struct CallHandle<Request, Response> {
+    core: MethodHandleCore,
     request: PhantomData<fn(Request)>,
     response: PhantomData<fn() -> Response>,
 }
 
-/// A statically typed Commands port handle.
-pub struct CommandHandle<Request, Response> {
-    core: PortHandleCore,
-    request: PhantomData<fn(Request)>,
-    response: PhantomData<fn() -> Response>,
-}
-
-/// Definite or uncertain result of a public Read operation.
+/// Definite or uncertain result of a public call.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReadOutcome<Response> {
+pub enum CallOutcome<Response> {
     /// The provider returned the typed response body.
     Received(Response),
     /// Local admission proved that no request was sent.
@@ -983,19 +907,6 @@ pub enum ReadOutcome<Response> {
     /// The target refused before operation admission.
     RejectedBeforeAdmission(OutcomeReason),
     /// Transmission or response delivery did not establish the result.
-    OutcomeUnknown(OutcomeReason),
-}
-
-/// Definite or uncertain result of a public Commands operation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CommandOutcome<Response> {
-    /// The target returned the typed command response.
-    Received(Response),
-    /// Local admission proved that no command was sent.
-    NotSent(OutcomeReason),
-    /// The target refused before queue admission.
-    RejectedBeforeAdmission(OutcomeReason),
-    /// The command may have reached the target.  Do not replay it blindly.
     OutcomeUnknown(OutcomeReason),
 }
 
@@ -1029,10 +940,10 @@ impl fmt::Display for OutcomeReason {
     }
 }
 
-/// One bounded record from a public State watch.
+/// One bounded record from a generated observation method.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum StateSubscriptionItem<T> {
-    /// The selected State has no value at the initial cursor.
+pub enum ObservationItem<T> {
+    /// A retained observation had no value at the admitted initial cursor.
     InitialAbsent { revision: u64 },
     /// One decoded owner publication.
     Value { revision: u64, value: T },
@@ -1044,51 +955,17 @@ pub enum StateSubscriptionItem<T> {
     Failed { revision: u64, detail: String },
 }
 
-/// One bounded record from a Sample, Event, or Stream subscription.
-///
-/// These subscriptions begin at their admitted cursor and never expose the
-/// State-only initial-absence marker as a value.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SubscriptionItem<T> {
-    /// One decoded owner publication.
-    Value { revision: u64, value: T },
-    /// Records were dropped at a bounded queue boundary.
-    Gap { revision: u64, dropped: u64 },
-    /// The owner ended the stream.
-    End { revision: u64 },
-    /// The owner failed the stream.
-    Failed { revision: u64, detail: String },
-}
-
-/// State subscription with latest-value and explicit initial absence semantics.
-pub struct StateSubscription<T> {
-    inner: TypedSubscription<T>,
-}
-
-/// Sample subscription.
-pub struct SampleSubscription<T> {
-    inner: TypedSubscription<T>,
-}
-
-/// Event subscription.
-pub struct EventSubscription<T> {
-    inner: TypedSubscription<T>,
-}
-
-/// Stream subscription with explicit gap/end/failure records.
-pub struct StreamSubscription<T> {
-    inner: TypedSubscription<T>,
-}
-
-struct TypedSubscription<T> {
+/// Bounded typed observation subscription.
+pub struct ObservationSubscription<T> {
     initial: Option<SubscriptionRecord>,
     source: PublicSubscription,
     expected: SubscriptionRequest,
     payload: PhantomData<fn() -> T>,
 }
 
-impl<T: Message + Default + Send + Sync + 'static> TypedSubscription<T> {
-    async fn recv_decoded(&mut self) -> Option<Result<DecodedSubscriptionItem<T>, SessionError>> {
+impl<T: Message + Default + Send + Sync + 'static> ObservationSubscription<T> {
+    /// Receive the initial retained cursor or next bounded observation record.
+    pub async fn recv(&mut self) -> Option<Result<ObservationItem<T>, SessionError>> {
         let record = if let Some(initial) = self.initial.take() {
             Some(Ok(initial))
         } else {
@@ -1120,11 +997,11 @@ impl<T: Message + Default + Send + Sync + 'static> TypedSubscription<T> {
             }
         };
         let item = match kind {
-            RecordKind::InitialAbsent => DecodedSubscriptionItem::InitialAbsent {
+            RecordKind::InitialAbsent => ObservationItem::InitialAbsent {
                 revision: record.revision,
             },
             RecordKind::Value => match T::decode(record.payload.as_slice()) {
-                Ok(value) => DecodedSubscriptionItem::Value {
+                Ok(value) => ObservationItem::Value {
                     revision: record.revision,
                     value,
                 },
@@ -1134,14 +1011,14 @@ impl<T: Message + Default + Send + Sync + 'static> TypedSubscription<T> {
                     }));
                 }
             },
-            RecordKind::Gap => DecodedSubscriptionItem::Gap {
+            RecordKind::Gap => ObservationItem::Gap {
                 revision: record.revision,
                 dropped: record.dropped,
             },
-            RecordKind::End => DecodedSubscriptionItem::End {
+            RecordKind::End => ObservationItem::End {
                 revision: record.revision,
             },
-            RecordKind::Failed => DecodedSubscriptionItem::Failed {
+            RecordKind::Failed => ObservationItem::Failed {
                 revision: record.revision,
                 detail: record.detail.unwrap_or_default(),
             },
@@ -1153,213 +1030,41 @@ impl<T: Message + Default + Send + Sync + 'static> TypedSubscription<T> {
         };
         Some(Ok(item))
     }
-
-    async fn recv_state(&mut self) -> Option<Result<StateSubscriptionItem<T>, SessionError>> {
-        self.recv_decoded().await.map(|result| {
-            result.map(|item| match item {
-                DecodedSubscriptionItem::InitialAbsent { revision } => {
-                    StateSubscriptionItem::InitialAbsent { revision }
-                }
-                DecodedSubscriptionItem::Value { revision, value } => {
-                    StateSubscriptionItem::Value { revision, value }
-                }
-                DecodedSubscriptionItem::Gap { revision, dropped } => {
-                    StateSubscriptionItem::Gap { revision, dropped }
-                }
-                DecodedSubscriptionItem::End { revision } => {
-                    StateSubscriptionItem::End { revision }
-                }
-                DecodedSubscriptionItem::Failed { revision, detail } => {
-                    StateSubscriptionItem::Failed { revision, detail }
-                }
-            })
-        })
-    }
-
-    async fn recv_data(&mut self) -> Option<Result<SubscriptionItem<T>, SessionError>> {
-        self.recv_decoded().await.map(|result| {
-            result.and_then(|item| match item {
-                DecodedSubscriptionItem::InitialAbsent { .. } => {
-                    Err(SessionError::InvalidPublicRequest {
-                        detail: "non-State subscription returned an initial-absence marker"
-                            .to_owned(),
-                    })
-                }
-                DecodedSubscriptionItem::Value { revision, value } => {
-                    Ok(SubscriptionItem::Value { revision, value })
-                }
-                DecodedSubscriptionItem::Gap { revision, dropped } => {
-                    Ok(SubscriptionItem::Gap { revision, dropped })
-                }
-                DecodedSubscriptionItem::End { revision } => Ok(SubscriptionItem::End { revision }),
-                DecodedSubscriptionItem::Failed { revision, detail } => {
-                    Ok(SubscriptionItem::Failed { revision, detail })
-                }
-            })
-        })
-    }
 }
 
-enum DecodedSubscriptionItem<T> {
-    InitialAbsent { revision: u64 },
-    Value { revision: u64, value: T },
-    Gap { revision: u64, dropped: u64 },
-    End { revision: u64 },
-    Failed { revision: u64, detail: String },
-}
-
-impl<T: Message + Default + Send + Sync + 'static> StateSubscription<T> {
-    /// Receive the initial State cursor or next bounded publication record.
-    pub async fn recv(&mut self) -> Option<Result<StateSubscriptionItem<T>, SessionError>> {
-        self.inner.recv_state().await
-    }
-}
-
-macro_rules! data_subscription_impl {
-    ($name:ident) => {
-        impl<T: Message + Default + Send + Sync + 'static> $name<T> {
-            /// Receive the next bounded publication record.
-            pub async fn recv(&mut self) -> Option<Result<SubscriptionItem<T>, SessionError>> {
-                self.inner.recv_data().await
-            }
-        }
-    };
-}
-
-data_subscription_impl!(SampleSubscription);
-data_subscription_impl!(EventSubscription);
-data_subscription_impl!(StreamSubscription);
-
-impl<T: Message + Default + Send + Sync + 'static> StateHandle<T> {
-    /// Start a latest-state watch.
-    pub async fn watch(&self) -> Result<StateSubscription<T>, SessionError> {
+impl<T: Message + Default + Send + Sync + 'static> ObservationHandle<T> {
+    /// Start one bounded typed observation.
+    pub async fn observe(&self) -> Result<ObservationSubscription<T>, SessionError> {
         let request = self.core.subscription_request()?;
-        let mut source = self
-            .core
-            .supervisor
-            .subscribe(PublicOperation::Watch, request.clone())
-            .await?;
+        let mut source = self.core.supervisor.observe(request.clone()).await?;
         let initial = take_source_initial(&mut source);
-        Ok(StateSubscription {
-            inner: TypedSubscription {
-                initial,
-                source,
-                expected: request,
-                payload: PhantomData,
-            },
-        })
-    }
-}
-
-impl<T: Message + Default + Send + Sync + 'static> SampleHandle<T> {
-    /// Start a bounded captured-sample subscription.
-    pub async fn subscribe(&self) -> Result<SampleSubscription<T>, SessionError> {
-        let request = self.core.subscription_request()?;
-        let mut source = self
-            .core
-            .supervisor
-            .subscribe(PublicOperation::Subscribe, request.clone())
-            .await?;
-        let initial = take_source_initial(&mut source);
-        Ok(SampleSubscription {
-            inner: TypedSubscription {
-                initial,
-                source,
-                expected: request,
-                payload: PhantomData,
-            },
-        })
-    }
-}
-
-impl<T: Message + Default + Send + Sync + 'static> EventHandle<T> {
-    /// Start a bounded event subscription.
-    pub async fn subscribe(&self) -> Result<EventSubscription<T>, SessionError> {
-        let request = self.core.subscription_request()?;
-        let mut source = self
-            .core
-            .supervisor
-            .subscribe(PublicOperation::Subscribe, request.clone())
-            .await?;
-        let initial = take_source_initial(&mut source);
-        Ok(EventSubscription {
-            inner: TypedSubscription {
-                initial,
-                source,
-                expected: request,
-                payload: PhantomData,
-            },
-        })
-    }
-}
-
-impl<T: Message + Default + Send + Sync + 'static> StreamHandle<T> {
-    /// Start an ordered stream subscription.
-    pub async fn subscribe(&self) -> Result<StreamSubscription<T>, SessionError> {
-        let request = self.core.subscription_request()?;
-        let mut source = self
-            .core
-            .supervisor
-            .subscribe(PublicOperation::Subscribe, request.clone())
-            .await?;
-        let initial = take_source_initial(&mut source);
-        Ok(StreamSubscription {
-            inner: TypedSubscription {
-                initial,
-                source,
-                expected: request,
-                payload: PhantomData,
-            },
+        Ok(ObservationSubscription {
+            initial,
+            source,
+            expected: request,
+            payload: PhantomData,
         })
     }
 }
 
 impl<Request: Message + Send + Sync + 'static, Response: Message + Default + Send + Sync + 'static>
-    ReadHandle<Request, Response>
+    CallHandle<Request, Response>
 {
-    /// Issue one immutable typed read with a finite caller deadline.
+    /// Issue one typed call with a finite caller deadline.
     pub async fn call(
         &self,
         request: Request,
         timeout: Duration,
-    ) -> Result<ReadOutcome<Response>, SessionError> {
-        let result = self
-            .core
-            .invoke(PublicOperation::Read, request, timeout)
-            .await?;
+    ) -> Result<CallOutcome<Response>, SessionError> {
+        let result = self.core.invoke(request, timeout).await?;
         Ok(match result {
             RawOutcome::Received(payload) => match Response::decode(payload.as_slice()) {
-                Ok(response) => ReadOutcome::Received(response),
-                Err(error) => ReadOutcome::OutcomeUnknown(OutcomeReason::new(error.to_string())),
+                Ok(response) => CallOutcome::Received(response),
+                Err(error) => CallOutcome::OutcomeUnknown(OutcomeReason::new(error.to_string())),
             },
-            RawOutcome::NotSent(reason) => ReadOutcome::NotSent(reason),
-            RawOutcome::Rejected(reason) => ReadOutcome::RejectedBeforeAdmission(reason),
-            RawOutcome::Unknown(reason) => ReadOutcome::OutcomeUnknown(reason),
-        })
-    }
-}
-
-impl<Request: Message + Send + Sync + 'static, Response: Message + Default + Send + Sync + 'static>
-    CommandHandle<Request, Response>
-{
-    /// Issue one behavioral command with a finite caller deadline.
-    pub async fn call(
-        &self,
-        request: Request,
-        timeout: Duration,
-    ) -> Result<CommandOutcome<Response>, SessionError> {
-        let result = self
-            .core
-            .invoke(PublicOperation::Command, request, timeout)
-            .await?;
-        Ok(match result {
-            RawOutcome::Received(payload) => match Response::decode(payload.as_slice()) {
-                Ok(response) => CommandOutcome::Received(response),
-                Err(error) => CommandOutcome::OutcomeUnknown(OutcomeReason::new(error.to_string())),
-            },
-            RawOutcome::NotSent(reason) => CommandOutcome::NotSent(reason),
-            RawOutcome::Rejected(reason) => CommandOutcome::RejectedBeforeAdmission(reason),
-            RawOutcome::Unknown(reason) => CommandOutcome::OutcomeUnknown(reason),
+            RawOutcome::NotSent(reason) => CallOutcome::NotSent(reason),
+            RawOutcome::Rejected(reason) => CallOutcome::RejectedBeforeAdmission(reason),
+            RawOutcome::Unknown(reason) => CallOutcome::OutcomeUnknown(reason),
         })
     }
 }
@@ -1371,7 +1076,7 @@ enum RawOutcome {
     Unknown(OutcomeReason),
 }
 
-impl PortHandleCore {
+impl MethodHandleCore {
     fn subscription_request(&self) -> Result<SubscriptionRequest, SessionError> {
         self.ensure_current("subscription")?;
         let subscription_id = self.next_id();
@@ -1394,7 +1099,6 @@ impl PortHandleCore {
 
     async fn invoke<Request: Message>(
         &self,
-        operation: PublicOperation,
         request: Request,
         timeout: Duration,
     ) -> Result<RawOutcome, SessionError> {
@@ -1407,7 +1111,7 @@ impl PortHandleCore {
         let encoded_len = request.encoded_len();
         if encoded_len > usize::try_from(self.metadata.max_message_bytes).unwrap_or(usize::MAX) {
             return Ok(RawOutcome::NotSent(OutcomeReason::new(
-                "request exceeds the admitted port byte bound",
+                "request exceeds the admitted method byte bound",
             )));
         }
         let mut payload = Vec::with_capacity(encoded_len);
@@ -1427,7 +1131,7 @@ impl PortHandleCore {
             payload,
             timeout_ms: timeout_ms.max(1),
         };
-        let response = match self.supervisor.operation(operation, request).await {
+        let response = match self.supervisor.call(request).await {
             Ok(response) => response,
             Err(error) => return Ok(map_operation_error(error)),
         };
@@ -1443,7 +1147,7 @@ impl PortHandleCore {
                     > usize::try_from(self.metadata.max_message_bytes).unwrap_or(usize::MAX)
                 {
                     RawOutcome::Unknown(OutcomeReason::new(
-                        "response exceeds the admitted port byte bound",
+                        "response exceeds the admitted method byte bound",
                     ))
                 } else {
                     RawOutcome::Received(response.payload)
@@ -1489,22 +1193,27 @@ fn map_operation_error(error: PublicTransportError) -> RawOutcome {
     }
 }
 
-fn validate_descriptor(
-    signature: PortSignature,
-    kind: PortKind,
-    metadata: &PortMetadata,
+fn validate_method(
+    signature: MethodSignature,
+    metadata: &MethodMetadata,
 ) -> Result<(), SessionError> {
-    if metadata.kind != kind as i32
+    let shape = match signature.shape {
+        MethodShape::Call => SessionMethodShape::Call,
+        MethodShape::Observation => SessionMethodShape::Observation,
+    };
+    if metadata.shape != shape as i32
         || metadata.input_fqn != signature.request
         || metadata.output_fqn != signature.response
+        || metadata.retained_latest != signature.retained_latest
+        || metadata.lease_valid_for_ms != signature.lease.map(|lease| lease.valid_for_ms())
     {
-        return Err(SessionError::PortNotAdmitted {
+        return Err(SessionError::MethodNotAdmitted {
             detail: format!(
-                "port `{}` descriptor mismatch: expected kind `{kind:?}`, request `{}`, response `{}`, got kind `{}`, request `{}`, response `{}`",
-                signature.name,
+                "endpoint `{}` descriptor mismatch: expected shape `{shape:?}`, request `{}`, response `{}`, got shape `{}`, request `{}`, response `{}`",
+                signature.endpoint,
                 signature.request,
                 signature.response,
-                metadata.kind,
+                metadata.shape,
                 metadata.input_fqn,
                 metadata.output_fqn,
             ),
@@ -1513,17 +1222,17 @@ fn validate_descriptor(
     Ok(())
 }
 
-async fn list_all_ports(
+async fn list_all_methods(
     supervisor: &Arc<SupervisorInner>,
     execution_id: &str,
     service_instance: &str,
     session_id: Vec<u8>,
-) -> Result<Vec<PortMetadata>, SessionError> {
+) -> Result<Vec<MethodMetadata>, SessionError> {
     let mut token = Vec::new();
-    let mut ports = Vec::new();
+    let mut methods = Vec::new();
     for _ in 0..1024 {
         let response = supervisor
-            .list_ports(ListPortsRequest {
+            .list_methods(ListMethodsRequest {
                 execution_id: execution_id.to_owned(),
                 service_instance: service_instance.to_owned(),
                 page_size: 0,
@@ -1531,14 +1240,14 @@ async fn list_all_ports(
                 session_id: session_id.clone(),
             })
             .await?;
-        ports.extend(response.ports);
+        methods.extend(response.methods);
         if response.next_page_token.is_empty() {
-            return Ok(ports);
+            return Ok(methods);
         }
         token = response.next_page_token;
     }
     Err(SessionError::InvalidPublicRequest {
-        detail: "public port inventory exceeded its bounded page count".to_owned(),
+        detail: "public method inventory exceeded its bounded page count".to_owned(),
     })
 }
 
@@ -1733,36 +1442,35 @@ impl SupervisorInner {
             .map_err(Into::into)
     }
 
-    async fn list_ports(
+    async fn list_methods(
         &self,
-        request: ListPortsRequest,
-    ) -> Result<crate::communication::session::ListPortsResponse, SessionError> {
+        request: ListMethodsRequest,
+    ) -> Result<crate::communication::session::ListMethodsResponse, SessionError> {
         let guard = self.session.lock().await;
         let connection = guard.as_ref().ok_or(SessionError::StaleHandle {
             resource: "supervisor",
         })?;
-        connection.list_ports(request).await.map_err(Into::into)
+        connection.list_methods(request).await.map_err(Into::into)
     }
 
-    async fn bind(
+    async fn bind_method(
         &self,
-        request: BindPortRequest,
-    ) -> Result<crate::communication::session::BindPortResponse, SessionError> {
+        request: BindMethodRequest,
+    ) -> Result<crate::communication::session::BindMethodResponse, SessionError> {
         let guard = self.session.lock().await;
         let connection = guard.as_ref().ok_or(SessionError::StaleHandle {
             resource: "supervisor",
         })?;
-        connection.bind(request).await.map_err(Into::into)
+        connection.bind_method(request).await.map_err(Into::into)
     }
 
-    async fn operation(
+    async fn call(
         &self,
-        operation: PublicOperation,
         request: OperationRequest,
     ) -> Result<crate::communication::session::OperationResponse, PublicTransportError> {
         let guard = self.session.lock().await;
         let connection = guard.as_ref().ok_or(PublicTransportError::LeaseExpired)?;
-        connection.operation(operation, request).await
+        connection.call(request).await
     }
 
     async fn simulation<Request, Response>(
@@ -1784,9 +1492,8 @@ impl SupervisorInner {
             .map_err(Into::into)
     }
 
-    async fn subscribe(
+    async fn observe(
         &self,
-        operation: PublicOperation,
         request: SubscriptionRequest,
     ) -> Result<PublicSubscription, SessionError> {
         let lifecycle = self.lifecycle.lock().await.clone();
@@ -1795,7 +1502,7 @@ impl SupervisorInner {
             resource: "subscription",
         })?;
         connection
-            .subscribe_with_cancel(operation, request, lifecycle)
+            .observe_with_cancel(request, lifecycle)
             .await
             .map_err(Into::into)
     }

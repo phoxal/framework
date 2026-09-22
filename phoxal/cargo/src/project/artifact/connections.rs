@@ -1,6 +1,6 @@
 //! Admission of authored connections against executable contracts.
 
-use super::{ArtifactContract, Error, InputKind, PortKind};
+use super::{ArtifactContract, Error, InputRole, MethodShape};
 use crate::project::document::{PortReference, RobotDocument};
 use phoxal::artifact::RuntimeRecord;
 use std::collections::BTreeMap;
@@ -24,7 +24,10 @@ pub fn validate_connected_endpoints_with_virtual_producers(
     for (instance, contract) in contracts {
         let RuntimeRecord::V0 { inputs, .. } = &contract.runtime;
         for input in inputs {
-            if matches!(input.kind, InputKind::Commands | InputKind::Operation) {
+            if matches!(
+                input.role,
+                InputRole::CallIngress | InputRole::OperationResult | InputRole::CallCompletions
+            ) {
                 continue;
             }
             let consumer = format!("{instance}.{}", input.name);
@@ -66,8 +69,11 @@ pub fn validate_connected_endpoints_with_virtual_producers(
             })?;
         if sources.as_slice().is_empty()
             || (matches!(
-                input.kind,
-                InputKind::Latest | InputKind::Setpoint | InputKind::Read | InputKind::Request
+                input.role,
+                InputRole::ObservationLatest
+                    | InputRole::LeasedValue
+                    | InputRole::CallResult
+                    | InputRole::CallTarget
             ) && sources.as_slice().len() != 1)
         {
             return Err(Error::InvalidConnection {
@@ -104,11 +110,11 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                 transient_outputs,
                 ..
             } = &producer_contract.runtime;
-            let signature = if input.kind == InputKind::Request {
+            let signature = if input.role == InputRole::CallTarget {
                 producer_inputs
                     .iter()
                     .find(|input| {
-                        input.kind == InputKind::Commands
+                        input.role == InputRole::CallIngress
                             && input.port.as_deref() == Some(producer.port.as_str())
                     })
                     .and_then(|input| input.signature.as_ref())
@@ -126,14 +132,14 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     "producer port is absent or has no complete signature in its runtime artifact"
                         .into(),
             })?;
-            let expected_kind = input_kind_port(input.kind);
-            if expected_kind != Some(signature.kind) {
+            let expected_shape = input_method_shape(input.role);
+            if expected_shape.is_some() && expected_shape != Some(signature.shape) {
                 return Err(Error::InvalidConnection {
                     consumer: consumer_text.clone(),
                     producer: producer_text.clone(),
                     message: format!(
                         "consumer {:?} requires {:?}, producer supplies {:?}",
-                        input.kind, expected_kind, signature.kind
+                        input.role, expected_shape, signature.shape
                     ),
                 });
             }
@@ -163,16 +169,16 @@ pub fn validate_connected_endpoints_with_virtual_producers(
     Ok(())
 }
 
-fn input_kind_port(kind: InputKind) -> Option<PortKind> {
-    match kind {
-        InputKind::Latest => Some(PortKind::State),
-        InputKind::Samples => Some(PortKind::Sample),
-        InputKind::Events => Some(PortKind::Event),
-        InputKind::Setpoint => Some(PortKind::Setpoint),
-        InputKind::Stream => Some(PortKind::Stream),
-        InputKind::Commands | InputKind::Request => Some(PortKind::Commands),
-        InputKind::Read => Some(PortKind::Read),
-        InputKind::Operation => None,
+fn input_method_shape(role: InputRole) -> Option<MethodShape> {
+    match role {
+        InputRole::ObservationLatest | InputRole::ObservationHistory => {
+            Some(MethodShape::Observation)
+        }
+        InputRole::CallIngress | InputRole::CallTarget | InputRole::CallResult => {
+            Some(MethodShape::Call)
+        }
+        InputRole::LeasedValue => None,
+        InputRole::OperationResult | InputRole::CallCompletions => None,
     }
 }
 
@@ -206,23 +212,26 @@ mod tests {
     fn missing_required_connection_is_rejected_even_when_the_graph_is_empty() {
         let contracts = BTreeMap::from([(
             "motion".into(),
-            contract(json!([{"name":"safety", "kind":"latest"}]), json!([])),
+            contract(
+                json!([{"name":"safety", "role":"observation_latest"}]),
+                json!([]),
+            ),
         )]);
         assert!(validate_connected_endpoints(&document(json!({})), &contracts).is_err());
     }
 
     #[test]
     fn request_targets_the_server_command_input() {
-        let signature = json!({"name":"commands", "service":"fixture.Service", "method":"Commands", "kind":"commands", "request":"fixture.Request", "response":"fixture.Response"});
+        let signature = json!({"endpoint":"commands", "service":"fixture.Service", "method":"Commands", "shape":"call", "request":"fixture.Request", "response":"fixture.Response", "retained_latest":false, "lease_valid_for_ms":null});
         let contracts = BTreeMap::from([
             (
                 "client".into(),
-                contract(json!([{"name":"request", "kind":"request"}]), json!([])),
+                contract(json!([{"name":"request", "role":"call_target"}]), json!([])),
             ),
             (
                 "server".into(),
                 contract(
-                    json!([{"name":"incoming", "kind":"commands", "port":"commands", "signature":signature}]),
+                    json!([{"name":"incoming", "role":"call_ingress", "port":"commands", "signature":signature}]),
                     json!([]),
                 ),
             ),
@@ -238,7 +247,10 @@ mod tests {
     fn latest_rejects_multiple_publishers_instead_of_competing_for_one_slot() {
         let contracts = BTreeMap::from([(
             "consumer".into(),
-            contract(json!([{"name":"state", "kind":"latest"}]), json!([])),
+            contract(
+                json!([{"name":"state", "role":"observation_latest"}]),
+                json!([]),
+            ),
         )]);
         assert!(
             validate_connected_endpoints(
@@ -250,7 +262,7 @@ mod tests {
     }
     #[test]
     fn generated_request_and_response_identity_are_checked_before_launch() {
-        let signature = json!({"name":"commands", "service":"fixture.Service", "method":"Commands", "kind":"commands", "request":"fixture.Request", "response":"fixture.Response"});
+        let signature = json!({"endpoint":"commands", "service":"fixture.Service", "method":"Commands", "shape":"call", "request":"fixture.Request", "response":"fixture.Response", "retained_latest":false, "lease_valid_for_ms":null});
         for (request, response) in [
             ("fixture.Other", "fixture.Response"),
             ("fixture.Request", "fixture.Other"),
@@ -259,14 +271,14 @@ mod tests {
                 (
                     "client".into(),
                     contract(
-                        json!([{"name":"request", "kind":"request", "request_fqn": request, "response_fqn": response}]),
+                        json!([{"name":"request", "role":"call_target", "request_fqn": request, "response_fqn": response}]),
                         json!([]),
                     ),
                 ),
                 (
                     "server".into(),
                     contract(
-                        json!([{"name":"incoming", "kind":"commands", "port":"commands", "signature":signature}]),
+                        json!([{"name":"incoming", "role":"call_ingress", "port":"commands", "signature":signature}]),
                         json!([]),
                     ),
                 ),

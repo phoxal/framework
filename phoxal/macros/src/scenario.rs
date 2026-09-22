@@ -1,141 +1,127 @@
 //! `#[phoxal::scenario]` proc-macro implementation.
 //!
-//! Attribute on an `impl phoxal::scenario::Scenario for ConcreteType`
-//! block. The macro:
-//!
-//! 1. Verifies the impl's trait ends in `Scenario`.
-//! 2. Rejects generic impls and anonymous types.
-//! 3. Generates one monomorphized `fn()` entry that constructs the
-//!    scenario via `Default::default()`, calls `plan()`, and returns
-//!    the resulting plan in `ScenarioOutcome::Plan`.
-//! 4. Submits a [`ScenarioDescriptor`] into the static
-//!    [`inventory::Inventory`] for the harness to discover.
-//!
-//! Per the plan the public identity is exactly `scenarios/<StructIdent>`.
-//! The macro ignores the impl's file or module name.
+//! A scenario is an ordinary Rust test function whose only argument is a
+//! mutable `phoxal::scenario::Simulation` fixture. The expansion adds
+//! `#[test]`, constructs the fixture from the command-scoped test context,
+//! and otherwise leaves Rust's test filtering, ignore, cfg, reporting, and
+//! assertion behavior untouched.
 
-use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
-use syn::{ItemImpl, Type};
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::{FnArg, ItemFn, Pat, ReturnType, Type};
 
-pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
-    let impl_block = syn::parse2::<ItemImpl>(item)?;
-
-    // (1) Must have `impl ... for ...`.
-    let (_, trait_path, _) = impl_block.trait_.as_ref().ok_or_else(|| {
-        syn::Error::new_spanned(
-            &impl_block,
-            "#[phoxal::scenario] requires `impl <trait> for <type>`, not an inherent impl",
-        )
-    })?;
-
-    // (2) The trait's last segment must be `Scenario`.
-    let trait_ident = trait_path
-        .segments
-        .last()
-        .ok_or_else(|| syn::Error::new_spanned(trait_path, "empty trait path"))?;
-    if trait_ident.ident != "Scenario" {
-        let message = format!(
-            "#[phoxal::scenario] requires an `impl ... Scenario for ...` block; found `{}`",
-            trait_ident.ident
-        );
-        return Err(syn::Error::new_spanned(&trait_ident.ident, message));
-    }
-
-    // (3) Reject generic impls.
-    if !impl_block.generics.params.is_empty() {
+pub fn expand_scenario(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    if !attr.is_empty() {
         return Err(syn::Error::new_spanned(
-            &impl_block.generics,
-            "#[phoxal::scenario] does not support generic impls; declare a concrete scenario struct",
+            attr,
+            "#[phoxal::scenario] does not accept arguments",
         ));
     }
 
-    // (4) Capture the concrete self type. Only `Type::Path` with a final
-    //     ident is accepted; anonymous types, references, and generics are
-    //     rejected with a clear diagnostic.
-    let self_type = &impl_block.self_ty;
-    let type_ident = match &**self_type {
-        Type::Path(type_path) if type_path.qself.is_none() => type_path
-            .path
-            .segments
-            .last()
-            .ok_or_else(|| syn::Error::new_spanned(self_type, "expected a named scenario type"))?
-            .ident
-            .clone(),
-        _ => {
-            return Err(syn::Error::new_spanned(
-                self_type,
-                "#[phoxal::scenario] requires a concrete `pub struct` self type",
-            ));
-        }
+    let mut function = syn::parse2::<ItemFn>(item)?;
+    validate_function(&function)?;
+
+    let argument = function.sig.inputs.first().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &function.sig,
+            "#[phoxal::scenario] requires one `&mut Simulation` argument",
+        )
+    })?;
+    let FnArg::Typed(argument) = argument else {
+        return Err(syn::Error::new_spanned(
+            argument,
+            "#[phoxal::scenario] cannot be applied to a method",
+        ));
     };
-
-    // (5) Capture the starting line of the user's `impl` block so the
-    //     registry can report a meaningful diagnostic location instead of
-    //     a placeholder. `proc_macro2::Span::start()` resolves through
-    //     both host toolchains (rustc and rust-analyzer) without falling
-    //     back to `0`. `line` returns `usize`; we truncate to `u32` since
-    //     line numbers greater than `u32::MAX` are not realistic for
-    //     human-authored sources.
-    let span_start_line: u32 =
-        u32::try_from(impl_block.brace_token.span.open().start().line).unwrap_or(u32::MAX);
-
-    let short_name = type_ident.to_string();
-    let full_name = format!("scenarios/{short_name}");
-    let entry_name = format_ident!("__phoxal_scenario_entry_{}", type_ident);
-
-    // (6) Build the expansion. The user's impl is preserved verbatim;
-    //     the entry function is monomorphized (one per impl block) and
-    //     the descriptor registers it. The entry constructs the
-    //     scenario through `Default::default()`, validates `plan()`,
-    //     and hands the validated plan back to the case host as a
-    //     [`PlannedScenario`](::phoxal::scenario::PlannedScenario).
-    //     The case host drives the lifecycle that turns the plan
-    //     into a real controlled-runtime execution and only it may
-    //     produce the final [`ScenarioOutcome`].
-    //
-    //     The macro registers a generic SDK case entry that plans and returns;
-    //     the case host executes and verifies.
-    let expanded = quote! {
-        #impl_block
-
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::PlannedScenario> {
-            // Construct through `Default`; `Scenario` does not provide
-            // its own `default` method. The instance is retained in a
-            // `Box<dyn ScenarioBox>` so the case host invokes the
-            // user's `verify()` on the same struct the macro called
-            // `plan()` on.
-            let scenario = <#self_type as ::std::default::Default>::default();
-            // Validate the user's plan so an authored impl that does
-            // not type-check or fails validation never registers. The
-            // case host retains the validated plan and drives it.
-            let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
-            Ok(::phoxal::scenario::PlannedScenario {
-                name: #full_name.to_owned(),
-                plan,
-                scenario: ::std::boxed::Box::new(scenario),
-            })
-        }
-
-        ::phoxal::scenario::__macro::inventory::submit! {
-            ::phoxal::scenario::ScenarioDescriptor {
-                name: #full_name,
-                short_name: #short_name,
-                module_path: ::std::module_path!(),
-                source_file: ::std::file!(),
-                source_line: #span_start_line,
-                entry: #entry_name,
-            }
-        }
+    let Pat::Ident(binding) = argument.pat.as_ref() else {
+        return Err(syn::Error::new_spanned(
+            &argument.pat,
+            "the Simulation argument must use an identifier pattern",
+        ));
     };
+    let Type::Reference(reference) = argument.ty.as_ref() else {
+        unreachable!("validate_function accepted a non-reference fixture")
+    };
+    let fixture_name = binding.ident.clone();
+    let fixture_type = reference.elem.clone();
+    let test_name = function.sig.ident.clone();
+    let original = function.block.clone();
 
-    Ok(expanded)
+    function.sig.inputs.clear();
+    function.attrs.push(syn::parse_quote!(#[test]));
+    *function.block = syn::parse_quote!({
+        let mut __phoxal_simulation: #fixture_type =
+            ::phoxal::scenario::Simulation::__from_context(::std::concat!(
+                ::std::module_path!(),
+                "::",
+                ::std::stringify!(#test_name),
+            ))?;
+        let #fixture_name = &mut __phoxal_simulation;
+        #original
+    });
+
+    Ok(quote!(#function))
 }
 
-// Compile-time pin: forces this module to be a regular Rust module even
-// when no other items reference its symbols, so editor tooling still sees
-// the file.
-#[allow(dead_code)]
-fn _module_anchor(_span: Span) {}
+fn validate_function(function: &ItemFn) -> syn::Result<()> {
+    if function.sig.constness.is_some()
+        || function.sig.asyncness.is_some()
+        || function.sig.unsafety.is_some()
+        || function.sig.abi.is_some()
+        || !function.sig.generics.params.is_empty()
+        || function.sig.variadic.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            &function.sig,
+            "#[phoxal::scenario] requires a non-generic synchronous safe Rust function",
+        ));
+    }
+    if function.sig.inputs.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            &function.sig.inputs,
+            "#[phoxal::scenario] requires exactly one `&mut Simulation` argument",
+        ));
+    }
+    let Some(FnArg::Typed(argument)) = function.sig.inputs.first() else {
+        return Err(syn::Error::new_spanned(
+            &function.sig.inputs,
+            "#[phoxal::scenario] cannot be applied to a method",
+        ));
+    };
+    let Type::Reference(reference) = argument.ty.as_ref() else {
+        return Err(syn::Error::new_spanned(
+            &argument.ty,
+            "the scenario argument must be `&mut Simulation`",
+        ));
+    };
+    if reference.mutability.is_none() {
+        return Err(syn::Error::new_spanned(
+            &argument.ty,
+            "the scenario argument must be mutable: `&mut Simulation`",
+        ));
+    }
+    let Type::Path(path) = reference.elem.as_ref() else {
+        return Err(syn::Error::new_spanned(
+            &reference.elem,
+            "the scenario argument must be `&mut Simulation`",
+        ));
+    };
+    if path
+        .path
+        .segments
+        .last()
+        .is_none_or(|part| part.ident != "Simulation")
+    {
+        return Err(syn::Error::new_spanned(
+            &reference.elem,
+            "the scenario argument type must be `Simulation`",
+        ));
+    }
+    if matches!(function.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &function.sig,
+            "a scenario function must return `phoxal::Result<()>`",
+        ));
+    }
+    Ok(())
+}

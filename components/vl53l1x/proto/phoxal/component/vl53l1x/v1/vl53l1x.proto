@@ -3,11 +3,10 @@ syntax = "proto3";
 package phoxal.component.vl53l1x.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 import "phoxal/robotics/v1/robotics.proto";
 
 service Vl53l1x {
   rpc Range(google.protobuf.Empty) returns (stream phoxal.robotics.v1.RangeSample) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 }

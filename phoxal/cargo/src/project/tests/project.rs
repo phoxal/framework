@@ -73,6 +73,9 @@ fn project_fixture_with_service_schema(
     service_schema: &str,
 ) -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
+    let framework = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
     write(
         &directory.path().join("Cargo.toml"),
         r#"[package]
@@ -82,11 +85,69 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-counter-service = { path = "counter-service" }
 passive-sensor = { path = "passive-sensor" }
 
 [patch.phoxal]
 phoxal-supervisor = { path = "supervisor" }
+phoxal = { path = "fixture-phoxal" }
+"#,
+    )?;
+    write(
+        &directory.path().join("fixture-phoxal/Cargo.toml"),
+        r#"[package]
+name = "phoxal"
+version = "0.0.0-dev.2"
+edition = "2024"
+
+[features]
+default = []
+contract = []
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )?;
+    write(
+        &directory.path().join("fixture-phoxal/src/lib.rs"),
+        r#"pub mod contract {
+    use core::marker::PhantomData;
+
+    #[derive(Clone, Copy, Default)]
+    pub struct Empty;
+
+    pub const fn descriptor_frame<const N: usize>(bytes: &[u8]) -> [u8; N] {
+        assert!(N == 16 + bytes.len());
+        let mut frame = [0_u8; N];
+        let magic = *b"PHXDESC1";
+        let mut index = 0;
+        while index < magic.len() { frame[index] = magic[index]; index += 1; }
+        let length = (bytes.len() as u64).to_le_bytes();
+        index = 0;
+        while index < length.len() { frame[8 + index] = length[index]; index += 1; }
+        index = 0;
+        while index < bytes.len() { frame[16 + index] = bytes[index]; index += 1; }
+        frame
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct ObservationMethod<T>(PhantomData<fn() -> T>);
+    impl<T> ObservationMethod<T> {
+        pub const fn new(_: &'static str, _: &'static str, _: &'static str, _: &'static str, _: &'static str, _: bool, _: Option<u64>, _: &'static [u8]) -> Self { Self(PhantomData) }
+        pub fn bind(self, _: &str) -> Observation<T> { Observation(PhantomData) }
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct CallMethod<Request, Response>(PhantomData<fn(Request) -> Response>);
+    impl<Request, Response> CallMethod<Request, Response> {
+        pub const fn new(_: &'static str, _: &'static str, _: &'static str, _: &'static str, _: &'static str, _: Option<u64>, _: &'static [u8]) -> Self { Self(PhantomData) }
+        pub fn bind(self, _: &str, _: Request) -> Call<Request, Response> { Call(PhantomData) }
+        pub fn withdraw(self, _: &str) -> Withdraw<Request, Response> { Withdraw(PhantomData) }
+    }
+
+    pub struct Observation<T>(PhantomData<fn() -> T>);
+    pub struct Call<Request, Response>(PhantomData<fn(Request) -> Response>);
+    pub struct Withdraw<Request, Response>(PhantomData<fn(Request) -> Response>);
+}
 "#,
     )?;
     write(
@@ -110,20 +171,33 @@ edition = "2024"
 build = "build.rs"
 
 [lib]
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "counter-service"
 path = "src/main.rs"
+
+[dependencies]
+phoxal = { version = "=0.0.0-dev.2", registry = "phoxal", default-features = false, features = ["contract"] }
+prost = "0.14.4"
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/inspection/v1/inspection.proto"]
+includes = ["proto"]
+generated = "generated"
 "#,
     )?;
     write(
         &directory.path().join("counter-service/build.rs"),
         &artifact_build_script(service_schema, true),
     )?;
-    write(
-        &directory.path().join("counter-service/src/lib.rs"),
-        "pub struct Counter;\n",
+    copy_tree(
+        &framework.join("tests/contracts/producer/generated"),
+        &directory.path().join("counter-service/generated"),
+    )?;
+    copy_tree(
+        &framework.join("tests/contracts/producer/proto"),
+        &directory.path().join("counter-service/proto"),
     )?;
     write(
         &directory.path().join("counter-service/src/main.rs"),
@@ -170,7 +244,7 @@ capabilities:
         &directory.path().join("supervisor/Cargo.toml"),
         r#"[package]
 name = "phoxal-supervisor"
-version = "0.68.0"
+version = "0.0.0-dev.2"
 edition = "2024"
 
 [dependencies]
@@ -222,12 +296,133 @@ robot:
 brain: {}
 services:
   counter:
-    implementation: counter-service
+    source:
+      path: counter-service
 connections:
   counter.input: sensor.sample
 "#,
     )?;
     Ok(directory)
+}
+
+#[test]
+fn generated_robot_api_exists_before_metadata_and_exposes_typed_instance_bindings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let framework = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+    let service = framework.join("tests/contracts/producer").canonicalize()?;
+    let phoxal = framework.join("phoxal").canonicalize()?;
+    let supervisor = framework.join("supervisor").canonicalize()?;
+    let service_path = service.to_string_lossy().replace('\\', "/");
+
+    write(
+        &root.join("Cargo.toml"),
+        &format!(
+            r#"[package]
+name = "generated-api-robot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+phoxal-supervisor = {{ path = {supervisor:?} }}
+
+[patch.phoxal]
+phoxal = {{ path = {phoxal:?} }}
+"#
+        ),
+    )?;
+    write(&root.join("src/main.rs"), "fn main() {}\n")?;
+    write(
+        &root.join("robot.yaml"),
+        &format!(
+            "schema: phoxal/robot/v0\nrobot:\n  id: generated-api-robot\n  components: {{}}\nservices:\n  inspection:\n    source:\n      path: {service_path}\n"
+        ),
+    )?;
+    fs::create_dir_all(root.join(".cargo"))?;
+    let registry = root.join(".phoxal-test-registry");
+    fs::create_dir_all(&registry)?;
+    write(
+        &registry.join("config.json"),
+        "{\"dl\":\"https://example.invalid/{crate}/{version}\"}\n",
+    )?;
+    let registry_path = registry
+        .canonicalize()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    write(
+        &root.join(".cargo/config.toml"),
+        &format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}/\"\n"),
+    )?;
+
+    let project = Project::discover(root)?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let mut transaction =
+        super::super::preparation::ensure_required_dependencies(&project.layout, &options)?;
+    super::super::preparation::prepare_robot_api_in_transaction(
+        &project.layout,
+        &project.document,
+        &options,
+        &mut transaction,
+    )?;
+    let metadata = super::super::cargo::load_metadata_at(
+        project.layout.cargo_manifest(),
+        project.layout.root(),
+        None,
+        &options,
+    )?;
+    let sources = super::super::selection::resolve_sources(
+        &project.document,
+        &metadata,
+        project.layout.cargo_manifest(),
+    )?;
+    super::super::preparation::finalize_robot_api_in_transaction(
+        &project.layout,
+        &project.document,
+        &sources,
+        &options,
+        &mut transaction,
+    )?;
+    let _ = transaction.commit();
+    let root_manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    assert!(root_manifest.contains("robot_api"));
+    assert!(!root_manifest.contains("phoxal-contract-owner-fixture"));
+    assert_eq!(
+        sources
+            .services
+            .get("inspection")
+            .expect("selected service")
+            .package,
+        "phoxal-contract-owner-fixture"
+    );
+
+    let api_manifest = fs::read_to_string(root.join(".phoxal/robot-api/Cargo.toml"))?;
+    assert!(api_manifest.contains("name = \"generated-api-robot-api\""));
+    assert!(api_manifest.contains("service_inspection"));
+    let contracts = fs::read_to_string(root.join(".phoxal/robot-api/src/contracts.rs"))?;
+    assert!(contracts.contains("pub mod example"));
+    assert!(contracts.contains("pub mod inspection"));
+    let services = fs::read_to_string(root.join(".phoxal/robot-api/src/services.rs"))?;
+    assert!(services.contains("pub fn target"));
+    assert!(services.contains("pub fn withdraw_target"));
+    assert!(services.contains("pub fn status"));
+
+    let output = Command::new("cargo")
+        .args(["check", "--offline"])
+        .current_dir(root)
+        .env_remove("RUSTC_WRAPPER")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "generated facade must compile:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 fn targetless_component_fixture() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
@@ -269,6 +464,7 @@ edition = "2024"
 
 [patch.phoxal]
 phoxal-supervisor = { path = "robot/supervisor" }
+phoxal = { path = "robot/fixture-phoxal" }
 "#,
     )?;
     let source = project_fixture()?;
@@ -278,7 +474,7 @@ phoxal-supervisor = { path = "robot/supervisor" }
     let contents = fs::read_to_string(&manifest)?
         .replace("edition = \"2024\"", "edition.workspace = true")
         .replace(
-            "\n[patch.phoxal]\nphoxal-supervisor = { path = \"supervisor\" }\n",
+            "\n[patch.phoxal]\nphoxal-supervisor = { path = \"supervisor\" }\nphoxal = { path = \"fixture-phoxal\" }\n",
             "\n",
         );
     write(&manifest, &contents)?;
@@ -302,7 +498,7 @@ fn nested_workspace_race_build_script() -> String {
 
 fn artifact_build_script(config_schema: &str, with_input: bool) -> String {
     let inputs = if with_input {
-        r#"[{"name":"input","kind":"latest","max_age_ms":null,"max_items":null,"max_bytes":null,"port":null,"signature":null,"request_fqn":null,"response_fqn":"fixture.Sample"}]"#
+        r#"[{"name":"input","role":"observation_latest","max_age_ms":null,"max_items":null,"max_bytes":null,"port":null,"signature":null,"request_fqn":null,"response_fqn":"fixture.Sample"}]"#
     } else {
         "[]"
     };
@@ -345,20 +541,22 @@ fn preparation_resolves_the_root_brain_services_and_passive_component()
     let prepared = project.prepare(&CargoOptions::default())?;
 
     assert_eq!(prepared.root_package().name.as_str(), "fixture-robot");
-    assert_eq!(prepared.preparation_changes().len(), 1);
-    match &prepared.preparation_changes()[0] {
-        crate::project::PreparationChange::SupervisorDependencyAdded { dependency, .. } => {
-            assert_eq!(dependency, "phoxal-supervisor");
-        }
-        other => panic!("expected supervisor dependency addition, got {other:?}"),
-    }
+    assert!(prepared.preparation_changes().iter().any(|change| matches!(
+        change,
+        crate::project::PreparationChange::SupervisorDependencyAdded { dependency, .. }
+            if dependency == "phoxal-supervisor"
+    )));
+    assert!(prepared.preparation_changes().iter().any(|change| matches!(
+        change,
+        crate::project::PreparationChange::RobotApiFileWritten { .. }
+    )));
     assert!(
         fs::read_to_string(fixture.path().join("Cargo.toml"))?
-            .contains("phoxal-supervisor = { version = \"*\", registry = \"phoxal\" }")
+            .contains("phoxal-supervisor = { version = \"=0.0.0-dev.2\", registry = \"phoxal\" }")
     );
     assert_eq!(prepared.sources().brain.target, "fixture-robot");
     let service = &prepared.sources().services["counter"];
-    assert_eq!(service.dependency_key, "counter-service");
+    assert_eq!(service.dependency_key, "service_counter");
     assert_eq!(service.binary.target, "counter-service");
     assert_eq!(service.library.target, "counter_service");
     assert!(matches!(service.source, PackageSource::Local { .. }));
@@ -389,7 +587,13 @@ fn targetless_local_component_uses_an_isolated_inert_carrier()
         ..CargoOptions::default()
     })?;
 
-    assert_eq!(fs::read(&root_manifest)?, before_root);
+    let after_root = fs::read(&root_manifest)?;
+    assert_ne!(after_root, before_root);
+    assert!(
+        String::from_utf8(after_root)?.contains(
+            "robot_api = { package = \"fixture-robot-api\", path = \".phoxal/robot-api\" }"
+        )
+    );
     assert_eq!(fs::read(&component_manifest)?, before_component_manifest);
     assert_eq!(
         fs::read(&component_definition)?,
@@ -456,6 +660,15 @@ fn targetless_local_logical_identity_is_stable_across_shadow_preparations()
         toolchain: second_toolchain,
         ..
     } = second_bundle.provenance();
+    let first_source_identities = first_provenance_sources
+        .iter()
+        .map(|source| (&source.package, &source.identity, &source.digest))
+        .collect::<Vec<_>>();
+    let second_source_identities = second_provenance_sources
+        .iter()
+        .map(|source| (&source.package, &source.identity, &source.digest))
+        .collect::<Vec<_>>();
+    assert_eq!(first_source_identities, second_source_identities);
     assert_eq!(first_provenance_sources, second_provenance_sources);
     assert_eq!(first_source_closure_sha256, second_source_closure_sha256);
     assert_eq!(first_source_tree, second_source_tree);
@@ -489,10 +702,8 @@ fn targetless_local_preparation_rolls_back_the_logical_lock_on_selection_failure
     let before_component_manifest = fs::read(&component_manifest)?;
     let before_component_definition = fs::read(&component_definition)?;
     let robot = fixture.path().join("robot.yaml");
-    let robot_contents = fs::read_to_string(&robot)?.replace(
-        "implementation: counter-service",
-        "implementation: counter-servic",
-    );
+    let robot_contents =
+        fs::read_to_string(&robot)?.replace("path: counter-service", "path: counter-servic");
     write(&robot, &robot_contents)?;
 
     let error = Project::discover(fixture.path())?
@@ -503,7 +714,9 @@ fn targetless_local_preparation_rolls_back_the_logical_lock_on_selection_failure
         .expect_err("source selection failure must not publish staged lock state");
     assert!(matches!(
         error,
-        Error::Source(SourceError::DependencyNotDeclared { key, .. }) if key == "counter-servic"
+        Error::ManifestPreparation { path, message }
+            if path.ends_with("counter-servic")
+                && message.contains("cannot resolve local service source")
     ));
     assert_eq!(fs::read(&root_manifest)?, before_root);
     assert_eq!(fs::read(&component_manifest)?, before_component_manifest);
@@ -531,7 +744,10 @@ fn targetless_local_locked_mode_requires_a_real_existing_lock()
     let error = project
         .prepare(&locked)
         .expect_err("locked targetless preparation must not create a lock");
-    assert!(matches!(error, Error::CargoMetadata { .. }));
+    assert!(matches!(
+        error,
+        Error::MissingInitialization { dependency, .. } if dependency == "robot_api"
+    ));
     assert_eq!(fs::read(&root_manifest)?, before_root);
     assert!(!fixture.path().join("Cargo.lock").exists());
     assert!(!fixture.path().join("passive-sensor/_cargo/lib.rs").exists());
@@ -673,7 +889,8 @@ robot:
   components: {}
 services:
   counter:
-    implementation: counter-servic
+    source:
+      path: counter-servic
 connections: {}
 "#,
     )?;
@@ -685,7 +902,9 @@ connections: {}
         .expect_err("fuzzy dependency names must fail");
     assert!(matches!(
         error,
-        Error::Source(SourceError::DependencyNotDeclared { key, .. }) if key == "counter-servic"
+        Error::ManifestPreparation { path, message }
+            if path.ends_with("counter-servic")
+                && message.contains("cannot resolve local service source")
     ));
     assert_eq!(fs::read(&manifest)?, before_manifest);
     assert!(!fixture.path().join("Cargo.lock").exists());
@@ -723,7 +942,7 @@ fn failed_selection_restores_a_preexisting_workspace_lock_exactly()
 
     let manifest = fixture.path().join("Cargo.toml");
     let without_supervisor = fs::read_to_string(&manifest)?.replace(
-        "phoxal-supervisor = { version = \"*\", registry = \"phoxal\" }\n",
+        "phoxal-supervisor = { version = \"=0.0.0-dev.2\", registry = \"phoxal\" }\n",
         "",
     );
     write(&manifest, &without_supervisor)?;
@@ -732,7 +951,7 @@ fn failed_selection_restores_a_preexisting_workspace_lock_exactly()
     write(
         &fixture.path().join("supervisor/Cargo.toml"),
         &fs::read_to_string(fixture.path().join("supervisor/Cargo.toml"))?
-            .replace("version = \"0.68.0\"", "version = \"0.69.0\""),
+            .replace("version = \"0.0.0-dev.2\"", "version = \"0.0.0-dev.3\""),
     )?;
     write(
         &fixture.path().join("robot.yaml"),
@@ -742,7 +961,8 @@ robot:
   components: {}
 services:
   counter:
-    implementation: counter-servic
+    source:
+      path: counter-servic
 connections: {}
 "#,
     )?;
@@ -752,7 +972,9 @@ connections: {}
         .expect_err("selection failure must roll back automatic preparation");
     assert!(matches!(
         error,
-        Error::Source(SourceError::DependencyNotDeclared { key, .. }) if key == "counter-servic"
+        Error::ManifestPreparation { path, message }
+            if path.ends_with("counter-servic")
+                && message.contains("cannot resolve local service source")
     ));
     assert_eq!(fs::read(&manifest)?, without_supervisor.as_bytes());
     assert_eq!(fs::read(&lock)?, before_lock);
@@ -1059,7 +1281,8 @@ robot:
 brain: {}
 services:
   counter:
-    implementation: counter-service
+    source:
+      path: counter-service
     config: {}
 connections: {}
 "#,
@@ -1104,7 +1327,8 @@ robot:
 brain: {}
 services:
   counter:
-    implementation: counter-service
+    source:
+      path: counter-service
     config: {}
 connections: {}
 "#,
@@ -1194,7 +1418,7 @@ fn run_local_builds_the_bundle_and_launches_the_local_supervisor()
     assert_eq!(bundle_supervisor.instance, "supervisor");
     assert_eq!(bundle_supervisor.role, "supervisor");
     assert_eq!(bundle_supervisor.package, "phoxal-supervisor");
-    assert_eq!(bundle_supervisor.version, "0.68.0");
+    assert_eq!(bundle_supervisor.version, "0.0.0-dev.2");
     assert_eq!(
         bundle_supervisor.bytes,
         fs::metadata(bundle.executable("supervisor"))?.len()
@@ -1319,7 +1543,8 @@ robot:
 brain: {}
 services:
   counter:
-    implementation: counter-service
+    source:
+      path: counter-service
 connections: {}
 "#,
     )?;
@@ -1673,6 +1898,9 @@ fn bundle_carries_a_relocatable_nested_external_path_closure()
 fn bundle_records_the_full_pinned_git_revision_and_subdirectory()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
+    let framework = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
     let parent = fixture
         .path()
         .parent()
@@ -1690,18 +1918,37 @@ edition = "2024"
 build = "build.rs"
 
 [lib]
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "fixture-git-service"
 path = "src/main.rs"
+
+[dependencies]
+phoxal = { version = "=0.0.0-dev.2", registry = "phoxal", default-features = false, features = ["contract"] }
+prost = "0.14.4"
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/inspection/v1/inspection.proto"]
+includes = ["proto"]
+generated = "generated"
 "#,
     )?;
     write(
         &package_root.join("build.rs"),
         &artifact_build_script(r#"{"type":"object"}"#, true),
     )?;
-    write(&package_root.join("src/lib.rs"), "pub struct GitService;\n")?;
+    copy_tree(
+        &framework.join("tests/contracts/producer/proto"),
+        &package_root.join("proto"),
+    )?;
+    phoxal_build::generate_contract_package(
+        &[package_root.join("proto/example/inspection/v1/inspection.proto")],
+        &[package_root.join("proto")],
+        &package_root.join("generated"),
+        &[],
+        &[],
+    )?;
     write(
         &package_root.join("src/main.rs"),
         "include!(concat!(env!(\"OUT_DIR\"), \"/artifact.rs\"));\nfn main() {}\n",
@@ -1737,19 +1984,13 @@ path = "src/main.rs"
     .trim()
     .to_owned();
     let repository_url = format!("file://{}", repository.path().display());
-    let root_manifest = fixture.path().join("Cargo.toml");
-    let root = fs::read_to_string(&root_manifest)?.replace(
-        "[dependencies]\n",
-        &format!(
-            "[dependencies]\ngit-service = {{ package = \"fixture-git-service\", git = \"{repository_url}\", rev = \"{revision}\" }}\n"
-        ),
-    );
-    write(&root_manifest, &root)?;
     write(
         &fixture.path().join("robot.yaml"),
         &fs::read_to_string(fixture.path().join("robot.yaml"))?.replace(
-            "implementation: counter-service",
-            "implementation: git-service",
+            "source:\n      path: counter-service",
+            &format!(
+                "source:\n      git: {repository_url}\n      rev: {revision}\n      package: fixture-git-service\n      path: packages/git-service"
+            ),
         ),
     )?;
 

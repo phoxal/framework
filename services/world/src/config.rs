@@ -80,10 +80,10 @@ const fn default_history_capacity() -> u32 {
 }
 
 pub(super) fn validate_config(config: &WorldConfig) -> phoxal::Result<()> {
-    if config.frame_id.is_empty() || config.frame_id.len() > phoxal_service_world::MAX_ID_BYTES {
+    if config.frame_id.is_empty() || config.frame_id.len() > crate::validation::MAX_ID_BYTES {
         return Err(anyhow::anyhow!(
             "frame_id must contain 1 to {} UTF-8 bytes",
-            phoxal_service_world::MAX_ID_BYTES
+            crate::validation::MAX_ID_BYTES
         ));
     }
     if !config.origin_x_m.is_finite() || !config.origin_y_m.is_finite() {

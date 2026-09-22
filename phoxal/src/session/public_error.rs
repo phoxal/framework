@@ -16,8 +16,8 @@ pub enum SessionError {
 
     /// A remotely advertised descriptor did not match the generated local
     /// descriptor supplied to `Service::port`.
-    #[error("the public port descriptor is not admitted: {detail}")]
-    PortNotAdmitted {
+    #[error("the public method descriptor is not admitted: {detail}")]
+    MethodNotAdmitted {
         /// Bounded descriptor diagnostic.
         detail: String,
     },

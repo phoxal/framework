@@ -147,7 +147,7 @@ mod tests {
                 "consumer",
                 serde_json::json!({
                     "runtime": { "schema": "phoxal/artifact/v0", "record": "runtime", "period_ms": 20, "timeout_ms": 500,
-                        "inputs": [{"name": "value", "kind": "latest", "port": "value", "max_items": 1, "max_bytes": 8}],
+                        "inputs": [{"name": "value", "role": "observation_latest", "port": "value", "max_items": 1, "max_bytes": 8}],
                         "transient_outputs": [], "service_outputs": [] }, "descriptors": []
                 }),
             )],
@@ -167,7 +167,9 @@ mod tests {
                 method: "Sample".into(),
                 service_instance: "sensor".into(),
                 port: "value".into(),
-                kind: "sample".into(),
+                shape: phoxal::artifact::MethodShape::Observation,
+                retained_latest: false,
+                lease_valid_for_ms: None,
                 input_fqn: "test.Empty".into(),
                 payload_fqn: "test.Value".into(),
                 max_message_bytes: 8,

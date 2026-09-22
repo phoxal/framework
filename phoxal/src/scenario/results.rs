@@ -136,6 +136,8 @@ pub enum SealError {
         entries: usize,
         cap: usize,
     },
+    /// A capture lost required records, provenance, or terminal drain evidence.
+    IncompleteCapture { capture: String, reason: String },
     /// Cumulative bytes across all capture records in the run
     /// exceed `MAX_RUN_BYTES`.
     RunByteOverflow { bytes: usize, cap: usize },
@@ -275,6 +277,9 @@ impl std::fmt::Display for SealError {
                 f,
                 "capture `{capture}` has {entries} entries, exceeding the {cap}-entry interval cap"
             ),
+            Self::IncompleteCapture { capture, reason } => {
+                write!(f, "capture `{capture}` is incomplete: {reason}")
+            }
             Self::RunByteOverflow { bytes, cap } => {
                 write!(f, "cumulative capture bytes {bytes} exceed run cap {cap}")
             }
@@ -577,6 +582,23 @@ pub enum CaptureRecord {
     Events(Vec<Vec<u8>>),
     /// Native simulator body data, identified by units and frame.
     NativeBody(Vec<u8>),
+    /// Generated observation records with their original runtime provenance.
+    Observations {
+        kind: String,
+        records: Vec<CapturedObservation>,
+        gap_before_first: bool,
+        complete: bool,
+        terminal: bool,
+    },
+}
+
+/// One generated observation and the provenance retained by its envelope.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CapturedObservation {
+    pub payload: Vec<u8>,
+    pub source: String,
+    pub capture_time_ns: u64,
+    pub sequence: u64,
 }
 
 /// Per-record byte cap. Each individual `Vec<u8>` inside a record is
@@ -786,12 +808,71 @@ impl EvidenceCollector {
         };
         let expected_kind = capture_kind_name(declared);
         let actual_kind = record_kind_name(&record);
-        if expected_kind != actual_kind {
+        let kind_matches = match &record {
+            CaptureRecord::Observations { kind, .. } => expected_kind == kind,
+            _ => expected_kind == actual_kind,
+        };
+        if !kind_matches {
             return Err(SealError::WrongCaptureKind {
                 capture: name,
                 expected: expected_kind,
                 actual: actual_kind,
             });
+        }
+        if let CaptureRecord::Observations {
+            records,
+            gap_before_first,
+            complete,
+            terminal,
+            ..
+        } = &record
+        {
+            let policy = declared
+                .policy()
+                .ok_or_else(|| SealError::IncompleteCapture {
+                    capture: name.clone(),
+                    reason: "native capture used generated observation evidence".to_owned(),
+                })?;
+            let capacity = usize::try_from(policy.capacity()).unwrap_or(usize::MAX);
+            if records.len() > capacity {
+                return Err(SealError::CaptureEntryOverflow {
+                    capture: name,
+                    entries: records.len(),
+                    cap: capacity,
+                });
+            }
+            if !terminal {
+                return Err(SealError::IncompleteCapture {
+                    capture: name,
+                    reason: "final capture drain was not observed".to_owned(),
+                });
+            }
+            if policy.requires_complete_history() && (!complete || *gap_before_first) {
+                return Err(SealError::IncompleteCapture {
+                    capture: name,
+                    reason: "required history contains a gap or overflow".to_owned(),
+                });
+            }
+            if matches!(policy, crate::scenario::CapturePolicy::Latest) && records.is_empty() {
+                return Err(SealError::IncompleteCapture {
+                    capture: name,
+                    reason: "latest capture has no value".to_owned(),
+                });
+            }
+            if records.iter().any(|record| record.source.is_empty()) {
+                return Err(SealError::IncompleteCapture {
+                    capture: name,
+                    reason: "observation source identity is empty".to_owned(),
+                });
+            }
+            if records.windows(2).any(|pair| {
+                pair[0].source == pair[1].source && pair[0].sequence >= pair[1].sequence
+            }) {
+                return Err(SealError::IncompleteCapture {
+                    capture: name,
+                    reason: "observation sequence is not strictly increasing".to_owned(),
+                });
+            }
         }
         // Enforce per-record byte and entry caps. Each individual
         // record is bounded to `MAX_RECORD_BYTES`; interval records
@@ -810,6 +891,11 @@ impl EvidenceCollector {
                 samples
                     .iter()
                     .fold(0usize, |acc, sample| acc.saturating_add(sample.len()))
+            }
+            CaptureRecord::Observations { records, .. } => {
+                records.iter().fold(0usize, |acc, record| {
+                    acc.saturating_add(record.payload.len())
+                })
             }
         };
         if record_bytes > MAX_RECORD_BYTES {
@@ -841,7 +927,9 @@ impl EvidenceCollector {
                     });
                 }
             }
-            CaptureRecord::Samples(_) | CaptureRecord::Events(_) => {}
+            CaptureRecord::Samples(_)
+            | CaptureRecord::Events(_)
+            | CaptureRecord::Observations { .. } => {}
         }
         self.captures.insert(name, record);
         Ok(())
@@ -1099,6 +1187,7 @@ fn record_kind_name(record: &CaptureRecord) -> &'static str {
         CaptureRecord::Samples(_) => "sample",
         CaptureRecord::Events(_) => "event",
         CaptureRecord::NativeBody(_) => "native_body",
+        CaptureRecord::Observations { .. } => "observation",
     }
 }
 
@@ -2218,5 +2307,84 @@ mod tests {
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed(), "sparse valid case must pass");
+    }
+
+    #[test]
+    fn required_history_rejects_a_reported_gap() {
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let capture = Capture::event_with_policy(
+            "motion/events",
+            event_sig(),
+            crate::scenario::CapturePolicy::required_history(2).expect("policy"),
+        )
+        .expect("capture");
+        let program = Program::normalize(
+            "scenarios/RequiredHistoryGap",
+            quantum,
+            std::time::Duration::from_millis(2),
+            Vec::new(),
+            vec![capture],
+        )
+        .expect("program");
+        let mut collector = EvidenceCollector::for_program(program);
+        let error = collector
+            .record_capture(
+                "motion/events".to_owned(),
+                CaptureRecord::Observations {
+                    kind: "event".to_owned(),
+                    records: vec![CapturedObservation {
+                        payload: vec![1],
+                        source: "motion.events".to_owned(),
+                        capture_time_ns: 1,
+                        sequence: 2,
+                    }],
+                    gap_before_first: true,
+                    complete: false,
+                    terminal: true,
+                },
+            )
+            .expect_err("required history gap must fail");
+
+        assert!(matches!(error, SealError::IncompleteCapture { .. }));
+    }
+
+    #[test]
+    fn bounded_best_effort_history_accepts_an_explicit_gap() {
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let capture = Capture::event_with_policy(
+            "motion/events",
+            event_sig(),
+            crate::scenario::CapturePolicy::best_effort_history(2).expect("policy"),
+        )
+        .expect("capture");
+        let program = Program::normalize(
+            "scenarios/BestEffortHistoryGap",
+            quantum,
+            std::time::Duration::from_millis(2),
+            Vec::new(),
+            vec![capture],
+        )
+        .expect("program");
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_capture(
+                "motion/events".to_owned(),
+                CaptureRecord::Observations {
+                    kind: "event".to_owned(),
+                    records: vec![CapturedObservation {
+                        payload: vec![1],
+                        source: "motion.events".to_owned(),
+                        capture_time_ns: 1,
+                        sequence: 2,
+                    }],
+                    gap_before_first: true,
+                    complete: false,
+                    terminal: true,
+                },
+            )
+            .expect("best-effort capture");
+        record_valid_terminal_evidence(&mut collector, "exec/scenario/best_effort_gap");
+
+        assert!(collector.seal().is_ok());
     }
 }

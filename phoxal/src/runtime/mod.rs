@@ -34,6 +34,7 @@ pub use operation::{
     ManagedOperation, OperationCompletion, OperationError, OperationKey, OperationOutcome,
     OperationPolicy, OperationState,
 };
+pub use outputs::{CallTicket, Outputs};
 pub use runner::{
     InputSource, OutputSink, PollOutcome, RunnerError, RuntimeClock, RuntimeLaunch,
     RuntimeLaunchManifest, RuntimeRunner, SystemClock,
@@ -41,10 +42,11 @@ pub use runner::{
 pub use schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 
 pub use input::{
-    Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,
-    Commands, Events, InputSet, InputSnapshot, Latest, Operation, OperationInputError, Read,
-    ReadCompletion, ReadError, ReadStatus, ReadSuccess, Reply, Request, RequestCompletion,
-    RequestError, Samples, Setpoint, Stream, StreamFailure, StreamItem, TransportInputSet,
+    Activation, CallCompletion, Capacity, CapacityError, Command, CommandId, CommandOrder,
+    CommandOrderError, Commands, Completions, Events, InputSet, InputSnapshot, Latest, Operation,
+    OperationInputError, Read, ReadCompletion, ReadError, ReadStatus, ReadSuccess, Reply, Request,
+    RequestCompletion, RequestError, Samples, Setpoint, Stream, StreamFailure, StreamItem,
+    TransportInputSet,
 };
 
 /// The common descriptor checks emitted by the runtime authoring macros.

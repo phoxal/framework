@@ -596,9 +596,6 @@ pub enum Error {
     /// Package publication preparation failed.
     #[error("package publication failed: {0}")]
     Publication(#[from] PublicationError),
-    /// Scenario case-host execution failed.
-    #[error("{0}")]
-    ScenarioRun(#[from] crate::project::scenario::ScenarioRunError),
 }
 
 /// A failure while selecting, staging, packaging, or verifying a publication.
@@ -894,18 +891,5 @@ impl std::fmt::Display for ValidationErrors {
             error.fmt(formatter)?;
         }
         Ok(())
-    }
-}
-
-/// Bridge between format-side construction errors and the project's top-level error.
-///
-/// `BundleScenarioSection::from_program_artifact` lives in
-/// `phoxal::artifact` and can fail with `ProgramArtifactError`.
-/// Project callers still receive a `crate::project::error::Error`.
-impl From<phoxal::artifact::bundle::ProgramArtifactError> for Error {
-    fn from(source: phoxal::artifact::bundle::ProgramArtifactError) -> Self {
-        Self::SimulationInvalid {
-            message: source.to_string(),
-        }
     }
 }

@@ -3,6 +3,7 @@ mod measurements;
 use crate::config::{KinematicsConfig, validate_config};
 use crate::inputs::KinematicsInputs;
 use crate::outputs::KinematicsOutputs;
+use crate::validation;
 #[cfg(test)]
 use phoxal::robotics::EncoderSample;
 #[cfg(test)]
@@ -12,7 +13,7 @@ use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 use phoxal_service_kinematics::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
-    OdometryState, UnavailableReason, ports,
+    OdometryState, UnavailableReason, kinematics,
 };
 use std::collections::VecDeque;
 
@@ -128,6 +129,10 @@ impl Runtime for Kinematics {
         mut state: Self::State,
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
+        inputs
+            .frame_lookups
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
         let mut outputs = KinematicsOutputs::default();
         match measurements::collect(&state.config, &mut state.encoders, inputs, ctx.now()) {
             Ok(cut) => {
@@ -168,6 +173,14 @@ impl Runtime for Kinematics {
                 state.unavailable_reasons = vec![reason as i32];
             }
         }
+        validation::odometry(&state.odometry()).map_err(|error| anyhow::anyhow!(error))?;
+        validation::frame_tree(&state.frames()).map_err(|error| anyhow::anyhow!(error))?;
+        validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
+        for command in inputs.frame_lookups.items() {
+            let response = lookup_frame(&state, command.request());
+            validation::lookup_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+            outputs.frame_lookup_replies.push(command.reply(response));
+        }
         Ok((state, outputs))
     }
 }
@@ -179,79 +192,57 @@ impl Runtime for Kinematics {
 )]
 impl Kinematics {
     /// Projects continuous odometry state.
-    #[phoxal::runtime::outputs::state(port = ports::ODOMETRY, max_bytes = 512, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = kinematics::methods::ODOMETRY.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn odometry(&self, state: &KinematicsState) -> OdometryState {
         state.odometry()
     }
 
     /// Projects the current model-backed frame tree.
-    #[phoxal::runtime::outputs::state(port = ports::FRAMES, max_bytes = 4_096, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = kinematics::methods::FRAMES.__state_port(), max_bytes = 4_096, bootstrap, on_change)]
     fn frames(&self, state: &KinematicsState) -> FrameTree {
         state.frames()
     }
 
     /// Projects availability and missing-input reasons.
-    #[phoxal::runtime::outputs::state(port = ports::STATUS, max_bytes = 512, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = kinematics::methods::STATUS.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn status(&self, state: &KinematicsState) -> KinematicsStatus {
         state.status()
     }
-
-    fn read_view(&self, state: &KinematicsState) -> KinematicsReadView {
-        KinematicsReadView {
-            current: state.frames(),
-            history: state.frame_history.iter().cloned().collect(),
-        }
-    }
-
-    /// Looks up one exact frame edge from the current bounded history.
-    #[phoxal::runtime::outputs::read(
-        port = ports::LOOKUP_FRAME,
-        project = Self::read_view,
-        max_request_bytes = 256,
-        max_response_bytes = 1_024
-    )]
-    fn lookup_frame(
-        &self,
-        view: &KinematicsReadView,
-        request: &LookupFrameRequest,
-    ) -> LookupFrameResponse {
-        if request.validate().is_err() {
-            return LookupFrameResponse {
-                transform: None,
-                revision: view.current.revision,
-            };
-        }
-        let tree = if request.revision == 0 {
-            &view.current
-        } else if let Some(tree) = view
-            .history
-            .iter()
-            .find(|tree| tree.revision == request.revision)
-        {
-            tree
-        } else {
-            return LookupFrameResponse {
-                transform: None,
-                revision: view.current.revision,
-            };
-        };
-        LookupFrameResponse {
-            transform: tree
-                .transforms
-                .iter()
-                .find(|transform| {
-                    transform.parent_frame_id == request.parent_frame_id
-                        && transform.child_frame_id == request.child_frame_id
-                })
-                .cloned(),
-            revision: tree.revision,
-        }
-    }
 }
 
-struct KinematicsReadView {
-    current: FrameTree,
-    history: Vec<FrameTree>,
+fn lookup_frame(state: &KinematicsState, request: &LookupFrameRequest) -> LookupFrameResponse {
+    let current = state.frames();
+    if validation::lookup_request(request).is_err() {
+        return LookupFrameResponse {
+            transform: None,
+            revision: current.revision,
+        };
+    }
+    let tree = if request.revision == 0 {
+        &current
+    } else if let Some(tree) = state
+        .frame_history
+        .iter()
+        .find(|tree| tree.revision == request.revision)
+    {
+        tree
+    } else {
+        return LookupFrameResponse {
+            transform: None,
+            revision: current.revision,
+        };
+    };
+    LookupFrameResponse {
+        transform: tree
+            .transforms
+            .iter()
+            .find(|transform| {
+                transform.parent_frame_id == request.parent_frame_id
+                    && transform.child_frame_id == request.child_frame_id
+            })
+            .cloned(),
+        revision: tree.revision,
+    }
 }
 
 fn normalize_yaw(yaw: f64) -> f64 {

@@ -28,14 +28,16 @@ async fn main() -> ExitCode {
     };
     init_tracing();
     let launch_mode: scenario_admission::ScenarioLaunchMode = cli.launch_mode.into();
-    match runtime::run(
-        &cli.bundle_root,
+    match runtime::run(runtime::RunRequest {
+        requested_root: &cli.bundle_root,
         target,
-        cli.ready_file.as_deref(),
-        cli.scenario_result.as_deref(),
-        cli.listen.as_deref(),
+        ready_file: cli.ready_file.as_deref(),
+        scenario_result: cli.scenario_result.as_deref(),
+        simulation_run: cli.simulation_run.as_deref(),
+        owner_pid: cli.owner_pid,
+        listen: cli.listen.as_deref(),
         launch_mode,
-    )
+    })
     .await
     {
         Ok(()) => ExitCode::SUCCESS,

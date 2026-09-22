@@ -3,7 +3,7 @@ syntax = "proto3";
 package phoxal.component.zed_f9p.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 
 message GnssSample {
   double latitude_deg = 1;
@@ -14,6 +14,5 @@ message GnssSample {
 
 service ZedF9p {
   rpc Gnss(google.protobuf.Empty) returns (stream GnssSample) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 }

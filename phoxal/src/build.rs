@@ -1,7 +1,7 @@
 //! Authoring helper for Protobuf build scripts.
 //!
 //! Re-exports `compile_protos`, `compile_protos_with_dependencies`,
-//! `DependencyDescriptor`, `Error`, `PORT_PROTO`, `include_dir`, and
+//! `DependencyDescriptor`, `Error`, `API_PROTO`, `include_dir`, and
 //! `descriptor_set_path` from the internal `phoxal_build` implementation
 //! helper.
 //!
@@ -16,9 +16,10 @@
 //! own not-yet-built library to generate its own protocols.
 
 pub use phoxal_build::{
-    DependencyDescriptor, PORT_PROTO, compile_protos, compile_protos_with_dependencies,
-    compile_protos_with_dependencies_and_output, compile_protos_with_output, descriptor_set_path,
-    include_dir,
+    API_PROTO, DependencyDescriptor, compile_contracts, compile_contracts_with_dependencies,
+    compile_contracts_with_dependencies_and_output, compile_contracts_with_output, compile_protos,
+    compile_protos_with_dependencies, compile_protos_with_dependencies_and_output,
+    compile_protos_with_output, descriptor_set_path, generate_contract_package, include_dir,
 };
 
 pub use phoxal_build::Error;

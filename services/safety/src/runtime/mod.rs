@@ -4,17 +4,18 @@ use assessment::{assess_motion, assess_ranges, assess_world, is_stop_reason, obs
 use crate::config::{SafetyConfig, validate_config};
 use crate::inputs::SafetyInputs;
 use crate::outputs::SafetyOutputs;
+use crate::validation;
+use phoxal::robotics::RangeSample;
 use phoxal::runtime::input::Latest;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{ExecutionTime, InitContext, ObservationStamp, Runtime, StepContext};
 #[cfg(test)]
 use phoxal_service_motion::MotionStatus;
-use phoxal_service_safety::{
-    Constraint, ConstraintReason, MotionConstraints, Permission, RangeSample, SafetyStatus, ports,
-};
+use phoxal_service_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
+use phoxal_service_safety::{SafetyStatus, safety};
 #[cfg(test)]
-use phoxal_service_safety::{WorldBelief, WorldRevision};
+use phoxal_service_world::{WorldBelief, WorldRevision};
 use std::collections::BTreeMap;
 
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
@@ -114,19 +115,13 @@ impl Runtime for Safety {
             valid_from_nanos: now_nanos,
             expires_at_nanos,
         };
-        state
-            .constraints
-            .validate()
-            .map_err(|error| anyhow::anyhow!(error))?;
+        validation::constraints(&state.constraints).map_err(|error| anyhow::anyhow!(error))?;
         state.status = SafetyStatus {
             protective_state_clear: permission == Permission::Clear,
             sequence: state.sequence,
             reasons,
         };
-        state
-            .status
-            .validate()
-            .map_err(|error| anyhow::anyhow!(error))?;
+        validation::status(&state.status).map_err(|error| anyhow::anyhow!(error))?;
         Ok((state, ()))
     }
 }
@@ -139,7 +134,7 @@ impl Runtime for Safety {
 impl Safety {
     /// Projects the expiring protective constraints consumed by Motion.
     #[phoxal::runtime::outputs::state(
-        port = ports::CONSTRAINTS,
+        port = safety::methods::CONSTRAINTS.__state_port(),
         max_bytes = 4_096,
         bootstrap,
         on_change
@@ -151,7 +146,7 @@ impl Safety {
     /// Projects safety availability and the reasons currently preventing a
     /// clear permission.
     #[phoxal::runtime::outputs::state(
-        port = ports::STATUS,
+        port = safety::methods::STATUS.__state_port(),
         max_bytes = 1_024,
         bootstrap,
         on_change

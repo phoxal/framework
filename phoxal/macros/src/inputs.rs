@@ -60,6 +60,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut sink_reads = Vec::new();
     let mut sink_requests = Vec::new();
     let mut sink_operations = Vec::new();
+    let mut completion_field = None;
     let mut restore_managed = Vec::new();
     let mut select_managed = Vec::new();
     let mut retire_managed = Vec::new();
@@ -106,7 +107,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         let message_type =
             |ty: &Type| quote!(Some(::phoxal::runtime::input::MessageType::of::<#ty>()));
         let (request_type, response_type) = match kind {
-            InputKind::Operation => (quote!(None), quote!(None)),
+            InputKind::Operation | InputKind::Completions => (quote!(None), quote!(None)),
             InputKind::Read | InputKind::Request => {
                 let (_, request, response) = generic_types3(&ty, field)?;
                 (message_type(&request), message_type(&response))
@@ -114,6 +115,13 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             InputKind::Commands => {
                 let (request, response) = generic_types2(&ty, field)?;
                 (message_type(&request), message_type(&response))
+            }
+            InputKind::Setpoint if options.port.is_some() => {
+                let request = generic_type(&ty, 1, field)?;
+                (
+                    message_type(&request),
+                    message_type(&syn::parse_quote!(::phoxal::contract::Empty)),
+                )
             }
             _ => (quote!(None), message_type(&generic_type(&ty, 1, field)?)),
         };
@@ -150,13 +158,27 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 }
             });
         }
+        if kind == InputKind::Setpoint
+            && let Some(port) = options.port.as_ref()
+        {
+            let payload = generic_type(&ty, 1, field)?;
+            let check_name = format_ident!("__phoxal_setpoint_port_{}", field_name);
+            checks.push(quote! {
+                fn #check_name() {
+                    ::phoxal::runtime::__private::assert_setpoint_port::<_, #payload>(#port);
+                }
+            });
+        }
 
         let transport_max_items = match kind {
             InputKind::Samples | InputKind::Events | InputKind::Stream | InputKind::Commands => {
                 max_items.clone()
             }
             InputKind::Read | InputKind::Request => quote!(Some(1_u64)),
-            InputKind::Latest | InputKind::Setpoint | InputKind::Operation => quote!(None),
+            InputKind::Latest
+            | InputKind::Setpoint
+            | InputKind::Operation
+            | InputKind::Completions => quote!(None),
         };
         let transport_max_bytes = match kind {
             InputKind::Samples
@@ -165,7 +187,10 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             | InputKind::Commands
             | InputKind::Read
             | InputKind::Request => max_bytes.clone(),
-            InputKind::Latest | InputKind::Setpoint | InputKind::Operation => quote!(None),
+            InputKind::Latest
+            | InputKind::Setpoint
+            | InputKind::Operation
+            | InputKind::Completions => quote!(None),
         };
         generated_transport_fields.push(quote! {
             ::phoxal::runtime::transport::InputTransportField {
@@ -228,6 +253,17 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             InputKind::Read => sink_reads.push(sink.read),
             InputKind::Request => sink_requests.push(sink.request),
             InputKind::Operation => sink_operations.push(sink.operation),
+            InputKind::Completions => {
+                if let Some(previous) = &completion_field {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        format!(
+                            "runtime inputs may declare only one Completions field; `{previous}` is already declared"
+                        ),
+                    ));
+                }
+                completion_field = Some(field_name.clone());
+            }
         }
         if matches!(
             kind,
@@ -268,6 +304,28 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             });
         }
     }
+
+    let set_call_completions = completion_field.map_or_else(
+        || {
+            quote! {
+                if values.is_empty() {
+                    Ok(())
+                } else {
+                    Err(::phoxal::__private::anyhow::anyhow!(
+                        ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                            detail: "runtime inputs have no generated call completion field".to_owned(),
+                        }
+                    ))
+                }
+            }
+        },
+        |field| {
+            quote! {
+                self.#field = ::phoxal::runtime::input::Completions::from_transport(values);
+                Ok(())
+            }
+        },
+    );
 
     Ok(quote! {
         #input
@@ -451,11 +509,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             fn set_setpoint(
                 &mut self,
                 field: &str,
-                value: ::core::option::Option<(
-                    ::phoxal::runtime::input::TransportValue,
-                    ::phoxal::runtime::ExecutionTime,
-                    ::phoxal::runtime::ExecutionTime,
-                )>,
+                value: ::core::option::Option<::phoxal::runtime::input::SetpointUpdate>,
             ) -> ::phoxal::Result<()> {
                 match field {
                     #(#sink_setpoints,)*
@@ -591,6 +645,13 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     })),
                 }
             }
+
+            fn set_call_completions(
+                &mut self,
+                values: ::std::vec::Vec<::phoxal::runtime::input::TransportCallCompletion>,
+            ) -> ::phoxal::Result<()> {
+                #set_call_completions
+            }
         }
 
         impl ::phoxal::runtime::input::InputSnapshot for #name {
@@ -631,6 +692,7 @@ enum InputKind {
     Read,
     Request,
     Operation,
+    Completions,
 }
 
 impl InputKind {
@@ -645,6 +707,7 @@ impl InputKind {
             Self::Read => "Read",
             Self::Request => "Request",
             Self::Operation => "Operation",
+            Self::Completions => "Completions",
         }
     }
 }
@@ -653,7 +716,7 @@ fn input_kind(ty: &Type) -> syn::Result<InputKind> {
     let Type::Path(path) = ty else {
         return Err(syn::Error::new_spanned(
             ty,
-            "runtime inputs must use one of input::Latest, Samples, Events, Setpoint, Stream, Commands, Read, Request, or Operation",
+            "runtime inputs must use one of input::Latest, Samples, Events, Setpoint, Stream, Commands, Read, Request, Operation, or Completions",
         ));
     };
     let name = path
@@ -672,6 +735,7 @@ fn input_kind(ty: &Type) -> syn::Result<InputKind> {
         "Read" => Ok(InputKind::Read),
         "Request" => Ok(InputKind::Request),
         "Operation" => Ok(InputKind::Operation),
+        "Completions" => Ok(InputKind::Completions),
         _ => Err(syn::Error::new_spanned(
             ty,
             "unsupported runtime input type; use a type from phoxal::runtime::input",
@@ -716,7 +780,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
-                        ::phoxal::port::PortKind::State,
+                        ::phoxal::__private::PortKind::State,
                     )?;
                     if samples.len() > 1 {
                         return Err(::phoxal::__private::anyhow::anyhow!(
@@ -778,7 +842,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
-                        ::phoxal::port::PortKind::Sample,
+                        ::phoxal::__private::PortKind::Sample,
                     )?;
                     let count = samples.len() as u64;
                     let encoded_bytes = samples.iter().try_fold(0_u64, |total, sample| {
@@ -846,7 +910,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
-                        ::phoxal::port::PortKind::Event,
+                        ::phoxal::__private::PortKind::Event,
                     )?;
                     let count = samples.len() as u64;
                     let encoded_bytes = samples.iter().try_fold(0_u64, |total, sample| {
@@ -905,7 +969,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
-                        ::phoxal::port::PortKind::Setpoint,
+                        ::phoxal::__private::PortKind::Setpoint,
                     )?;
                     if samples.len() > 1 {
                         return Err(::phoxal::__private::anyhow::anyhow!(
@@ -947,14 +1011,21 @@ fn expand_transport_decoder(
                         &sample,
                         u64::MAX,
                     )?;
+                    let source = sample.metadata().publisher().ok_or_else(||
+                        ::phoxal::__private::anyhow::anyhow!(
+                            ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                                detail: format!("setpoint field `{}` is missing source identity", #field_text),
+                            }
+                        ))?.to_owned();
                     ::phoxal::runtime::input::TransportInputSink::set_setpoint(
                         inputs,
                         #field_text,
-                        Some((
-                            ::std::boxed::Box::new(value),
+                        Some(::phoxal::runtime::input::SetpointUpdate {
+                            value: ::std::boxed::Box::new(value),
+                            source,
                             issued_at,
-                            ::phoxal::runtime::ExecutionTime::from_nanos(valid_until),
-                        )),
+                            valid_until: ::phoxal::runtime::ExecutionTime::from_nanos(valid_until),
+                        }),
                     )
                 }
             }
@@ -975,7 +1046,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
-                        ::phoxal::port::PortKind::Stream,
+                        ::phoxal::__private::PortKind::Stream,
                     )?;
                     let count = samples.len() as u64;
                     let encoded_bytes = samples.iter().try_fold(0_u64, |total, sample| {
@@ -1061,7 +1132,7 @@ fn expand_transport_decoder(
                         signature,
                         (#port).signature(),
                     )?;
-                    if signature.kind != ::phoxal::port::PortKind::Commands {
+                    if signature.kind != ::phoxal::__private::PortKind::Commands {
                         return Err(::phoxal::__private::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                                 detail: format!("Commands input `{}` received a non-Commands binding", #field_text),
@@ -1090,6 +1161,12 @@ fn expand_transport_decoder(
                             .map_err(|error| ::phoxal::__private::anyhow::anyhow!(error))?;
                         items.push(::phoxal::runtime::input::TransportCommand {
                             order,
+                            source: sample.metadata().caller.clone().or_else(|| sample.metadata().source.clone()).ok_or_else(||
+                                ::phoxal::__private::anyhow::anyhow!(
+                                    ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                                        detail: format!("Commands input `{}` is missing caller identity", #field_text),
+                                    }
+                                ))?,
                             request: ::std::boxed::Box::new(request) as ::phoxal::runtime::input::TransportValue,
                         });
                     }
@@ -1121,7 +1198,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_exchange_binding::<#request, #response>(
                         binding,
-                        ::phoxal::port::PortKind::Read,
+                        ::phoxal::__private::PortKind::Read,
                     )?;
                     if samples.len() != 1 {
                         return Err(::phoxal::__private::anyhow::anyhow!(
@@ -1218,7 +1295,7 @@ fn expand_transport_decoder(
                     let binding = #binding_fn(binding, #field_text)?;
                     ::phoxal::runtime::transport::validate_exchange_binding::<#request, #response>(
                         binding,
-                        ::phoxal::port::PortKind::Commands,
+                        ::phoxal::__private::PortKind::Commands,
                     )?;
                     if samples.len() != 1 {
                         return Err(::phoxal::__private::anyhow::anyhow!(
@@ -1309,6 +1386,13 @@ fn expand_transport_decoder(
                 ))
             }
         }
+        InputKind::Completions => quote! {
+            #field_text => Err(::phoxal::__private::anyhow::anyhow!(
+                ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                    detail: format!("Completions field `{}` is runner-local and has no public wire binding", #field_text),
+                }
+            ))
+        },
     };
 
     let encoder = match kind {
@@ -1440,9 +1524,14 @@ fn expand_transport_sink(
             sink.setpoint = quote! {
                 #field_text => {
                     self.#field_name = match value {
-                        Some((value, issued_at, valid_until)) => {
-                            let value = value.downcast::<#payload>().map_err(|_| #type_error)?;
-                            ::phoxal::runtime::Setpoint::from_parts(*value, issued_at, valid_until)
+                        Some(value) => {
+                            let payload = value.value.downcast::<#payload>().map_err(|_| #type_error)?;
+                            ::phoxal::runtime::Setpoint::from_wire_parts(
+                                *payload,
+                                value.source,
+                                value.issued_at,
+                                value.valid_until,
+                            )
                         }
                         None => ::phoxal::runtime::Setpoint::withdrawn(),
                     };
@@ -1491,7 +1580,11 @@ fn expand_transport_sink(
                     let mut items = ::std::vec::Vec::with_capacity(values.len());
                     for value in values {
                         let request = value.request.downcast::<#request>().map_err(|_| #type_error)?;
-                        items.push(::phoxal::runtime::Command::with_order(value.order, *request));
+                        items.push(::phoxal::runtime::Command::with_source_order(
+                            value.order,
+                            value.source,
+                            *request,
+                        ));
                     }
                     let capacity = ::phoxal::runtime::Capacity::new(#max_items, #max_bytes)
                         .map_err(|error| ::phoxal::__private::anyhow::anyhow!(error))?;
@@ -1556,6 +1649,7 @@ fn expand_transport_sink(
                 }
             };
         }
+        InputKind::Completions => {}
     }
     Ok(sink)
 }
@@ -1705,7 +1799,7 @@ fn parse_options(
             "max_response_bytes" if matches!(kind, InputKind::Read | InputKind::Request) => {
                 set_u64(&mut options.max_bytes, &meta, "max_response_bytes")?;
             }
-            "port" if kind == InputKind::Commands => {
+            "port" if matches!(kind, InputKind::Commands | InputKind::Setpoint) => {
                 if options.port.is_some() {
                     return Err(meta.error("duplicate runtime input option `port`"));
                 }
@@ -1768,10 +1862,10 @@ fn validate_options(kind: InputKind, options: &Options, field: &Field) -> syn::R
             "Commands requires port = public::CONSTANT",
         ));
     }
-    if kind != InputKind::Commands && options.port.is_some() {
+    if !matches!(kind, InputKind::Commands | InputKind::Setpoint) && options.port.is_some() {
         return Err(syn::Error::new_spanned(
             field,
-            "port is allowed only on a Commands input",
+            "port is allowed only on a Commands or Setpoint input",
         ));
     }
     Ok(())

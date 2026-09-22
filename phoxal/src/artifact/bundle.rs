@@ -2,8 +2,8 @@
 //!
 //! Owns every serialized record a compiled bundle exchanges with the
 //! supervisor, the simulator, and the SDK. This includes the manifest,
-//! the provenance closure, the controlled-simulation and scenario
-//! sections, and the source-file digest.
+//! the provenance closure, the controlled-simulation section, and the
+//! source-file digest.
 //!
 //! Pure algorithms (`digest_source_files`, `digest_bytes`) live here
 //! because they have no filesystem, network, or process dependencies.
@@ -15,14 +15,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{DescriptorSummary, PortKind, RuntimeRecord};
-
-/// One default bundle-relative path for the scenario program
-/// artifact. The case host writes the normalized program bytes to
-/// `<bundle_root>/program.bin` and the supervisor reads them back
-/// from the same path. The two sides never need to negotiate a path
-/// because this constant is owned by the format.
-pub const DEFAULT_SCENARIO_PROGRAM_PATH: &str = "program.bin";
+use super::{DescriptorSummary, MethodShape, RuntimeRecord};
 
 /// The inspectable graph and artifact inventory for one compiled robot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,98 +44,6 @@ pub enum BundleManifest {
         /// assembled for an independent simulator run.
         #[serde(default)]
         simulation: Option<BundleSimulation>,
-        /// Optional scenario execution identity. Set by the case-host path
-        /// when this bundle was assembled for a controlled-simulation
-        /// scenario run. Presence here is the contract that the supervisor
-        /// and fixture will admit only controlled execution and refuse
-        /// hardware launches; absence means the bundle is the normal
-        /// runtime bundle.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scenario: Option<BundleScenarioSection>,
-    },
-}
-
-/// One coherent scenario execution representation. Presence means
-/// the bundle is nondeployable and the supervisor admission path is
-/// in control of the execution. The case host populates both the
-/// marker and the program identity; readers must refuse inconsistent
-/// or unknown shapes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleScenarioSection {
-    /// Stable marker the supervisor recognises as nondeployable.
-    pub marker: String,
-    /// Identity of the normalized scenario program the fixture will
-    /// execute. The bundle ships the program bytes alongside the
-    /// manifest at `program_path` so the supervisor can read them
-    /// against `program_byte_length` and `program_digest` without
-    /// leaving the bundle root.
-    pub program: BundleScenarioProgram,
-    /// Typed virtual producers admitted from the immutable program.
-    #[serde(default)]
-    pub producers: Vec<BundleScenarioProducer>,
-}
-
-/// One supervisor-owned scenario producer exposed to Runtime input admission.
-///
-/// Re-exported from [`super::scenario`].
-pub use super::scenario::BundleScenarioProducer;
-
-/// Validated scenario program identity. The supervisor rejects the
-/// bundle unless every field satisfies the documented invariants.
-///
-/// Re-exported from [`super::scenario`].
-pub use super::scenario::BundleScenarioProgram;
-
-impl BundleScenarioSection {
-    /// Build a scenario section from an already-normalized program
-    /// artifact. The caller is responsible for writing the bytes at
-    /// `program_path` inside the bundle; this function records the
-    /// identity and verifies the digest matches the bytes.
-    ///
-    /// Returns `None` when `program_byte_length` exceeds `u32::MAX` —
-    /// the tool layer maps this into a typed error.
-    pub fn from_program_artifact(
-        scenario_name: impl Into<String>,
-        fixture_instance_id: impl Into<String>,
-        program_path: impl Into<String>,
-        program_bytes: &[u8],
-    ) -> Result<Self, ProgramArtifactError> {
-        let scenario_name = scenario_name.into();
-        let digest = digest_bytes(program_bytes);
-        let program_byte_length = u32::try_from(program_bytes.len()).map_err(|_| {
-            ProgramArtifactError::ProgramLengthExceedsU32 {
-                scenario_name: scenario_name.clone(),
-                bytes: program_bytes.len(),
-            }
-        })?;
-        Ok(Self {
-            marker: "phoxal/scenario/nondeployable@1".to_owned(),
-            program: BundleScenarioProgram {
-                scenario_name,
-                program_path: program_path.into(),
-                program_byte_length,
-                program_digest: digest,
-                fixture_instance_id: fixture_instance_id.into(),
-                controlled_execution: true,
-            },
-            producers: Vec::new(),
-        })
-    }
-}
-
-/// Errors that can arise while constructing a `BundleScenarioSection`
-/// from raw program bytes.
-#[derive(Debug, thiserror::Error)]
-pub enum ProgramArtifactError {
-    /// The supplied program bytes are too large to record in a
-    /// `u32` byte count.
-    #[error("scenario program `{scenario_name}` is {bytes} bytes; u32 cap exceeded")]
-    ProgramLengthExceedsU32 {
-        /// Scenario the program belongs to.
-        scenario_name: String,
-        /// Actual byte count.
-        bytes: usize,
     },
 }
 
@@ -180,7 +81,11 @@ pub struct BundleSimulationProvider {
     /// Protobuf method declaring the generated output.
     pub method: String,
     /// Public observation semantic kind.
-    pub kind: PortKind,
+    pub shape: MethodShape,
+    /// Whether admission replays the latest accepted observation.
+    pub retained_latest: bool,
+    /// Optional contract-owned validity interval for each observation.
+    pub lease_valid_for_ms: Option<u64>,
     /// Request message identity from the generated port signature.
     pub input_fqn: String,
     /// Observation payload message identity from the generated port signature.
@@ -202,7 +107,11 @@ pub struct SimulationProviderBinding {
     /// Generated public output port.
     pub port: String,
     /// Public observation semantic kind.
-    pub kind: PortKind,
+    pub shape: MethodShape,
+    /// Whether admission replays the latest accepted observation.
+    pub retained_latest: bool,
+    /// Optional contract-owned validity interval for each observation.
+    pub lease_valid_for_ms: Option<u64>,
     /// Request message identity from the generated port signature.
     pub input_fqn: String,
     /// Observation payload message identity from the generated port signature.
@@ -602,7 +511,6 @@ robot:
             executables: Vec::new(),
             components: Vec::new(),
             simulation: None,
-            scenario: None,
         }
     }
 
@@ -652,37 +560,5 @@ robot:
         );
         files[0].bytes += 1;
         assert_ne!(digest, digest_source_files(&files));
-    }
-
-    #[test]
-    fn scenario_section_from_program_records_digest_and_byte_length() {
-        let program = b"\x00\x01\x02hello-scenario";
-        let section = BundleScenarioSection::from_program_artifact(
-            "scenarios/ForwardTurnStop",
-            "fixture",
-            DEFAULT_SCENARIO_PROGRAM_PATH,
-            program,
-        )
-        .expect("constructs");
-        assert_eq!(section.program.scenario_name, "scenarios/ForwardTurnStop");
-        assert_eq!(section.program.program_byte_length as usize, program.len());
-        assert_eq!(section.program.program_digest, digest_bytes(program));
-        assert!(section.program.controlled_execution);
-    }
-
-    #[test]
-    fn scenario_section_rejects_overlong_program() {
-        let oversized = vec![0u8; (u32::MAX as usize) + 1];
-        let error = BundleScenarioSection::from_program_artifact(
-            "oversized",
-            "fixture",
-            DEFAULT_SCENARIO_PROGRAM_PATH,
-            &oversized,
-        )
-        .expect_err("u32 overflow");
-        assert!(matches!(
-            error,
-            ProgramArtifactError::ProgramLengthExceedsU32 { .. }
-        ));
     }
 }

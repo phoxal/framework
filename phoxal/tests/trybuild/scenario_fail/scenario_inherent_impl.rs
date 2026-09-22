@@ -1,22 +1,12 @@
-//! Negative trybuild fixture: `#[phoxal::scenario]` on an inherent impl must
-//! be rejected with a clear diagnostic.
+//! Negative fixture: scenario test functions require a mutable fixture.
 
 #![cfg(feature = "scenario")]
 
-use phoxal::scenario::{Scenario, ScenarioPlan, ScenarioRun};
-use std::time::Duration;
-
-#[derive(Default)]
-pub struct Inherent;
+use phoxal::scenario::Simulation;
 
 #[phoxal::scenario]
-impl Inherent {
-    fn plan(&self) -> phoxal::Result<ScenarioPlan> {
-        Ok(ScenarioPlan::new("x", Duration::from_secs(1)))
-    }
-    fn verify(&self, _run: &ScenarioRun) -> phoxal::Result<()> {
-        Ok(())
-    }
+fn immutable_fixture(_sim: &Simulation) -> phoxal::Result<()> {
+    Ok(())
 }
 
 fn main() {}

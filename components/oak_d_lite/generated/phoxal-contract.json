@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "generator": "0.0.0-dev.2",
+  "descriptor_sha256": "7ec81bb160b7f22ffba516d40e52fc4c5083ab29b999b9d90e15be8e78a1aede",
+  "sources": [
+    {
+      "path": "phoxal/component/oak_d_lite/v1/oak_d_lite.proto",
+      "sha256": "52c209ca01d5789c14f24b729ebd68de09f9fe17c8f87cd68b0c2941c282b27a"
+    }
+  ],
+  "generated": [
+    {
+      "path": "lib.rs",
+      "sha256": "99218174cbf709d3920de1feb54d29343453fe36f1acdd980211f4c7e5b4f3ab"
+    },
+    {
+      "path": "phoxal-descriptors.bin",
+      "sha256": "7ec81bb160b7f22ffba516d40e52fc4c5083ab29b999b9d90e15be8e78a1aede"
+    },
+    {
+      "path": "phoxal.api.rs",
+      "sha256": "c452b36102298dbddcbcaab6b8f4b7cf501b020c988e39da72df1ace9eca5d09"
+    },
+    {
+      "path": "phoxal.component.oak_d_lite.v1.rs",
+      "sha256": "14616aad01e242298797c9879564cb91d436d0bb83ea5b50baf0edadf6729d6d"
+    }
+  ],
+  "dependencies": []
+}

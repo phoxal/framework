@@ -201,7 +201,7 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             fn encode_transport(
                 &self,
                 context: ::phoxal::runtime::StepContext,
-                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::port::PortSignature>,
+                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::__private::PortSignature>,
                 source: &str,
             ) -> ::phoxal::Result<::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>> {
                 let mut records = ::std::vec::Vec::new();
@@ -503,7 +503,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 &self,
                 state: &Self::State,
                 context: ::phoxal::runtime::StepContext,
-                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::port::PortSignature>,
+                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::__private::PortSignature>,
                 source: &str,
             ) -> ::phoxal::Result<::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>> {
                 let mut records = ::std::vec::Vec::new();

@@ -44,7 +44,8 @@ brain: {}
 
 services:
   controller:
-    implementation: test-controller
+    source:
+      path: controller
 
 connections:
   controller.manual: brain.manual

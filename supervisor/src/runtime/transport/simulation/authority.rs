@@ -80,7 +80,7 @@ pub(crate) async fn acquire_simulation_authority(
             (
                 provider.service_instance().to_owned(),
                 provider.port().to_owned(),
-                provider.kind() as i32,
+                provider.shape() as i32,
                 provider.input_fqn().to_owned(),
                 provider.payload_fqn().to_owned(),
                 provider.rate_microhertz(),
@@ -94,7 +94,7 @@ pub(crate) async fn acquire_simulation_authority(
             (
                 provider.service_instance.clone(),
                 provider.port.clone(),
-                provider.kind,
+                provider.shape,
                 provider.input_fqn.clone(),
                 provider.payload_fqn.clone(),
                 provider.rate_microhertz,
@@ -136,7 +136,7 @@ pub(crate) async fn acquire_simulation_authority(
                 &request.execution_id,
                 &provider.service_instance,
                 &provider.port,
-                provider.kind,
+                provider.shape,
                 &provider.input_fqn,
                 &provider.payload_fqn,
             )

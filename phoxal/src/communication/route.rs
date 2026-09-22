@@ -70,18 +70,14 @@ pub enum PublicOperation {
     Status,
     /// List bounded execution summaries.
     ListExecutions,
-    /// List bounded generated port metadata.
-    ListPorts,
-    /// Admit one exact generated public port binding.
-    Bind,
-    /// Read one bound public port.
-    Read,
-    /// Admit one request on a bound mutable public port.
-    Command,
-    /// Establish a bounded state/event observation.
-    Watch,
-    /// Establish a bounded event/stream subscription.
-    Subscribe,
+    /// List bounded generated method metadata.
+    ListMethods,
+    /// Admit one exact generated public method binding.
+    BindMethod,
+    /// Invoke one bound unary call.
+    Call,
+    /// Establish one bounded observation subscription.
+    Observe,
     /// Acquire exclusive simulation authority for one execution.
     AcquireAuthority,
     /// Admit the complete boundary-zero observation cut.
@@ -109,12 +105,10 @@ impl PublicOperation {
             Self::Info => "info",
             Self::Status => "status",
             Self::ListExecutions => "list-executions",
-            Self::ListPorts => "list-ports",
-            Self::Bind => "bind",
-            Self::Read => "read",
-            Self::Command => "command",
-            Self::Watch => "watch",
-            Self::Subscribe => "subscribe",
+            Self::ListMethods => "list-methods",
+            Self::BindMethod => "bind-method",
+            Self::Call => "call",
+            Self::Observe => "observe",
             Self::AcquireAuthority => "acquire-authority",
             Self::AdmitInitialObservations => "admit-initial-observations",
             Self::PrepareBoundary => "prepare-boundary",
@@ -133,12 +127,10 @@ impl PublicOperation {
             "info" => Self::Info,
             "status" => Self::Status,
             "list-executions" => Self::ListExecutions,
-            "list-ports" => Self::ListPorts,
-            "bind" => Self::Bind,
-            "read" => Self::Read,
-            "command" => Self::Command,
-            "watch" => Self::Watch,
-            "subscribe" => Self::Subscribe,
+            "list-methods" => Self::ListMethods,
+            "bind-method" => Self::BindMethod,
+            "call" => Self::Call,
+            "observe" => Self::Observe,
             "acquire-authority" => Self::AcquireAuthority,
             "admit-initial-observations" => Self::AdmitInitialObservations,
             "prepare-boundary" => Self::PrepareBoundary,
@@ -158,12 +150,10 @@ impl PublicOperation {
             Self::Info
             | Self::Status
             | Self::ListExecutions
-            | Self::ListPorts
-            | Self::Bind
-            | Self::Read
-            | Self::Watch
-            | Self::Subscribe => PublicRouteKind::Inspection,
-            Self::Command => PublicRouteKind::Mutation,
+            | Self::ListMethods
+            | Self::BindMethod
+            | Self::Observe => PublicRouteKind::Inspection,
+            Self::Call => PublicRouteKind::Mutation,
             Self::AcquireAuthority
             | Self::AdmitInitialObservations
             | Self::PrepareBoundary
@@ -179,7 +169,7 @@ const fn default_operation(kind: PublicRouteKind) -> PublicOperation {
     match kind {
         PublicRouteKind::Control => PublicOperation::Open,
         PublicRouteKind::Inspection => PublicOperation::Info,
-        PublicRouteKind::Mutation => PublicOperation::Command,
+        PublicRouteKind::Mutation => PublicOperation::Call,
         PublicRouteKind::Simulation => PublicOperation::AcquireAuthority,
     }
 }

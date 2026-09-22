@@ -1,6 +1,7 @@
 //! Bounded wheel evidence with source-owned capture time and calibrated SI values.
 use crate::config::KinematicsConfig;
 use crate::inputs::KinematicsInputs;
+use crate::validation;
 use phoxal::robotics::EncoderSample;
 use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
 use phoxal_service_kinematics::{JointState, UnavailableReason};
@@ -78,9 +79,7 @@ pub(super) fn collect(
                 velocity_radps: velocity * scale,
                 effort_nm: None,
             };
-            joint
-                .validate()
-                .map_err(|_| UnavailableReason::InvalidMeasurement)?;
+            validation::joint(&joint).map_err(|_| UnavailableReason::InvalidMeasurement)?;
             // Every configured wheel contributes equally to its contact line.
             // Slip is not inferred or silently removed from this estimate.
             sides[index] += joint.velocity_radps * config.wheel_radius_m / wheels.len() as f64;

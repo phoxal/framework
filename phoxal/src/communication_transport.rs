@@ -156,7 +156,6 @@ pub fn validate_subscription_admission(
     admission: &SubscriptionAdmission,
     request: &SubscriptionRequest,
     limits: &PublicTransportLimits,
-    operation: PublicOperation,
 ) -> Result<Option<SubscriptionRecord>, PublicTransportError> {
     if admission.session_id != request.session_id
         || admission.binding_id != request.binding_id
@@ -165,25 +164,13 @@ pub fn validate_subscription_admission(
         || admission.timeline_id != request.timeline_id
     {
         return Err(PublicTransportError::Malformed {
-            operation: operation.segment().to_owned(),
+            operation: PublicOperation::Observe.segment().to_owned(),
             detail: "subscription admission context does not match its request".to_owned(),
         });
     }
     let Some(initial) = admission.initial.clone() else {
-        if operation == PublicOperation::Watch {
-            return Err(PublicTransportError::Malformed {
-                operation: operation.segment().to_owned(),
-                detail: "State watch admission omitted its initial cursor".to_owned(),
-            });
-        }
         return Ok(None);
     };
-    if operation != PublicOperation::Watch {
-        return Err(PublicTransportError::Malformed {
-            operation: operation.segment().to_owned(),
-            detail: "non-State subscription admission carried an initial record".to_owned(),
-        });
-    }
     validate_state_initial_record(&initial, request, limits)?;
     Ok(Some(initial))
 }

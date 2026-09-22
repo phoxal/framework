@@ -48,14 +48,16 @@ cargo phoxal check --locked
 Keeping those coupled changes in one owner repository prevents version-skewed adapters and duplicate project models.
 
 Hardware-only development does not require MuJoCo.
-Simulation uses the separately installed Phoxal Simulator application, while `cargo-phoxal` owns installing MuJoCo, building the matching registry package, and maintaining the user installation.
+Simulation uses the independently managed Phoxal Simulator application, while `cargo-phoxal` owns installing MuJoCo, building the matching registry package, and maintaining the user installation.
+The first command that needs native execution provisions the verified application automatically.
+Compilation-only and test-listing commands do not provision it.
 
 ```sh
-cargo phoxal simulation install
 cargo phoxal simulation status
+cargo phoxal simulation install
 ```
 
-The installer downloads and verifies the supported MuJoCo distribution, installs the exact simulator release from the Phoxal registry, retains its licenses and provenance, and keeps native files outside robot projects.
+Automatic provisioning and the explicit installer download and verify the supported MuJoCo distribution, install the exact simulator release from the Phoxal registry, retain its licenses and provenance, and keep native files outside robot projects.
 Use `cargo phoxal simulation upgrade` to replace the managed installation and `cargo phoxal simulation uninstall` to remove it.
 An existing official MuJoCo distribution can be selected explicitly with `--mujoco-distribution <path>`.
 
@@ -63,17 +65,16 @@ The repository intentionally has no maintained user examples while its pre-1.0 a
 Before pushing a change that can affect project preparation, runtime transport, components, or simulation, use the internal four-wheel robot in the root Cargo workspace.
 It contains only four actuator/encoder components, a disarmed brain, a small robot-local controller, and the finite `ForwardTurnStop` scenario.
 
-Build the current framework tool and a source simulator as documented by the simulator repository, then run:
+Build the current framework tool, then run the ordinary Cargo test workflow:
 
 ```sh
 cd tests/robot
-../../../target/debug/cargo-phoxal check --locked
-../../../target/debug/cargo-phoxal simulation scenario list --locked
-../../../target/debug/cargo-phoxal simulation scenario run ForwardTurnStop \
-  --locked --release --headless \
-  --simulator ../../../../simulator/target/release/phoxal-simulator
+../../target/debug/cargo-phoxal test --locked --offline --no-run
+../../target/debug/cargo-phoxal test --locked --offline -- --list
+../../target/debug/cargo-phoxal test forward_turn_stop -- --nocapture
 ```
 
+Pass `--simulator <path>` to qualify an explicitly built source simulator instead of the managed application.
 This native qualification is a local pre-push gate for now.
 It is not a public example, a supported robot template, or a substitute for focused deterministic tests.
 

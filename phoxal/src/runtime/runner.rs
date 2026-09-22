@@ -145,6 +145,9 @@ pub struct RuntimeLaunch {
         value_parser = parse_endpoint
     )]
     pub connect: String,
+    /// Simulation-only run specification admitted by the supervisor.
+    #[arg(long = "simulation-run", value_name = "PATH")]
+    pub simulation_run: Option<PathBuf>,
 }
 
 impl RuntimeLaunch {
@@ -172,6 +175,14 @@ pub struct RuntimeLaunchManifest {
 impl RuntimeLaunchManifest {
     /// Open and admit one source-side `phoxal/bundle/v0` entry.
     pub fn open(root: impl AsRef<Path>, instance_id: &str) -> crate::Result<Self> {
+        Self::open_with_simulation_run(root, instance_id, None)
+    }
+
+    fn open_with_simulation_run(
+        root: impl AsRef<Path>,
+        instance_id: &str,
+        simulation_run: Option<&Path>,
+    ) -> crate::Result<Self> {
         let root = root.as_ref().canonicalize().map_err(|source| {
             anyhow::anyhow!(RunnerError::BundleIo {
                 path: root.as_ref().to_owned(),
@@ -208,7 +219,6 @@ impl RuntimeLaunchManifest {
             document: bundle_document,
             executables: bundle_executables,
             simulation: bundle_simulation,
-            scenario: bundle_scenario,
             ..
         } = manifest;
         parse_identifier(instance_id)
@@ -294,11 +304,24 @@ impl RuntimeLaunchManifest {
                 message: format!("configuration for `{instance_id}` is explicit null"),
             }));
         }
-        let connections = bundle_document
+        let mut connections: BTreeMap<String, Vec<String>> = bundle_document
             .connections
             .iter()
             .map(|(consumer, sources)| (consumer.clone(), sources.as_slice().to_vec()))
             .collect();
+        let scenario_producers = load_simulation_bindings(simulation_run)?;
+        for producer in scenario_producers.values() {
+            connections.insert(
+                format!(
+                    "{}.{}",
+                    producer.target_instance, producer.signature.endpoint
+                ),
+                vec![format!(
+                    "{}.{}",
+                    producer.source_instance, producer.signature.endpoint
+                )],
+            );
+        }
         let artifacts = bundle_executables
             .iter()
             .filter_map(|entry| {
@@ -327,11 +350,7 @@ impl RuntimeLaunchManifest {
                     )
                 })
                 .collect(),
-            scenario_producers: bundle_scenario
-                .into_iter()
-                .flat_map(|scenario| scenario.producers)
-                .map(|producer| ((producer.instance.clone(), producer.port.clone()), producer))
-                .collect(),
+            scenario_producers,
         })
     }
 
@@ -402,6 +421,22 @@ impl RuntimeLaunchManifest {
                 }
             }
         }
+        if let Some(target) = self.artifacts.get(target_instance) {
+            for input in &target.inputs {
+                if input.role != "call_ingress" {
+                    continue;
+                }
+                let Some(port) = input.port.as_ref() else {
+                    continue;
+                };
+                for caller in self.artifacts.keys() {
+                    callers
+                        .entry(port.clone())
+                        .or_default()
+                        .insert((caller.clone(), "generated_call".to_owned()));
+                }
+            }
+        }
         let mut ranks = BTreeMap::new();
         for (port, callers) in callers {
             for (rank, (caller_instance, request_field)) in callers.into_iter().enumerate() {
@@ -438,7 +473,10 @@ impl RuntimeLaunchManifest {
         field: &super::transport::InputTransportField,
     ) -> crate::Result<Vec<ResolvedInputRoute>> {
         let Some(signature) = field.signature else {
-            if field.kind == super::input::InputKind::Operation {
+            if matches!(
+                field.kind,
+                super::input::InputKind::Operation | super::input::InputKind::Completions
+            ) {
                 return Ok(Vec::new());
             }
             let consumer = format!("{}.{}", self.instance_id, field.name);
@@ -528,7 +566,7 @@ impl RuntimeLaunchManifest {
                         .transient_outputs
                         .iter()
                         .find(|candidate| {
-                            candidate.kind == "reply"
+                            candidate.role == "reply"
                                 && candidate.input.as_deref() == Some(input.name.as_str())
                         })
                         .ok_or_else(|| {
@@ -539,7 +577,7 @@ impl RuntimeLaunchManifest {
                             })
                         })?;
                                 (
-                                    SourcePortSignature::to_binding(binding)?,
+                                    binding.to_binding(crate::port::PortKind::Commands)?,
                                     reply.max_bytes,
                                     reply.max_items,
                                     input.max_bytes,
@@ -564,8 +602,16 @@ impl RuntimeLaunchManifest {
                                 ),
                             })
                         })?;
+                                if output.role != "method" {
+                                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                                        message: format!(
+                                            "connection `{consumer} <- {source}` targets private output role `{}`",
+                                            output.role
+                                        ),
+                                    }));
+                                }
                                 (
-                                    SourcePortSignature::to_binding(binding)?,
+                                    binding.to_binding(expected_kind)?,
                                     output.max_bytes,
                                     output.max_items,
                                     output.max_request_bytes,
@@ -634,6 +680,7 @@ impl RuntimeLaunchManifest {
                 routes.push(ResolvedInputRoute {
                     field: field.name,
                     binding,
+                    admitted_sources: BTreeSet::from([source_instance.clone()]),
                     source_instance,
                     source_port,
                     direction,
@@ -646,10 +693,13 @@ impl RuntimeLaunchManifest {
             }
             return Ok(routes);
         };
-        if field.kind != super::input::InputKind::Commands {
+        if !matches!(
+            field.kind,
+            super::input::InputKind::Commands | super::input::InputKind::Setpoint
+        ) {
             return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
                 message: format!(
-                    "input `{}` carries an explicit descriptor but is not a Commands listener",
+                    "input `{}` carries an explicit descriptor but is not a Commands or Setpoint listener",
                     field.name
                 ),
             }));
@@ -670,13 +720,107 @@ impl RuntimeLaunchManifest {
             binding: super::transport::PortBinding::from_signature(signature),
             source_instance: self.instance_id.clone(),
             source_port: signature.name.to_owned(),
-            direction: InputDirection::Request,
+            direction: if field.kind == super::input::InputKind::Commands {
+                InputDirection::Request
+            } else {
+                InputDirection::Publication
+            },
             max_items,
             max_bytes,
             request_max_bytes: Some(max_bytes),
             caller_identity: None,
             caller_rank: None,
+            admitted_sources: self.artifacts.keys().cloned().collect(),
         }])
+    }
+
+    fn generated_call_route(
+        &self,
+        target_instance: &str,
+        signature: crate::port::PortSignature,
+    ) -> crate::Result<GeneratedCallRoute> {
+        let target = self.artifacts.get(target_instance).ok_or_else(|| {
+            anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "generated call target `{target_instance}` has no admitted runtime artifact"
+                ),
+            })
+        })?;
+        let expected_role = match signature.kind {
+            crate::port::PortKind::Setpoint => "leased_value",
+            crate::port::PortKind::Commands => "call_ingress",
+            kind => {
+                return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "generated call `{}.{}` uses incompatible internal kind `{}`",
+                        signature.service,
+                        signature.method,
+                        kind.as_str(),
+                    ),
+                }));
+            }
+        };
+        let input = target
+            .inputs
+            .iter()
+            .find(|input| {
+                input.role == expected_role
+                    && input.port.as_deref() == Some(signature.name)
+                    && input.signature.as_ref().is_some_and(|candidate| {
+                        candidate.service == signature.service
+                            && candidate.method == signature.method
+                            && candidate.request == signature.request
+                            && candidate.response == signature.response
+                    })
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "generated method `{}.{}` is not provided by service instance `{target_instance}`",
+                        signature.service, signature.method
+                    ),
+                })
+            })?;
+        let request_max_bytes = input.max_bytes.ok_or_else(|| {
+            anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "generated method `{}.{}` has no request byte bound",
+                    signature.service, signature.method
+                ),
+            })
+        })?;
+        let caller = format!("{}.generated_call", self.instance_id);
+        let caller_rank = if signature.kind == crate::port::PortKind::Commands {
+            Some(self.caller_rank_for(target_instance, signature.name, &caller)?)
+        } else {
+            None
+        };
+        let response_max_bytes = if signature.kind == crate::port::PortKind::Commands {
+            target
+                .transient_outputs
+                .iter()
+                .chain(&target.service_outputs)
+                .find(|output| {
+                    output.role == "reply" && output.input.as_deref() == Some(input.name.as_str())
+                })
+                .and_then(|output| output.max_bytes)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "generated method `{}.{}` has no bounded reply output",
+                            signature.service, signature.method
+                        ),
+                    })
+                })?
+        } else {
+            0
+        };
+        Ok(GeneratedCallRoute {
+            caller,
+            caller_rank,
+            request_max_bytes,
+            response_max_bytes,
+        })
     }
 
     /// Decode the selected configuration into the exact runtime type.
@@ -895,7 +1039,11 @@ where
     R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
     let launch = RuntimeLaunch::parse()?;
-    let manifest = RuntimeLaunchManifest::open(&launch.bundle_root, &launch.instance_id)?;
+    let manifest = RuntimeLaunchManifest::open_with_simulation_run(
+        &launch.bundle_root,
+        &launch.instance_id,
+        launch.simulation_run.as_deref(),
+    )?;
     let config = manifest.decode_config::<R>()?;
     let participant = ParticipantId::new(launch.instance_id.clone())
         .map_err(|error| anyhow::anyhow!("invalid runtime participant id: {error}"))?;
@@ -912,20 +1060,29 @@ where
     let operation_completions = Arc::new(Mutex::new(Vec::new()));
     let exchange_completions = Arc::new(Mutex::new(Vec::new()));
     let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
-    let input = ExecutionInputAdapter::<R>::unbound().with_shared_state(
-        Arc::clone(&correlations),
-        Arc::clone(&expired_correlations),
-        Arc::clone(&operation_completions),
-        Arc::clone(&exchange_completions),
-        Arc::clone(&activation_states),
-    );
-    let output = ExecutionOutputAdapter::<R>::unbound().with_shared_state(
-        correlations,
-        expired_correlations,
-        operation_completions,
-        exchange_completions,
-        activation_states,
-    );
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let input = ExecutionInputAdapter::<R>::unbound()
+        .with_shared_state(
+            Arc::clone(&correlations),
+            Arc::clone(&expired_correlations),
+            Arc::clone(&operation_completions),
+            Arc::clone(&exchange_completions),
+            Arc::clone(&activation_states),
+        )
+        .with_generated_calls(
+            Arc::clone(&generated_correlations),
+            Arc::clone(&generated_completions),
+        );
+    let output = ExecutionOutputAdapter::<R>::unbound()
+        .with_shared_state(
+            correlations,
+            expired_correlations,
+            operation_completions,
+            exchange_completions,
+            activation_states,
+        )
+        .with_generated_calls(generated_correlations, generated_completions);
 
     // Runtime initialization is local and serialized before transport Ready
     // is declared.  The adapters retain the execution-scoped handle and
@@ -2091,41 +2248,78 @@ enum SourceBundleManifest {
         executables: Vec<SourceExecutable>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
-        #[serde(default)]
-        scenario: Option<SourceScenario>,
     },
-}
-
-#[derive(Debug, Deserialize)]
-struct SourceScenario {
-    #[serde(default)]
-    producers: Vec<SourceScenarioProducer>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct SourceScenarioProducer {
-    instance: String,
-    port: String,
-    service_fqn: String,
-    method: String,
-    kind: String,
-    request_fqn: String,
-    response_fqn: String,
+    target_instance: String,
+    source_instance: String,
+    signature: crate::artifact::MethodSignature,
     max_message_bytes: u32,
 }
 
 impl SourceScenarioProducer {
     fn binding(&self) -> crate::Result<super::transport::PortBinding> {
-        SourcePortSignature {
-            name: self.port.clone(),
-            service: self.service_fqn.clone(),
-            method: self.method.clone(),
-            kind: self.kind.clone(),
-            request: self.request_fqn.clone(),
-            response: self.response_fqn.clone(),
+        if self.signature.shape != crate::artifact::MethodShape::Call
+            || self.signature.lease_valid_for_ms.is_none()
+        {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "simulation source `{}.{}` is not a leased generated call",
+                    self.source_instance, self.signature.endpoint
+                ),
+            }));
         }
-        .to_binding()
+        Ok(super::transport::PortBinding {
+            name: self.signature.endpoint.clone(),
+            service: self.signature.service.clone(),
+            method: self.signature.method.clone(),
+            kind: crate::port::PortKind::Setpoint,
+            request: self.signature.request.clone(),
+            response: self.signature.response.clone(),
+        })
     }
+}
+
+fn load_simulation_bindings(
+    path: Option<&Path>,
+) -> crate::Result<BTreeMap<(String, String), SourceScenarioProducer>> {
+    let Some(path) = path else {
+        return Ok(BTreeMap::new());
+    };
+    let bytes = read_bounded(path, 16 * 1024 * 1024)?;
+    let specification: crate::artifact::simulation_run::SimulationRunSpecification =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            anyhow::anyhow!(RunnerError::BundleJson {
+                path: path.to_owned(),
+                source,
+            })
+        })?;
+    let crate::artifact::simulation_run::SimulationRunSpecification::V0 { bindings, .. } =
+        specification;
+    let mut producers = BTreeMap::new();
+    for binding in bindings {
+        let key = (
+            binding.source_instance.clone(),
+            binding.signature.endpoint.clone(),
+        );
+        let producer = SourceScenarioProducer {
+            target_instance: binding.target_instance,
+            source_instance: binding.source_instance,
+            signature: binding.signature,
+            max_message_bytes: binding.max_message_bytes,
+        };
+        if producers.insert(key.clone(), producer).is_some() {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "simulation run contains duplicate source `{}.{}`",
+                    key.0, key.1
+                ),
+            }));
+        }
+    }
+    Ok(producers)
 }
 
 #[derive(Debug, Deserialize)]
@@ -2139,7 +2333,11 @@ struct SourceObservationProvider {
     port: String,
     service_fqn: String,
     method: String,
-    kind: String,
+    shape: crate::artifact::MethodShape,
+    #[serde(default)]
+    retained_latest: bool,
+    #[serde(default)]
+    lease_valid_for_ms: Option<u64>,
     input_fqn: String,
     payload_fqn: String,
     max_message_bytes: u32,
@@ -2148,15 +2346,29 @@ struct SourceObservationProvider {
 
 impl SourceObservationProvider {
     fn binding(&self) -> crate::Result<super::transport::PortBinding> {
-        SourcePortSignature {
-            name: self.port.clone(),
+        if self.shape != crate::artifact::MethodShape::Observation {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "simulation provider `{}.{}` is not an observation",
+                    self.service_instance, self.port
+                ),
+            }));
+        }
+        SourceMethodSignature {
+            endpoint: self.port.clone(),
             service: self.service_fqn.clone(),
             method: self.method.clone(),
-            kind: self.kind.clone(),
+            shape: self.shape,
             request: self.input_fqn.clone(),
             response: self.payload_fqn.clone(),
+            retained_latest: self.retained_latest,
+            lease_valid_for_ms: self.lease_valid_for_ms,
         }
-        .to_binding()
+        .to_binding(if self.retained_latest {
+            crate::port::PortKind::State
+        } else {
+            crate::port::PortKind::Sample
+        })
     }
 }
 
@@ -2239,7 +2451,7 @@ struct SourceRuntimeRecord {
 struct SourceInputRecord {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     max_items: Option<u64>,
     #[serde(default)]
@@ -2247,18 +2459,18 @@ struct SourceInputRecord {
     #[serde(default)]
     port: Option<String>,
     #[serde(default)]
-    signature: Option<SourcePortSignature>,
+    signature: Option<SourceMethodSignature>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct SourceOutputRecord {
     name: String,
     #[serde(default)]
-    kind: String,
+    role: String,
     #[serde(default)]
     port: Option<String>,
     #[serde(default)]
-    signature: Option<SourcePortSignature>,
+    signature: Option<SourceMethodSignature>,
     #[serde(default)]
     input: Option<String>,
     #[serde(default)]
@@ -2270,33 +2482,45 @@ struct SourceOutputRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourcePortSignature {
-    name: String,
+struct SourceMethodSignature {
+    endpoint: String,
     service: String,
     method: String,
-    kind: String,
+    shape: crate::artifact::MethodShape,
     request: String,
     response: String,
+    retained_latest: bool,
+    lease_valid_for_ms: Option<u64>,
 }
 
-impl SourcePortSignature {
-    fn to_binding(&self) -> crate::Result<super::transport::PortBinding> {
-        let kind = match self.kind.as_str() {
-            "state" => crate::port::PortKind::State,
-            "sample" => crate::port::PortKind::Sample,
-            "event" => crate::port::PortKind::Event,
-            "stream" => crate::port::PortKind::Stream,
-            "setpoint" => crate::port::PortKind::Setpoint,
-            "read" => crate::port::PortKind::Read,
-            "commands" => crate::port::PortKind::Commands,
-            value => {
-                return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                    message: format!("unknown source port kind `{value}`"),
-                }));
-            }
+impl SourceMethodSignature {
+    fn to_binding(
+        &self,
+        kind: crate::port::PortKind,
+    ) -> crate::Result<super::transport::PortBinding> {
+        let expected_shape = if matches!(
+            kind,
+            crate::port::PortKind::State
+                | crate::port::PortKind::Sample
+                | crate::port::PortKind::Event
+                | crate::port::PortKind::Stream
+        ) {
+            crate::artifact::MethodShape::Observation
+        } else {
+            crate::artifact::MethodShape::Call
         };
+        if self.shape != expected_shape {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "method `{}.{}` shape does not match private runtime role `{}`",
+                    self.service,
+                    self.method,
+                    kind.as_str()
+                ),
+            }));
+        }
         Ok(super::transport::PortBinding {
-            name: self.name.clone(),
+            name: self.endpoint.clone(),
             service: self.service.clone(),
             method: self.method.clone(),
             kind,
@@ -2324,7 +2548,9 @@ impl InputDirection {
             | super::input::InputKind::Stream => Ok(Self::Publication),
             super::input::InputKind::Read | super::input::InputKind::Request => Ok(Self::Reply),
             super::input::InputKind::Commands => Ok(Self::Request),
-            super::input::InputKind::Operation => Ok(Self::Completion),
+            super::input::InputKind::Operation | super::input::InputKind::Completions => {
+                Ok(Self::Completion)
+            }
         }
     }
 
@@ -2450,6 +2676,14 @@ struct ResolvedInputRoute {
     request_max_bytes: Option<u64>,
     caller_identity: Option<String>,
     caller_rank: Option<u64>,
+    admitted_sources: BTreeSet<String>,
+}
+
+struct GeneratedCallRoute {
+    caller: String,
+    caller_rank: Option<u64>,
+    request_max_bytes: u64,
+    response_max_bytes: u64,
 }
 
 fn parse_graph_endpoint(value: &str) -> Result<(String, String), String> {

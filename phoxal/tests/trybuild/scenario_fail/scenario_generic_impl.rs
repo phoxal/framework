@@ -1,21 +1,13 @@
-//! Negative trybuild fixture: the attribute must reject generic impls.
+//! Negative fixture: scenario test functions cannot be generic.
 
 #![cfg(feature = "scenario")]
 
-use phoxal::scenario::{Scenario, ScenarioPlan, ScenarioRun};
-use std::time::Duration;
-
-#[derive(Default)]
-pub struct GenericScenario<T: Default + 'static>(pub T);
+use phoxal::scenario::Simulation;
 
 #[phoxal::scenario]
-impl<T: Default + 'static> Scenario for GenericScenario<T> {
-    fn plan(&self) -> phoxal::Result<ScenarioPlan> {
-        Ok(ScenarioPlan::new("x", Duration::from_secs(1)))
-    }
-    fn verify(&self, _run: &ScenarioRun) -> phoxal::Result<()> {
-        Ok(())
-    }
+fn generic_scenario<T>(sim: &mut Simulation) -> phoxal::Result<()> {
+    let _ = (sim, std::marker::PhantomData::<T>);
+    Ok(())
 }
 
 fn main() {}

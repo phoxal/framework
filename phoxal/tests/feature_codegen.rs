@@ -1,13 +1,11 @@
-//! Isolated verification that the SDK's `robotics` feature gates the
-//! build-time generation of `phoxal-robotics-descriptors.bin`.
+//! Isolated verification that SDK features do not revive build-time robotics
+//! code generation.
 //!
-//! The `phoxal::robotics` module is a real gated SDK module: the
-//! `pub mod robotics;` declaration is hidden unless Cargo enables the
-//! `robotics` feature, and the build script only runs the robotics
-//! compilation when `CARGO_FEATURE_ROBOTICS` is set. This test
-//! builds the SDK into a fresh `target` directory under each feature
-//! flag and inspects the generated `OUT_DIR` to confirm the feature
-//! boundary is real at build time, not only at the Rust source level.
+//! The `phoxal::robotics` module remains feature-gated, but its generated Rust
+//! and descriptor closure are checked-in package inputs. The build script owns
+//! only runtime protocols. These tests build the SDK into a fresh target under
+//! the contract-only and robotics profiles and ensure neither profile creates
+//! a second robotics descriptor in `OUT_DIR`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,24 +52,29 @@ fn files_under_phoxal_out(target_dir: &Path, file_name: &str) -> Vec<PathBuf> {
 }
 
 #[test]
-fn port_feature_does_not_generate_robotics_descriptor() {
-    let target = tempfile::tempdir().expect("temp target dir for port build");
-    build_phoxal(target.path(), &["port"]);
+fn contract_feature_does_not_generate_robotics_descriptor() {
+    let target = tempfile::tempdir().expect("temp target dir for contract build");
+    build_phoxal(target.path(), &["contract"]);
     let descriptor = files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
     assert!(
         descriptor.is_empty(),
-        "port feature must not generate the robotics descriptor; found {descriptor:?}"
+        "contract feature must not generate the robotics descriptor; found {descriptor:?}"
     );
 }
 
 #[test]
-fn robotics_feature_generates_robotics_descriptor() {
+fn robotics_feature_uses_the_checked_in_descriptor() {
     let target = tempfile::tempdir().expect("temp target dir for robotics build");
     build_phoxal(target.path(), &["robotics"]);
     let descriptor = files_under_phoxal_out(target.path(), "phoxal-robotics-descriptors.bin");
-    assert_eq!(
-        descriptor.len(),
-        1,
-        "robotics feature must generate exactly one robotics descriptor; found {descriptor:?}"
+    assert!(
+        descriptor.is_empty(),
+        "robotics feature must not generate a second descriptor; found {descriptor:?}"
+    );
+    assert!(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("generated/robotics/phoxal-descriptors.bin")
+            .is_file(),
+        "robotics package must contain its checked-in descriptor closure"
     );
 }

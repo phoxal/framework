@@ -202,30 +202,29 @@ impl RecordBuilder {
         }
     }
 
-    const fn push_kind(&mut self, kind: InputKind) {
+    const fn push_input_role(&mut self, kind: InputKind) {
         self.push_quoted(match kind {
-            InputKind::Latest => "latest",
-            InputKind::Samples => "samples",
-            InputKind::Events => "events",
-            InputKind::Setpoint => "setpoint",
-            InputKind::Stream => "stream",
-            InputKind::Commands => "commands",
-            InputKind::Read => "read",
-            InputKind::Request => "request",
-            InputKind::Operation => "operation",
+            InputKind::Latest => "observation_latest",
+            InputKind::Samples | InputKind::Events | InputKind::Stream => "observation_history",
+            InputKind::Setpoint => "leased_value",
+            InputKind::Commands => "call_ingress",
+            InputKind::Read => "call_result",
+            InputKind::Request => "call_target",
+            InputKind::Operation => "operation_result",
+            InputKind::Completions => "call_completions",
         });
     }
 
-    const fn push_output_kind(&mut self, kind: OutputKind) {
+    const fn push_output_role(&mut self, kind: OutputKind) {
         self.push_quoted(match kind {
-            OutputKind::State => "state",
-            OutputKind::Sample => "sample",
-            OutputKind::Event => "event",
-            OutputKind::Stream => "stream",
-            OutputKind::Setpoint => "setpoint",
-            OutputKind::Read => "read",
+            OutputKind::State
+            | OutputKind::Sample
+            | OutputKind::Event
+            | OutputKind::Stream
+            | OutputKind::Setpoint
+            | OutputKind::Read => "method",
             OutputKind::Reply => "reply",
-            OutputKind::Activate => "activate",
+            OutputKind::Activate => "activation",
             OutputKind::Operation => "operation",
         });
     }
@@ -235,18 +234,25 @@ impl RecordBuilder {
             self.push_str("null");
             return;
         };
-        self.push_str("{\"name\":");
+        self.push_str("{\"endpoint\":");
         self.push_quoted(signature.name);
         self.push_str(",\"service\":");
         self.push_quoted(signature.service);
         self.push_str(",\"method\":");
         self.push_quoted(signature.method);
-        self.push_str(",\"kind\":");
-        self.push_quoted(signature.kind.as_str());
+        self.push_str(",\"shape\":");
+        self.push_quoted(match signature.shape {
+            crate::contract::MethodShape::Call => "call",
+            crate::contract::MethodShape::Observation => "observation",
+        });
         self.push_str(",\"request\":");
         self.push_quoted(signature.request);
         self.push_str(",\"response\":");
         self.push_quoted(signature.response);
+        self.push_str(",\"retained_latest\":");
+        self.push_bool(signature.retained_latest);
+        self.push_str(",\"lease_valid_for_ms\":");
+        self.push_optional_u64(signature.lease_valid_for_ms);
         self.push_byte(b'}');
     }
 
@@ -259,8 +265,8 @@ impl RecordBuilder {
             let field = fields[index];
             self.push_str("{\"name\":");
             self.push_quoted(field.name);
-            self.push_str(",\"kind\":");
-            self.push_kind(field.kind);
+            self.push_str(",\"role\":");
+            self.push_input_role(field.kind);
             self.push_str(",\"max_age_ms\":");
             self.push_optional_u64(field.max_age_ms);
             self.push_str(",\"max_items\":");
@@ -292,8 +298,8 @@ impl RecordBuilder {
             let field = fields[index];
             self.push_str("{\"name\":");
             self.push_quoted(field.name);
-            self.push_str(",\"kind\":");
-            self.push_output_kind(field.kind);
+            self.push_str(",\"role\":");
+            self.push_output_role(field.kind);
             self.push_str(",\"port\":");
             match field.port {
                 Some(port) => self.push_quoted(port),

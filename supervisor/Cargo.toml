@@ -43,6 +43,8 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zenoh = { workspace = true, features = ["unstable"] }
+phoxal-contract-owner-fixture = { path = "../tests/contracts/producer", optional = true }
+phoxal-service-motion = { workspace = true, optional = true }
 
 [dev-dependencies]
 serial_test.workspace = true
@@ -51,11 +53,16 @@ serial_test.workspace = true
 workspace = true
 
 [features]
-test-fixtures = []
+test-fixtures = ["dep:phoxal-contract-owner-fixture", "dep:phoxal-service-motion"]
 
 [[bin]]
 name = "supervisor-test-runtime"
 path = "tests/fixtures/runtime_process.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "supervisor-test-motion-runtime"
+path = "tests/fixtures/motion_runtime.rs"
 required-features = ["test-fixtures"]
 
 [[test]]

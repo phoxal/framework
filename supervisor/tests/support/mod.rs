@@ -2,6 +2,121 @@
 
 use std::{path::Path, time::Duration};
 
+pub fn reference_runtime_artifact() -> serde_json::Value {
+    serde_json::json!({
+        "runtime": {
+            "schema": "phoxal/artifact/v0",
+            "record": "runtime",
+            "period_ms": 20,
+            "timeout_ms": 100,
+            "init_timeout_ms": 1000,
+            "config_schema": {"type": "null"},
+            "inputs": [{
+                "name": "reads",
+                "role": "call_ingress",
+                "max_items": 8,
+                "max_bytes": 4096,
+                "port": "read",
+                "signature": {
+                    "endpoint": "read",
+                    "service": "example.inspection.v1.Inspection",
+                    "method": "Read",
+                    "shape": "call",
+                    "request": "example.inspection.v1.InspectionReadRequest",
+                    "response": "example.inspection.v1.InspectionReadResponse",
+                    "retained_latest": false,
+                    "lease_valid_for_ms": null
+                }
+            }],
+            "transient_outputs": [{
+                "name": "read_replies",
+                "role": "reply",
+                "input": "reads",
+                "max_items": 8,
+                "max_bytes": 4096
+            }],
+            "service_outputs": [{
+                "name": "status",
+                "role": "method",
+                "port": "status",
+                "max_items": 1,
+                "max_bytes": 4096,
+                "bootstrap": true,
+                "on_change": false,
+                "signature": {
+                    "endpoint": "status",
+                    "service": "example.inspection.v1.Inspection",
+                    "method": "Status",
+                    "shape": "observation",
+                    "request": "google.protobuf.Empty",
+                    "response": "example.inspection.v1.InspectionState",
+                    "retained_latest": true,
+                    "lease_valid_for_ms": null
+                }
+            }]
+        },
+        "descriptors": []
+    })
+}
+
+#[allow(dead_code)]
+pub fn motion_runtime_artifact() -> serde_json::Value {
+    serde_json::json!({
+        "runtime": {
+            "schema": "phoxal/artifact/v0",
+            "record": "runtime",
+            "period_ms": 20,
+            "timeout_ms": 100,
+            "init_timeout_ms": 1000,
+            "config_schema": {"type": "null"},
+            "inputs": [{
+                "name": "disarm",
+                "role": "call_ingress",
+                "max_items": 8,
+                "max_bytes": 4096,
+                "port": "disarm",
+                "signature": {
+                    "endpoint": "disarm",
+                    "service": "phoxal.motion.v1.Motion",
+                    "method": "Disarm",
+                    "shape": "call",
+                    "request": "google.protobuf.Empty",
+                    "response": "phoxal.motion.v1.ApplyEmergencyResponse",
+                    "retained_latest": false,
+                    "lease_valid_for_ms": null
+                }
+            }],
+            "transient_outputs": [{
+                "name": "disarm_replies",
+                "role": "reply",
+                "input": "disarm",
+                "max_items": 8,
+                "max_bytes": 4096
+            }],
+            "service_outputs": [{
+                "name": "status",
+                "role": "method",
+                "port": "status",
+                "max_items": 1,
+                "max_bytes": 4096,
+                "bootstrap": true,
+                "on_change": true,
+                "signature": {
+                    "endpoint": "status",
+                    "service": "phoxal.motion.v1.Motion",
+                    "method": "Status",
+                    "shape": "observation",
+                    "request": "google.protobuf.Empty",
+                    "response": "phoxal.motion.v1.MotionStatus",
+                    "retained_latest": true,
+                    "lease_valid_for_ms": null
+                }
+            }]
+        },
+        "descriptors": []
+    })
+}
+
 pub struct SupervisorProcess {
     child: tokio::process::Child,
     group: i32,

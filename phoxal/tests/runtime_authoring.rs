@@ -34,8 +34,8 @@ struct CounterOutputs {
     events: Vec<u32>,
 }
 
-const COUNTER_STATE: phoxal::port::State<u64> = phoxal::port::State::new("state");
-const COUNTER_EVENTS: phoxal::port::Event<u32> = phoxal::port::Event::new("events");
+const COUNTER_STATE: phoxal::__private::State<u64> = phoxal::__private::State::new("state");
+const COUNTER_EVENTS: phoxal::__private::Event<u32> = phoxal::__private::Event::new("events");
 
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for Counter {

@@ -789,11 +789,7 @@ impl crate::runtime::input::TransportInputSink for TransportInputs {
     fn set_setpoint(
         &mut self,
         field: &str,
-        _value: Option<(
-            crate::runtime::input::TransportValue,
-            ExecutionTime,
-            ExecutionTime,
-        )>,
+        _value: Option<crate::runtime::input::SetpointUpdate>,
     ) -> crate::Result<()> {
         Err(anyhow::anyhow!(format!(
             "unexpected setpoint field {field}"
@@ -1332,13 +1328,15 @@ impl RequestClientRuntime {
 }
 
 fn request_client_manifest() -> RuntimeLaunchManifest {
-    let signature = SourcePortSignature {
-        name: TRANSPORT_PORT.name.to_owned(),
+    let signature = SourceMethodSignature {
+        endpoint: TRANSPORT_PORT.name.to_owned(),
         service: TRANSPORT_PORT.service.to_owned(),
         method: TRANSPORT_PORT.method.to_owned(),
-        kind: TRANSPORT_PORT.kind.as_str().to_owned(),
+        shape: crate::artifact::MethodShape::Call,
         request: TRANSPORT_PORT.request.to_owned(),
         response: TRANSPORT_PORT.response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
     };
     RuntimeLaunchManifest {
         root: PathBuf::from("."),
@@ -1359,7 +1357,7 @@ fn request_client_manifest() -> RuntimeLaunchManifest {
                 init_timeout_ms: Some(100),
                 inputs: vec![SourceInputRecord {
                     name: "commands".to_owned(),
-                    kind: "commands".to_owned(),
+                    role: "call_ingress".to_owned(),
                     max_items: Some(4),
                     max_bytes: Some(1024),
                     port: Some(TRANSPORT_PORT.name.to_owned()),
@@ -1367,7 +1365,7 @@ fn request_client_manifest() -> RuntimeLaunchManifest {
                 }],
                 transient_outputs: vec![SourceOutputRecord {
                     name: "replies".to_owned(),
-                    kind: "reply".to_owned(),
+                    role: "reply".to_owned(),
                     port: Some(TRANSPORT_PORT.name.to_owned()),
                     signature: None,
                     input: Some("commands".to_owned()),
@@ -1579,6 +1577,329 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
         observations.lock().unwrap().last(),
         Some(&(crate::runtime::ReadStatus::Inactive, false, None))
     );
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+const GENERATED_TRANSPORT_METHOD: crate::contract::CallMethod<TransportRequest, TransportResponse> =
+    crate::contract::CallMethod::new(
+        "phoxal.runtime.test",
+        "Transport",
+        "transport-commands",
+        "phoxal.runtime.test.TransportRequest",
+        "phoxal.runtime.test.TransportResponse",
+        None,
+        &[],
+    );
+
+#[crate::runtime::inputs]
+struct GeneratedCallInputs {
+    completions: crate::runtime::Completions,
+}
+
+#[derive(Default)]
+struct GeneratedCallState {
+    ticket: Option<crate::runtime::outputs::CallTicket<TransportResponse>>,
+}
+
+struct GeneratedCallRuntime {
+    response: Arc<Mutex<Option<u32>>>,
+}
+
+impl Runtime for GeneratedCallRuntime {
+    type Config = ();
+    type State = GeneratedCallState;
+    type Inputs = GeneratedCallInputs;
+    type Outputs = crate::runtime::Outputs;
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(GeneratedCallState::default())
+    }
+
+    fn step(
+        &self,
+        ctx: &StepContext,
+        mut state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        let mut outputs = crate::runtime::Outputs::default();
+        if let Some(ticket) = state.ticket {
+            if let Some(completion) = inputs.completions.get(&ticket) {
+                let response = completion.into_result()?;
+                *self.response.lock().expect("generated response lock") = Some(response.value);
+                state.ticket = None;
+            }
+        } else if self
+            .response
+            .lock()
+            .expect("generated response lock")
+            .is_none()
+        {
+            state.ticket = Some(outputs.send(
+                ctx,
+                GENERATED_TRANSPORT_METHOD.bind("server", TransportRequest { value: 41 }),
+            )?);
+        }
+        Ok((state, outputs))
+    }
+}
+
+impl RegisteredRuntime for GeneratedCallRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn __retain_artifact_metadata() {}
+}
+
+impl crate::runtime::outputs::OutputBindings for GeneratedCallRuntime {
+    const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+}
+
+fn generated_call_manifest() -> RuntimeLaunchManifest {
+    let signature = SourceMethodSignature {
+        endpoint: TRANSPORT_PORT.name.to_owned(),
+        service: TRANSPORT_PORT.service.to_owned(),
+        method: TRANSPORT_PORT.method.to_owned(),
+        shape: crate::artifact::MethodShape::Call,
+        request: TRANSPORT_PORT.request.to_owned(),
+        response: TRANSPORT_PORT.response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
+    };
+    let caller = SourceRuntimeRecord {
+        period_ms: Some(1),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![SourceInputRecord {
+            name: "completions".to_owned(),
+            role: "call_completions".to_owned(),
+            max_items: None,
+            max_bytes: None,
+            port: None,
+            signature: None,
+        }],
+        transient_outputs: Vec::new(),
+        service_outputs: Vec::new(),
+    };
+    let server = SourceRuntimeRecord {
+        period_ms: Some(1),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![SourceInputRecord {
+            name: "commands".to_owned(),
+            role: "call_ingress".to_owned(),
+            max_items: Some(4),
+            max_bytes: Some(1024),
+            port: Some(TRANSPORT_PORT.name.to_owned()),
+            signature: Some(signature),
+        }],
+        transient_outputs: vec![SourceOutputRecord {
+            name: "replies".to_owned(),
+            role: "reply".to_owned(),
+            port: Some(TRANSPORT_PORT.name.to_owned()),
+            signature: None,
+            input: Some("commands".to_owned()),
+            max_items: Some(4),
+            max_bytes: Some(1024),
+            max_request_bytes: None,
+        }],
+        service_outputs: Vec::new(),
+    };
+    RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "generated-call-test".to_owned(),
+        instance_id: "caller".to_owned(),
+        executable: PathBuf::from("generated-call-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections: BTreeMap::new(),
+        artifacts: BTreeMap::from([("caller".to_owned(), caller), ("server".to_owned(), server)]),
+        scenario_producers: BTreeMap::new(),
+        observation_providers: BTreeMap::new(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() -> crate::Result<()>
+{
+    use zenoh::bytes::Encoding;
+
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("generated-call-client")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let manifest = generated_call_manifest();
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let mut input = ExecutionInputAdapter::<GeneratedCallRuntime>::unbound().with_generated_calls(
+        Arc::clone(&generated_correlations),
+        Arc::clone(&generated_completions),
+    );
+    input.bind(bus.clone(), &manifest).await?;
+    let mut output = ExecutionOutputAdapter::<GeneratedCallRuntime>::unbound()
+        .with_generated_calls(generated_correlations, generated_completions);
+    output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let requests = bus
+        .session()?
+        .declare_subscriber(bus.full_key(&transport::port_key(
+            "server",
+            TRANSPORT_PORT.name,
+            "request",
+        )))
+        .with(zenoh::handlers::FifoChannel::new(4))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let response = Arc::new(Mutex::new(None));
+    let mut runner = RuntimeRunner::new(
+        GeneratedCallRuntime {
+            response: Arc::clone(&response),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+
+    runner.poll(ExecutionTime::default())?;
+    let request = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+            .await?
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )?;
+    assert_eq!(TransportRequest::decode(request.payload())?.value, 41);
+    assert_eq!(*response.lock().expect("generated response lock"), None);
+
+    let request_metadata = request.metadata();
+    let reply_metadata = transport::reply_metadata(
+        "server",
+        StepContext::first(
+            ExecutionTime::from_nanos(1_000_000),
+            ExecutionDuration::from_millis(1),
+        ),
+        request_metadata.command_id(),
+        request_metadata.eligible_boundary(),
+        request_metadata
+            .caller_rank
+            .expect("generated request caller rank"),
+    )
+    .with_caller(
+        request_metadata
+            .caller
+            .clone()
+            .expect("generated request caller"),
+    )
+    .encode_bounded()?;
+    bus.session()?
+        .put(
+            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            transport::encode_prost(&TransportResponse { value: 42 })?,
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(reply_metadata)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(1_000_000))?;
+
+    assert_eq!(*response.lock().expect("generated response lock"), Some(42));
+    assert!(
+        requests
+            .try_recv()
+            .expect("generated request queue remains readable")
+            .is_none(),
+        "a completed generated call must not be replayed"
+    );
+
+    runner.reset(ExecutionTime::from_nanos(2_000_000), ())?;
+    *response.lock().expect("generated response lock") = None;
+    runner.poll(ExecutionTime::from_nanos(2_000_000))?;
+    let replacement = WireSample::from_zenoh(
+        tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+            .await?
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )?;
+    assert_ne!(
+        replacement.metadata().command_id,
+        request_metadata.command_id,
+        "wire correlation identities must not be reused across reset"
+    );
+
+    bus.session()?
+        .put(
+            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            transport::encode_prost(&TransportResponse { value: 99 })?,
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(
+            transport::reply_metadata(
+                "server",
+                StepContext::first(
+                    ExecutionTime::from_nanos(3_000_000),
+                    ExecutionDuration::from_millis(1),
+                ),
+                request_metadata.command_id(),
+                request_metadata.eligible_boundary(),
+                request_metadata
+                    .caller_rank
+                    .expect("stale generated request caller rank"),
+            )
+            .with_caller(
+                request_metadata
+                    .caller
+                    .clone()
+                    .expect("stale generated request caller"),
+            )
+            .encode_bounded()?,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(3_000_000))?;
+    assert_eq!(
+        *response.lock().expect("generated response lock"),
+        None,
+        "a pre-reset reply must not complete the replacement call"
+    );
+
+    let replacement_metadata = replacement.metadata();
+    bus.session()?
+        .put(
+            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            transport::encode_prost(&TransportResponse { value: 43 })?,
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(
+            transport::reply_metadata(
+                "server",
+                StepContext::first(
+                    ExecutionTime::from_nanos(4_000_000),
+                    ExecutionDuration::from_millis(1),
+                ),
+                replacement_metadata.command_id(),
+                replacement_metadata.eligible_boundary(),
+                replacement_metadata
+                    .caller_rank
+                    .expect("replacement generated request caller rank"),
+            )
+            .with_caller(
+                replacement_metadata
+                    .caller
+                    .clone()
+                    .expect("replacement generated request caller"),
+            )
+            .encode_bounded()?,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(4_000_000))?;
+    assert_eq!(*response.lock().expect("generated response lock"), Some(43));
     runner.stop()?;
     owner.close().await;
     Ok(())
@@ -2259,13 +2580,15 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     )
     .await
     .expect("test bus opens");
-    let signature = SourcePortSignature {
-        name: READ_PORT.signature().name.to_owned(),
+    let signature = SourceMethodSignature {
+        endpoint: READ_PORT.signature().name.to_owned(),
         service: READ_PORT.signature().service.to_owned(),
         method: READ_PORT.signature().method.to_owned(),
-        kind: READ_PORT.signature().kind.as_str().to_owned(),
+        shape: crate::artifact::MethodShape::Call,
         request: READ_PORT.signature().request.to_owned(),
         response: READ_PORT.signature().response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
     };
     let mut connections = BTreeMap::new();
     connections.insert(
@@ -2284,7 +2607,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
             transient_outputs: Vec::new(),
             service_outputs: vec![SourceOutputRecord {
                 name: "current".to_owned(),
-                kind: "read".to_owned(),
+                role: "method".to_owned(),
                 port: Some("read".to_owned()),
                 signature: Some(signature),
                 input: None,
@@ -2785,13 +3108,15 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
     )
     .await
     .expect("test bus opens");
-    let signature = SourcePortSignature {
-        name: SOURCE_STATE.name.to_owned(),
+    let signature = SourceMethodSignature {
+        endpoint: SOURCE_STATE.name.to_owned(),
         service: SOURCE_STATE.service.to_owned(),
         method: SOURCE_STATE.method.to_owned(),
-        kind: SOURCE_STATE.kind.as_str().to_owned(),
+        shape: crate::artifact::MethodShape::Observation,
         request: SOURCE_STATE.request.to_owned(),
         response: SOURCE_STATE.response.to_owned(),
+        retained_latest: true,
+        lease_valid_for_ms: None,
     };
     let mut connections = BTreeMap::new();
     connections.insert(
@@ -2809,7 +3134,7 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
             transient_outputs: Vec::new(),
             service_outputs: vec![SourceOutputRecord {
                 name: "state".to_owned(),
-                kind: "state".to_owned(),
+                role: "method".to_owned(),
                 port: Some("state".to_owned()),
                 signature: Some(signature),
                 input: None,
@@ -2944,7 +3269,7 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             subscriber,
             queue,
             bus: bus.clone(),
-            expected_source: "producer".to_owned(),
+            expected_sources: BTreeSet::from(["producer".to_owned()]),
             expected_callers: BTreeSet::new(),
             target: format!("consumer.{field}"),
             port: SOURCE_STATE.name.to_owned(),

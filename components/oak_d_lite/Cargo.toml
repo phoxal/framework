@@ -9,11 +9,11 @@ description = "Phoxal official driver: oak_d_lite - camera/depth/IMU."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml"]
+include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml"]
 
 [lib]
 name = "phoxal_component_oak_d_lite"
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-component-oak_d_lite"
@@ -21,17 +21,19 @@ path = "src/main.rs"
 required-features = ["runtime"]
 
 [features]
-default = ["runtime"]
+default = []
 runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port"] }
+phoxal = { workspace = true, default-features = false, features = ["contract"] }
 anyhow = { workspace = true, optional = true }
 prost = { workspace = true }
 serde = { workspace = true, optional = true }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/component/oak_d_lite/v1/oak_d_lite.proto"]
+includes = ["proto"]
+generated = "generated"
 
 [lints]
 workspace = true

@@ -40,11 +40,14 @@ impl Brain {
     /// The local scenario substitutes the controller's manual input without
     /// turning the qualification program into deployed robot behavior.
     #[phoxal::runtime::outputs::setpoint(
-        port = motion::ports::MANUAL,
+        port = robot_api::contracts::phoxal::test_controller::v1::controller::methods::MANUAL.__setpoint_port(),
         max_bytes = 256,
         valid_for_ms = 100
     )]
-    fn manual(&self, _state: &()) -> Option<motion::MotionIntent> {
+    fn manual(
+        &self,
+        _state: &(),
+    ) -> Option<robot_api::contracts::phoxal::motion::v1::MotionIntent> {
         None
     }
 }

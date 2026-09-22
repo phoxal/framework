@@ -8,7 +8,7 @@ use phoxal::runtime::StepContext;
 #[cfg(test)]
 use phoxal_component_zed_f9p::FILE_DESCRIPTOR_SET;
 #[cfg(test)]
-use phoxal_component_zed_f9p::ports;
+use phoxal_component_zed_f9p::zed_f9p;
 
 const BACKEND_UNAVAILABLE: &str =
     "zed_f9p hardware backend unavailable: refusing to publish fabricated GNSS measurements";
@@ -49,22 +49,30 @@ impl Runtime for ZedF9p {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, ZedF9p, ZedF9pConfig, ZedF9pOutputs, ports,
+        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, ZedF9p, ZedF9pConfig, ZedF9pOutputs, zed_f9p,
     };
-    use phoxal::port::PortKind;
+    use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
-    fn generated_gnss_port_has_a_retained_descriptor() {
-        assert_eq!(ports::GNSS.name(), "gnss");
+    fn generated_gnss_method_has_a_retained_descriptor() {
+        assert_eq!(zed_f9p::methods::GNSS.signature().endpoint, "gnss");
         assert_eq!(
-            ports::GNSS.signature().service,
+            zed_f9p::methods::GNSS.signature().service,
             "phoxal.component.zed_f9p.v1.ZedF9p"
         );
-        assert_eq!(ports::GNSS.signature().kind, PortKind::Sample);
+        assert_eq!(
+            zed_f9p::methods::GNSS.signature().shape,
+            MethodShape::Observation
+        );
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
-        assert!(!ports::GNSS.signature().descriptor_set().is_empty());
+        assert!(
+            !zed_f9p::methods::GNSS
+                .signature()
+                .descriptor_set()
+                .is_empty()
+        );
         assert_eq!(ZedF9pOutputs::FIELDS[0].name, "gnss");
         assert_eq!(ZedF9pOutputs::FIELDS[0].port, Some("gnss"));
         assert!(ZedF9pOutputs::FIELDS[0].port_signature.is_some());

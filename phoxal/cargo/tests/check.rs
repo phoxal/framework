@@ -55,22 +55,22 @@ fn check_reports_a_missing_runtime_artifact_contract() {
 }
 
 #[test]
-fn check_rejects_an_undeclared_service_implementation() {
+fn check_rejects_the_removed_service_implementation_field() {
     let (_guard, root) = stage("check-bad-deps");
     let output = support::invoke(&root, &["check", "--offline"]);
     assert!(
         !output.status.success(),
-        "undeclared service must yield a non-zero exit, got {}",
+        "legacy service implementation must yield a non-zero exit, got {}",
         output.status
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("does-not-exist"),
-        "stderr must name the bad dependency key, got:\n{stderr}"
+        stderr.contains("unknown field `implementation`"),
+        "stderr must name the removed field, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("not a normal direct dependency"),
-        "stderr must surface the source-selection refusal, got:\n{stderr}"
+        stderr.contains("expected one of `source`, `binary`, `config`"),
+        "stderr must surface the current service selection shape, got:\n{stderr}"
     );
 }
 

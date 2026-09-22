@@ -4,5 +4,4 @@
 //! dependency closure as the implementation they exercise.
 
 mod project;
-mod scenario_prep;
 mod source_digest;

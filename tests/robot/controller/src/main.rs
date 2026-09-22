@@ -2,6 +2,7 @@ use motion::{ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target};
 use phoxal::robotics::EncoderSample;
 use phoxal::runtime::input::{Samples, Setpoint};
 use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal_test_controller::controller;
 
 const WHEEL_RADIUS_M: f64 = 0.11;
 const WHEEL_BASE_M: f64 = 0.52;
@@ -19,6 +20,7 @@ struct Controller;
 
 #[phoxal::runtime::inputs]
 struct Inputs {
+    #[phoxal::runtime::input(port = controller::methods::MANUAL.__setpoint_port())]
     manual: Setpoint<MotionIntent>,
     #[phoxal::runtime::input(max_items = 32, max_bytes = 262_144)]
     encoders: Samples<EncoderSample>,
@@ -58,10 +60,7 @@ impl Runtime for Controller {
             .then(|| inputs.manual.value())
             .flatten()
         {
-            Some(intent) => {
-                intent.validate().map_err(|error| anyhow::anyhow!(error))?;
-                setpoint(intent.linear_x_mps, intent.angular_z_radps)
-            }
+            Some(intent) => setpoint(intent.linear_x_mps, intent.angular_z_radps),
             None => setpoint(0.0, 0.0),
         };
         Ok((next, Outputs::default()))
@@ -72,7 +71,7 @@ impl Runtime for Controller {
 #[allow(dead_code, reason = "the transport runner invokes output projections")]
 impl Controller {
     #[phoxal::runtime::outputs::setpoint(
-        port = motion::ports::ACTUATORS,
+        port = controller::methods::ACTUATORS.__setpoint_port(),
         max_bytes = 1_024,
         valid_for_ms = 100
     )]

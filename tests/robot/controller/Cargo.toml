@@ -6,18 +6,33 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 description = "Robot-local controller for the internal four-wheel qualification fixture."
+include = ["generated/**", "proto/**", "src/**", "Cargo.toml"]
 
 [lib]
-path = "src/lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-test-controller"
 path = "src/main.rs"
+required-features = ["runtime"]
+
+[features]
+default = []
+runtime = ["phoxal/runtime", "phoxal/robotics", "dep:anyhow"]
 
 [dependencies]
-anyhow.workspace = true
-phoxal = { workspace = true, features = ["robotics", "runtime"] }
-motion = { package = "phoxal-service-motion", path = "../../../services/motion", version = "=0.0.0-dev.2" }
+anyhow = { workspace = true, optional = true }
+phoxal = { workspace = true, default-features = false, features = ["contract"] }
+motion = { package = "phoxal-service-motion", path = "../../../services/motion", version = "=0.0.0-dev.2", default-features = false }
+prost.workspace = true
+
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/test_controller/v1/controller.proto"]
+includes = ["proto"]
+generated = "generated"
+dependencies = [
+    { dependency = "motion", proto_package = ".phoxal.motion.v1", rust_path = "::motion" },
+]
 
 [lints]
 workspace = true

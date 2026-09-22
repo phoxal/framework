@@ -30,11 +30,12 @@ path = "src/lib.rs"
 # and `pub` declarations, not parallel code paths. The one place a feature may
 # be named in this crate's source is `src/lib.rs`.
 [features]
-default = ["runtime"]
+default = ["runtime", "scenario"]
 
-# The contract descriptor family is deliberately available without selecting a
-# runner, transport, or host profile.
-port = []
+# Inert generated service-method descriptors and robot-bound operations.
+# Contract-only service dependencies enable this without a runtime, transport,
+# session, or host profile.
+contract = ["dep:prost"]
 
 # Framework-owned shared robotics vocabulary: generated Protobuf messages and
 # their domain validation. Independent of `protocol` so consumers that need
@@ -58,7 +59,7 @@ build = ["dep:phoxal-build"]
 # Framework-owned public protocol messages and pure admission state.
 # This layer has no scheduler, transport, simulator, or project dependency.
 protocol = [
-    "port",
+    "contract",
     "dep:getrandom",
     "dep:prost",
     "dep:serde",
@@ -70,7 +71,9 @@ protocol = [
 # operations.
 runtime = [
     "artifact",
+    "contract",
     "protocol",
+    "dep:anyhow",
     "dep:clap",
     "dep:phoxal-macros",
     "dep:getrandom",
@@ -82,16 +85,15 @@ runtime = [
     "dep:zenoh",
 ]
 
-# Scenario authoring surface: trait, descriptors, inventory registration,
-# case-host protocol skeleton. Independent of `runtime` so consumer crates
-# that only want to define scenarios do not pull Zenoh, Tokio, or Clap.
+# Lightweight scenario authoring surface and command-scoped fixture client.
+# Independent of `runtime` so test targets do not pull the participant runner.
 scenario = [
     "artifact",
+    "contract",
     "protocol",
-    "port",
+    "dep:anyhow",
     "dep:phoxal-macros",
     "dep:base64",
-    "dep:inventory",
     "dep:serde",
     "dep:serde_json",
     "dep:sha2",
@@ -114,7 +116,7 @@ artifact = [
 # execution. The public session owns its Protobuf-over-Zenoh transport and typed
 # client only; it does not pull in the participant runner or its internal bus.
 session = [
-    "port",
+    "contract",
     "protocol",
     "dep:serde_json",
     "dep:sha2",
@@ -126,7 +128,7 @@ session = [
 
 [dependencies]
 phoxal-macros = { workspace = true, optional = true }
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 # `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
@@ -149,13 +151,13 @@ zenoh = { workspace = true, optional = true }
 phoxal-build = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 
-# Scenario surface deps. `inventory` is the link-time registration mechanism
-# for the #[phoxal::scenario] attribute; `anyhow`/`serde`/`serde_json`/`thiserror`
-# back the trait and result types.
-inventory = { workspace = true, optional = true }
-
 [build-dependencies]
 phoxal-build.workspace = true
+
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/robotics/v1/robotics.proto"]
+includes = ["proto"]
+generated = "generated/robotics"
 
 # `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
 # cannot see dependencies named only inside attributes.
@@ -199,7 +201,7 @@ path = "tests/feature_codegen.rs"
 [[test]]
 name = "consumer_policy"
 path = "tests/consumer_policy.rs"
-required-features = ["port"]
+required-features = ["contract"]
 
 [[test]]
 name = "config_derive"
@@ -220,11 +222,6 @@ required-features = ["runtime"]
 name = "runtime_semantics"
 path = "tests/runtime_semantics.rs"
 required-features = ["runtime"]
-
-[[test]]
-name = "scenario_authoring"
-path = "tests/scenario_authoring.rs"
-required-features = ["scenario"]
 
 [[test]]
 name = "trybuild"

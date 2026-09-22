@@ -5,9 +5,10 @@
 //! application's explicit model facts, then asks the prepared robot project
 //! to assemble a simulation bundle.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
@@ -21,7 +22,16 @@ use tempfile::NamedTempFile;
 
 use crate::project::cargo::{CargoOptions, PHOXAL_REGISTRY_INDEX};
 use crate::project::{CompiledBundle, Error, Project, SimulationModelFacts};
-use phoxal::scenario::Program;
+use phoxal::artifact::MethodShape;
+use phoxal::artifact::bundle::BundleManifest;
+use phoxal::artifact::document::RobotDocument;
+use phoxal::artifact::simulation_run::{
+    SimulationApplicationReference, SimulationBinding, SimulationBundleReference,
+    SimulationCapturePolicy, SimulationCaptureRequirement, SimulationExecutionBounds,
+    SimulationModelReference, SimulationProgram, SimulationRunSpecification,
+};
+use phoxal::scenario::__internal::{Action, Capture, Program};
+use phoxal::scenario::CapturePolicy;
 
 /// The official independently installed native simulation application.
 pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator";
@@ -40,6 +50,7 @@ const BUILD_ROOT: &str = "build";
 const ARTIFACT_ROOT: &str = "artifacts";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(180);
 const PROCESS_POLL: Duration = Duration::from_millis(25);
 const MANAGED_MARKER: &str = ".managed-by-cargo-phoxal";
 const MUJOCO_VERSION: &str = "3.12.0";
@@ -138,6 +149,7 @@ pub struct SimulationRunOptions {
     supervisor_id: String,
     run_id: String,
     startup_timeout: Duration,
+    execution_timeout: Duration,
     cleanup_timeout: Duration,
     auto_run: bool,
 }
@@ -163,6 +175,7 @@ impl SimulationRunOptions {
             supervisor_id: "local".to_owned(),
             run_id: "local-simulation".to_owned(),
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+            execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
             cleanup_timeout: DEFAULT_CLEANUP_TIMEOUT,
             auto_run: false,
         })
@@ -453,12 +466,12 @@ pub(crate) fn run(
     // locked or frozen mode therefore fails before the robot Cargo manifest or
     // its owning Cargo.lock can be changed by automatic supervisor setup.
     let scene = canonical_scene(request.scene())?;
-    let simulator = provision(request)?;
+    let simulator = provision(request, cargo_options)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
     let probe_bundle = match scenario {
         Some(program) => {
-            prepared.build_scenario_probe_bundle(cargo_options, &probe_output, program)?
+            prepared.build_probe_bundle_for_run(cargo_options, &probe_output, program)?
         }
         None => prepared.build_bundle(cargo_options, &probe_output)?,
     };
@@ -471,11 +484,11 @@ pub(crate) fn run(
     });
     let bundle = match scenario {
         Some(program) => {
-            prepared.build_scenario_simulation_bundle(cargo_options, &output, &facts, program)?
+            prepared.build_simulation_bundle_for_run(cargo_options, &output, &facts, program)?
         }
         None => prepared.build_simulation_bundle(cargo_options, &output, &facts)?,
     };
-    launch(&simulator, &bundle, &scene, request, scenario.is_some())
+    launch(&simulator, &bundle, &scene, &facts, request, scenario)
 }
 
 /// Run only the simulator probe step. Used by the case-host protocol
@@ -492,7 +505,7 @@ pub fn probe_simulation_scene(
     cargo_options.validate()?;
     validate_request(request)?;
     let scene = canonical_scene(request.scene())?;
-    let simulator = provision(request)?;
+    let simulator = provision(request, cargo_options)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
     let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
@@ -504,9 +517,12 @@ fn validate_request(request: &SimulationRunOptions) -> Result<(), Error> {
     validate_identity_part("scope", &request.scope)?;
     validate_identity_part("supervisor_id", &request.supervisor_id)?;
     validate_identity_part("run_id", &request.run_id)?;
-    if request.startup_timeout.is_zero() || request.cleanup_timeout.is_zero() {
+    if request.startup_timeout.is_zero()
+        || request.execution_timeout.is_zero()
+        || request.cleanup_timeout.is_zero()
+    {
         return Err(simulation_error(
-            "simulation startup and cleanup timeouts must be positive",
+            "simulation startup, execution, and cleanup timeouts must be positive",
         ));
     }
     if request.simulator_package.is_empty()
@@ -518,6 +534,10 @@ fn validate_request(request: &SimulationRunOptions) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+fn network_forbidden(options: &CargoOptions) -> bool {
+    options.offline || options.lock == crate::project::cargo::LockMode::Frozen
 }
 
 fn validate_identity_part(field: &str, value: &str) -> Result<(), Error> {
@@ -564,7 +584,10 @@ fn probe_bundle_path(prepared: &crate::PreparedProject) -> PathBuf {
         .with_file_name("simulation-probe-bundle")
 }
 
-fn provision(request: &SimulationRunOptions) -> Result<SimulatorArtifact, Error> {
+fn provision(
+    request: &SimulationRunOptions,
+    cargo_options: &CargoOptions,
+) -> Result<SimulatorArtifact, Error> {
     if let Some(path) = &request.simulator_executable {
         ensure_regular_file(path, "explicit simulator executable")?;
         let digest = digest_file(path)?;
@@ -588,7 +611,18 @@ fn provision(request: &SimulationRunOptions) -> Result<SimulatorArtifact, Error>
     }
 
     let root = simulator_store_root()?;
-    provision_at(&root, request)
+    provision_managed_at(&root, request, cargo_options)
+}
+
+fn provision_managed_at(
+    root: &Path,
+    request: &SimulationRunOptions,
+    cargo_options: &CargoOptions,
+) -> Result<SimulatorArtifact, Error> {
+    if !root.join(SELECTION_FILE).is_file() {
+        install_simulator_at(root, cargo_options, None, false)?;
+    }
+    provision_at(root, request)
 }
 
 fn provision_at(root: &Path, request: &SimulationRunOptions) -> Result<SimulatorArtifact, Error> {
@@ -635,7 +669,7 @@ fn simulator_store_root() -> Result<PathBuf, Error> {
         if root.is_empty() {
             return Err(simulation_error("PHOXAL_HOME cannot be empty"));
         }
-        return Ok(PathBuf::from(root).join("simulation"));
+        return Ok(PathBuf::from(root).join("applications/simulation"));
     }
     let home = std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -644,7 +678,7 @@ fn simulator_store_root() -> Result<PathBuf, Error> {
         })?;
     #[cfg(target_os = "macos")]
     {
-        Ok(PathBuf::from(home).join("Library/Application Support/Phoxal/simulation"))
+        Ok(PathBuf::from(home).join("Library/Application Support/Phoxal/applications/simulation"))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -652,7 +686,7 @@ fn simulator_store_root() -> Result<PathBuf, Error> {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(home).join(".local/share"));
-        Ok(data.join("phoxal/simulation"))
+        Ok(data.join("phoxal/applications/simulation"))
     }
 }
 
@@ -663,6 +697,15 @@ pub fn install_simulator(
     replace: bool,
 ) -> Result<SimulatorInstallationStatus, Error> {
     let root = simulator_store_root()?;
+    install_simulator_at(&root, options, mujoco_distribution, replace)
+}
+
+fn install_simulator_at(
+    root: &Path,
+    options: &CargoOptions,
+    mujoco_distribution: Option<&Path>,
+    replace: bool,
+) -> Result<SimulatorInstallationStatus, Error> {
     let parent = root
         .parent()
         .ok_or_else(|| simulation_error("managed simulator root has no parent"))?;
@@ -696,15 +739,15 @@ pub fn install_simulator(
             )));
         }
         if !replace && root.join(SELECTION_FILE).is_file() {
-            return simulator_status_at(&root);
+            return simulator_status_at(root);
         }
-        fs::remove_dir_all(&root).map_err(|source| Error::ArtifactFile {
-            path: root.clone(),
+        fs::remove_dir_all(root).map_err(|source| Error::ArtifactFile {
+            path: root.to_owned(),
             source,
         })?;
     }
-    fs::create_dir_all(&root).map_err(|source| Error::ArtifactFile {
-        path: root.clone(),
+    fs::create_dir_all(root).map_err(|source| Error::ArtifactFile {
+        path: root.to_owned(),
         source,
     })?;
     fs::write(
@@ -721,7 +764,7 @@ pub fn install_simulator(
         SimulationPresentation::Headless,
         SimulationBound::Steps(1),
     )?;
-    let artifact = install_for_platform(&root, options, &request, mujoco_distribution)?;
+    let artifact = install_for_platform(root, options, &request, mujoco_distribution)?;
     for transient in [root.join(BUILD_ROOT), root.join("native-link")] {
         if transient.is_dir() {
             fs::remove_dir_all(&transient).map_err(|source| Error::ArtifactFile {
@@ -730,8 +773,8 @@ pub fn install_simulator(
             })?;
         }
     }
-    write_selection(&root, &artifact)?;
-    simulator_status_at(&root)
+    write_selection(root, &artifact)?;
+    simulator_status_at(root)
 }
 
 /// Inspect the managed simulator without modifying it.
@@ -846,7 +889,7 @@ fn install_macos(
             })?;
         return build_and_package_macos(root, options, request, &distribution);
     }
-    if options.offline {
+    if network_forbidden(options) {
         return Err(simulation_error(
             "offline installation requires --mujoco-distribution",
         ));
@@ -919,7 +962,7 @@ fn install_linux(
                 source,
             })?
     } else {
-        if options.offline {
+        if network_forbidden(options) {
             return Err(simulation_error(
                 "offline installation requires --mujoco-distribution",
             ));
@@ -1114,7 +1157,7 @@ fn build_registry_simulator(
     // lock policy controls whether this application may be provisioned, but
     // never replaces the application's own dependency graph.
     command.arg("--locked");
-    if options.offline {
+    if network_forbidden(options) {
         command.arg("--offline");
     }
     let output = command.output().map_err(|source| Error::CargoSpawn {
@@ -1191,7 +1234,7 @@ fn simulator_registry_archive(
         if checksum == DEFAULT_SIMULATOR_ARCHIVE_SHA256 {
             return Ok(archive);
         }
-        if options.offline {
+        if network_forbidden(options) {
             return Err(simulation_error(format!(
                 "cached simulator archive {} has checksum {checksum}, expected {}",
                 archive.display(),
@@ -1202,7 +1245,7 @@ fn simulator_registry_archive(
             path: archive.clone(),
             source,
         })?;
-    } else if options.offline {
+    } else if network_forbidden(options) {
         return Err(simulation_error(format!(
             "offline simulator installation requires the verified archive at {}",
             archive.display()
@@ -1386,7 +1429,7 @@ fn generate_application_lock(manifest: &Path, options: &CargoOptions) -> Result<
         "--config",
         &format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
     ]);
-    if options.offline {
+    if network_forbidden(options) {
         command.arg("--offline");
     }
     let output = command.output().map_err(|source| Error::CargoSpawn {
@@ -1414,7 +1457,7 @@ fn simulator_metadata(
         "--config".to_owned(),
         format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
     ];
-    if options.offline {
+    if network_forbidden(options) {
         other_options.push("--offline".to_owned());
     }
     if locked {
@@ -1476,12 +1519,205 @@ fn probe(
     Ok(facts)
 }
 
+fn build_run_specification(
+    bundle: &CompiledBundle,
+    scene: &Path,
+    facts: &SimulationModelFacts,
+    simulator: &SimulatorArtifact,
+    request: &SimulationRunOptions,
+    program: &Program,
+) -> Result<SimulationRunSpecification, Error> {
+    let manifest_path = bundle.root().join("manifest.json");
+    let manifest_bytes = fs::read(&manifest_path).map_err(|source| Error::ArtifactFile {
+        path: manifest_path.clone(),
+        source,
+    })?;
+    let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes).map_err(|source| {
+        simulation_error(format!(
+            "cannot decode immutable bundle manifest {}: {source}",
+            manifest_path.display()
+        ))
+    })?;
+    let BundleManifest::V0 {
+        robot_id, document, ..
+    } = &manifest;
+    let RobotDocument::V0 { connections, .. } = document;
+
+    program
+        .verify_identity()
+        .map_err(|error| simulation_error(format!("scenario program identity: {error}")))?;
+
+    let mut bindings = BTreeMap::<(String, String), SimulationBinding>::new();
+    for step in program.steps() {
+        let (target_instance, signature, payload_bytes) = match &step.action {
+            Action::Setpoint {
+                target_instance,
+                consumer_signature,
+                encoded_payload,
+                ..
+            } => (target_instance, consumer_signature, encoded_payload.len()),
+            Action::Withdraw {
+                target_instance,
+                producer_signature,
+            } => (target_instance, producer_signature, 0),
+            Action::Command { .. } => continue,
+        };
+        let max_message_bytes = u32::try_from(payload_bytes).map_err(|_| {
+            simulation_error(format!(
+                "scenario payload for {}.{} exceeds u32",
+                target_instance, signature.name
+            ))
+        })?;
+        let key = (target_instance.clone(), signature.name.to_owned());
+        let target = format!("{}.{}", target_instance, signature.name);
+        let binding = SimulationBinding {
+            target_instance: target_instance.clone(),
+            source_instance: "scenario".to_owned(),
+            signature: method_signature(*signature),
+            max_message_bytes,
+            replaces_authored_source: connections.contains_key(&target),
+        };
+        bindings
+            .entry(key)
+            .and_modify(|existing| {
+                existing.max_message_bytes =
+                    existing.max_message_bytes.max(binding.max_message_bytes);
+            })
+            .or_insert(binding);
+    }
+
+    let captures = program
+        .captures()
+        .iter()
+        .map(|capture| match capture {
+            Capture::State {
+                name,
+                signature,
+                policy,
+            }
+            | Capture::Sample {
+                name,
+                signature,
+                policy,
+            }
+            | Capture::Event {
+                name,
+                signature,
+                policy,
+            } => {
+                let (instance, _) = name.split_once('/').ok_or_else(|| {
+                    simulation_error(format!(
+                        "observation capture `{name}` has no configured instance"
+                    ))
+                })?;
+                Ok(SimulationCaptureRequirement::Observation {
+                    instance: instance.to_owned(),
+                    signature: method_signature(*signature),
+                    policy: capture_policy(*policy),
+                })
+            }
+            Capture::NativeBody { name, .. } => {
+                if name != robot_id {
+                    return Err(simulation_error(format!(
+                        "native body `{name}` is not the selected model root `{robot_id}`; arbitrary body recording is not supported"
+                    )));
+                }
+                Ok(SimulationCaptureRequirement::RootBody {
+                    body: name.clone(),
+                    every_steps: 1,
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    let maximum_command_deadline = program
+        .steps()
+        .iter()
+        .filter_map(|step| match &step.action {
+            Action::Command { host_deadline, .. } => Some(*host_deadline),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(Duration::from_secs(30));
+    if maximum_command_deadline > request.execution_timeout {
+        return Err(simulation_error(format!(
+            "scenario command deadline {} ms exceeds the run host deadline {} ms",
+            maximum_command_deadline.as_millis(),
+            request.execution_timeout.as_millis()
+        )));
+    }
+
+    Ok(SimulationRunSpecification::V0 {
+        bundle: SimulationBundleReference {
+            robot_id: robot_id.clone(),
+            manifest_sha256: format!("{:x}", Sha256::digest(&manifest_bytes)),
+        },
+        model: SimulationModelReference {
+            scene: scene.display().to_string(),
+            model_identity: facts.model_identity.clone(),
+        },
+        simulator: SimulationApplicationReference {
+            package: simulator.summary.package.clone(),
+            version: simulator.summary.version.clone(),
+            binary: simulator.summary.binary.clone(),
+            executable_sha256: simulator.summary.sha256.clone(),
+        },
+        program: SimulationProgram {
+            test_identity: program.scenario_name().to_owned(),
+            byte_length: program.byte_length(),
+            sha256: program.program_digest().to_owned(),
+            bytes: program.program_bytes().to_vec(),
+        },
+        bindings: bindings.into_values().collect(),
+        captures,
+        execution: SimulationExecutionBounds {
+            quantum_ns: facts.quantum_ns,
+            transitions: program.transition_count(),
+            host_deadline_ms: u64::try_from(request.execution_timeout.as_millis())
+                .unwrap_or(u64::MAX),
+            shutdown_grace_ms: u64::try_from(request.cleanup_timeout.as_millis())
+                .unwrap_or(u64::MAX),
+        },
+    })
+}
+
+fn method_signature(
+    signature: phoxal::__private::PortSignature,
+) -> phoxal::artifact::MethodSignature {
+    phoxal::artifact::MethodSignature {
+        endpoint: signature.name.to_owned(),
+        service: signature.service.to_owned(),
+        method: signature.method.to_owned(),
+        shape: match signature.shape {
+            phoxal::contract::MethodShape::Call => MethodShape::Call,
+            phoxal::contract::MethodShape::Observation => MethodShape::Observation,
+        },
+        request: signature.request.to_owned(),
+        response: signature.response.to_owned(),
+        retained_latest: signature.retained_latest,
+        lease_valid_for_ms: signature.lease_valid_for_ms,
+    }
+}
+
+const fn capture_policy(policy: CapturePolicy) -> SimulationCapturePolicy {
+    match policy {
+        CapturePolicy::Latest => SimulationCapturePolicy::Latest,
+        CapturePolicy::BestEffortHistory { capacity } => {
+            SimulationCapturePolicy::BestEffortHistory { capacity }
+        }
+        CapturePolicy::RequiredHistory { capacity } => {
+            SimulationCapturePolicy::RequiredHistory { capacity }
+        }
+    }
+}
+
 fn launch(
     simulator: &SimulatorArtifact,
     bundle: &CompiledBundle,
     scene: &Path,
+    facts: &SimulationModelFacts,
     request: &SimulationRunOptions,
-    scenario: bool,
+    scenario: Option<&Program>,
 ) -> Result<SimulationRunReport, Error> {
     let supervisor_path = bundle.executable("supervisor");
     // Unix socket names must fit even when the source checkout path is long.
@@ -1495,6 +1731,7 @@ fn launch(
         })?;
     let readiness_path = readiness_directory.path().join("ready.json");
     let scenario_result_path = readiness_directory.path().join("scenario-result.json");
+    let run_specification_path = readiness_directory.path().join("simulation-run.json");
     let endpoint = format!(
         "unixsock-stream/{}",
         readiness_directory.path().join("router.sock").display()
@@ -1509,9 +1746,16 @@ fn launch(
         &readiness_path.display().to_string(),
         "--listen",
         &endpoint,
+        "--owner-pid",
+        &std::process::id().to_string(),
     ]);
-    if scenario {
+    if let Some(program) = scenario {
+        let specification =
+            build_run_specification(bundle, scene, facts, simulator, request, program)?;
+        atomic_json(&run_specification_path, &specification)?;
         supervisor_command.args([
+            "--simulation-run",
+            &run_specification_path.display().to_string(),
             "--scenario-result",
             &scenario_result_path.display().to_string(),
         ]);
@@ -1563,9 +1807,7 @@ fn launch(
             "--connect",
             &endpoint,
         ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(Stdio::null());
     match request.bound {
         SimulationBound::Steps(steps) => {
             simulator_command.args(["--steps", &steps.to_string()]);
@@ -1578,12 +1820,12 @@ fn launch(
         simulator_command.arg("--auto-run");
     }
     let simulator_started = Instant::now();
-    let output = match simulator_command.output() {
+    let output = match bounded_output(&mut simulator_command, request.execution_timeout) {
         Ok(output) => output,
-        Err(source) => {
+        Err(detail) => {
             let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
             return Err(simulation_error(format!(
-                "cannot start simulator {}: {source}; cleanup: {}",
+                "simulator {} failed: {detail}; cleanup: {}",
                 simulator.summary.executable.display(),
                 cleanup_diagnostic(&cleanup)
             )));
@@ -1596,7 +1838,7 @@ fn launch(
         .as_ref()
         .is_some_and(|evidence| terminal_evidence_verified(evidence, request.presentation));
     let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
-    let scenario = if scenario {
+    let scenario = if scenario.is_some() {
         let bytes = fs::read(&scenario_result_path).map_err(|source| Error::ArtifactFile {
             path: scenario_result_path.clone(),
             source,
@@ -1626,6 +1868,65 @@ fn launch(
         cleanup,
         scenario,
         terminal,
+    })
+}
+
+fn bounded_output(
+    command: &mut Command,
+    deadline: Duration,
+) -> Result<std::process::Output, String> {
+    let mut stdout = tempfile::tempfile().map_err(|error| format!("stdout capture: {error}"))?;
+    let mut stderr = tempfile::tempfile().map_err(|error| format!("stderr capture: {error}"))?;
+    command
+        .stdout(Stdio::from(
+            stdout
+                .try_clone()
+                .map_err(|error| format!("stdout clone: {error}"))?,
+        ))
+        .stderr(Stdio::from(
+            stderr
+                .try_clone()
+                .map_err(|error| format!("stderr clone: {error}"))?,
+        ));
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot start process: {error}"))?;
+    let started = Instant::now();
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("cannot inspect process: {error}"))?
+        {
+            Some(status) => break status,
+            None if started.elapsed() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "host execution deadline of {} ms expired and the process was terminated",
+                    deadline.as_millis()
+                ));
+            }
+            None => thread::sleep(PROCESS_POLL),
+        }
+    };
+    stdout
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("stdout rewind: {error}"))?;
+    stderr
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("stderr rewind: {error}"))?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    stdout
+        .read_to_end(&mut stdout_bytes)
+        .map_err(|error| format!("stdout read: {error}"))?;
+    stderr
+        .read_to_end(&mut stderr_bytes)
+        .map_err(|error| format!("stderr read: {error}"))?;
+    Ok(std::process::Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
     })
 }
 
@@ -2005,7 +2306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_never_installs_a_missing_simulator_implicitly()
+    fn a_cold_offline_run_fails_before_selecting_an_unavailable_distribution()
     -> Result<(), Box<dyn std::error::Error>> {
         let fixture = tempfile::tempdir()?;
         let request = SimulationRunOptions::new(
@@ -2014,14 +2315,19 @@ mod tests {
             SimulationBound::Steps(1),
         )?;
         let root = fixture.path().join("managed");
-        let error = provision_at(&root, &request)
-            .expect_err("a run must require an explicit prior installation");
+        let options = CargoOptions {
+            offline: true,
+            ..CargoOptions::default()
+        };
+        let error = provision_managed_at(&root, &request, &options)
+            .expect_err("offline provisioning cannot download a missing distribution");
         assert!(matches!(
             error,
             Error::SimulationInvalid { message }
-                if message.contains("cargo phoxal simulation install")
+                if message.contains("offline installation requires --mujoco-distribution")
         ));
-        assert!(!root.exists());
+        assert!(root.join(MANAGED_MARKER).is_file());
+        assert!(!root.join(SELECTION_FILE).exists());
         Ok(())
     }
 

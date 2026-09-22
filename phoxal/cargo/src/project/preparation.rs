@@ -5,39 +5,34 @@
 //! entries in the robot's Cargo manifest, so Cargo remains the one resolver and
 //! the resulting lockfile remains inspectable by users and editors.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use cargo_metadata::MetadataCommand;
 use fs4::TryLockError;
-use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::project::ProjectLayout;
 use crate::project::cargo::{CargoOptions, LockMode};
+use crate::project::document::RobotDocument;
 use crate::project::error::Error;
 use crate::project::file_lock::ExclusiveFileLock;
+use crate::project::robot_api;
 
 /// The official package key used by the mandatory supervisor dependency.
 pub const SUPERVISOR_DEPENDENCY_KEY: &str = "phoxal-supervisor";
 /// The unconstrained package version requirement used for a fresh project.
 /// Existing requirements and locked selections always take precedence.
-pub const SUPERVISOR_VERSION_REQUIREMENT: &str = "*";
+pub const SUPERVISOR_VERSION_REQUIREMENT: &str = "=0.0.0-dev.2";
 /// The configured registry containing official Phoxal packages.
 pub const SUPERVISOR_REGISTRY: &str = "phoxal";
 
 /// One visible change made by preparation.
 ///
 /// Ordinary unlocked preparation adds the mandatory supervisor dependency.
-/// Scenario preparation adds the managed `[[test]] phoxal-scenarios`
-/// target when missing, the `scenario` feature on `[dev-dependencies]
-/// phoxal`, the Clap derive feature used by the generated binary, and
-/// regenerates the disposable harness source.
-/// A package may instead own an authored harness target with the same name,
-/// `harness = false`, and `test = false`; preparation then leaves its source
-/// alone while retaining the same artifact discovery and run protocol.
-/// Per the plan, preparation never removes authored configuration:
-/// removing the last scenario leaves an empty harness and the existing
-/// persistent setup untouched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreparationChange {
     /// Mandatory supervisor dependency added to `[dependencies]`.
@@ -47,17 +42,12 @@ pub enum PreparationChange {
         /// Human-readable Cargo requirement written for the dependency.
         requirement: String,
     },
-    /// `[[test]]` target added under the given name with the given path.
-    TestTargetAdded { name: String, path: String },
-    /// Feature gate added to the named dev-dependency entry.
-    DevDependencyFeatureAdded {
-        /// Dependency key in `[dev-dependencies]`.
-        dependency: String,
-        /// Feature gate that was added.
-        feature: String,
-    },
-    /// Harness source regenerated under the given path.
-    HarnessWritten { path: String },
+    /// Stable generated robot API dependency added to the root manifest.
+    RobotApiDependencyAdded { package: String, path: String },
+    /// One tool-owned robot API source file changed.
+    RobotApiFileWritten { path: String },
+    /// One local service's generated contract artifact changed.
+    ServiceContractFileWritten { package: String, path: String },
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +68,7 @@ pub(crate) struct ManifestTransaction {
     manifest: PathBuf,
     original_manifest: Vec<u8>,
     locks: Vec<LockSnapshot>,
+    managed_files: Vec<LockSnapshot>,
     changes: Vec<PreparationChange>,
     /// `true` once `commit()` has run. Drop will skip rollback when
     /// this is set so a successful commit is not undone by an
@@ -130,6 +121,14 @@ impl Drop for ManifestTransaction {
                 );
             }
         }
+        for snapshot in &self.managed_files {
+            if let Err(source) = restore_snapshot(snapshot) {
+                eprintln!(
+                    "cargo-phoxal: failed to restore {} after preparation error: {source}",
+                    snapshot.path.display()
+                );
+            }
+        }
     }
 }
 
@@ -138,15 +137,6 @@ impl ManifestTransaction {
     pub(crate) fn commit(mut self) -> Vec<PreparationChange> {
         self.committed = true;
         std::mem::take(&mut self.changes)
-    }
-
-    /// Records a scenario preparation change as part of this transaction
-    /// so the rollback path also covers the scenario additions.
-    pub(crate) fn extend_with_scenario_changes(
-        &mut self,
-        scenario_changes: Vec<PreparationChange>,
-    ) {
-        self.changes.extend(scenario_changes);
     }
 
     /// Restores all files captured before an unsuccessful preparation.
@@ -198,7 +188,45 @@ impl ManifestTransaction {
                 },
             }
         }
+        for snapshot in &self.managed_files {
+            restore_snapshot(snapshot).map_err(|source| Error::ManifestRestore {
+                path: snapshot.path.clone(),
+                source,
+            })?;
+        }
         Ok(())
+    }
+
+    fn snapshot_managed_file(&mut self, path: &Path) -> Result<(), Error> {
+        if self.managed_files.iter().any(|entry| entry.path == path) {
+            return Ok(());
+        }
+        let contents = match fs::read(path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::ReadManifest {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        self.managed_files.push(LockSnapshot {
+            path: path.to_owned(),
+            contents,
+        });
+        Ok(())
+    }
+}
+
+fn restore_snapshot(snapshot: &LockSnapshot) -> Result<(), std::io::Error> {
+    match &snapshot.contents {
+        Some(contents) => atomic_write(&snapshot.path, contents),
+        None => match fs::remove_file(&snapshot.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
     }
 }
 
@@ -240,6 +268,7 @@ pub(crate) fn ensure_required_dependencies(
             manifest,
             original_manifest,
             locks,
+            managed_files: Vec::new(),
             changes: Vec::new(),
             committed: false,
         });
@@ -313,6 +342,7 @@ pub(crate) fn ensure_required_dependencies(
         manifest,
         original_manifest,
         locks,
+        managed_files: Vec::new(),
         changes: vec![PreparationChange::SupervisorDependencyAdded {
             dependency: SUPERVISOR_DEPENDENCY_KEY.to_owned(),
             requirement: format!(
@@ -323,684 +353,841 @@ pub(crate) fn ensure_required_dependencies(
     })
 }
 
-// --- Scenario preparation entry point ---------------------------------
-
-pub(crate) const SCENARIO_TEST_TARGET_NAME: &str = "phoxal-scenarios";
-pub(crate) const SCENARIO_HARNESS_RELATIVE_PATH: &str = ".phoxal/generated/scenarios/main.rs";
-
-/// The pure description of what scenario preparation *would* do against a
-/// given authored manifest, with no I/O. The caller decides whether to
-/// refuse (locked/frozen without persistent setup) and whether to write.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScenarioChangePlan {
-    pub discovered: Vec<crate::project::scenario::DiscoveredScenario>,
-    pub add_test_target: bool,
-    pub add_scenario_feature: bool,
-    pub add_clap_derive: bool,
-    pub harness_changed: bool,
-    /// `true` if any persistent setup (test target or feature) needs to be
-    /// added — the case that locked/frozen modes must refuse.
-    pub needs_persistent_setup: bool,
-}
-
-/// Production scenario preparation entry point. Acquires the same
-/// workspace file lock as ordinary preparation, idempotently edits the
-/// manifest, writes the generated harness, and commits the manifest
-/// atomically. Locked/frozen modes refuse *before* mutating when the
-/// persistent setup is missing.
-///
-/// Per the plan, this never removes authored configuration: when the
-/// last scenario is removed, the existing managed `[[test]]` target and
-/// existing Phoxal scenario and Clap derive dev-dependency features are
-/// preserved (the binary simply compiles an empty harness).
-pub(crate) fn prepare_scenario_target(
+/// Installs the complete pre-metadata robot API candidate and its one stable
+/// root dependency inside the existing project preparation transaction.
+pub(crate) fn prepare_robot_api_in_transaction(
     layout: &ProjectLayout,
+    document: &RobotDocument,
     options: &CargoOptions,
-) -> Result<Vec<PreparationChange>, Error> {
-    options.validate()?;
-    let mut transaction = ensure_required_dependencies(layout, options)?;
-    prepare_scenario_target_in_transaction(layout, options, &mut transaction)?;
-    Ok(transaction.commit())
-}
-
-/// Pure computation of the change plan. No I/O. Refuses locked/frozen
-/// upstream based on `plan.needs_persistent_setup` so the harness-only
-/// regeneration path stays available when persistent setup is already
-/// present.
-pub(crate) fn compute_scenario_change_plan(
-    layout: &ProjectLayout,
-    robot_root: &Path,
-    document: &DocumentMut,
-) -> Result<ScenarioChangePlan, Error> {
-    let discovered = match super::scenario::discover_scenarios(robot_root) {
-        Ok(list) => list,
-        Err(error) => {
-            return Err(Error::ManifestPreparation {
-                path: layout.cargo_manifest().to_owned(),
-                message: format!("scenario discovery failed: {error}"),
-            });
-        }
-    };
-    let existing_target = lookup_scenario_test_target(document);
-    if let Some(target) = &existing_target {
-        validate_scenario_test_target(layout, target)?;
-    }
-    let has_test_target = existing_target.is_some();
-    let has_managed_test_target = existing_target.as_ref().is_some_and(managed_target_matches);
-    let has_authored_test_target = has_test_target && !has_managed_test_target;
-    let add_test_target = !has_test_target;
-    let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
-    let add_clap_derive = !dev_dependency_has_feature(document, "clap", "derive");
-    let harness_changed = !has_authored_test_target
-        && harness_needs_write(robot_root, &discovered, has_managed_test_target);
-    let needs_persistent_setup =
-        (add_test_target || add_scenario_feature || add_clap_derive) && !discovered.is_empty();
-    Ok(ScenarioChangePlan {
-        discovered,
-        add_test_target,
-        add_scenario_feature,
-        add_clap_derive,
-        harness_changed,
-        needs_persistent_setup,
-    })
-}
-
-fn validate_scenario_test_target(layout: &ProjectLayout, table: &Table) -> Result<(), Error> {
-    let path = table.get("path").and_then(Item::as_str);
-    let harness = table.get("harness").and_then(Item::as_bool);
-    let test_flag = table.get("test").and_then(Item::as_bool);
-    if path.is_some_and(|path| !path.is_empty())
-        && harness == Some(false)
-        && test_flag == Some(false)
-    {
-        return Ok(());
-    }
-    Err(Error::ManifestPreparation {
-        path: layout.cargo_manifest().to_owned(),
-        message: format!(
-            "authored `[[test]] name = \"{SCENARIO_TEST_TARGET_NAME}\"` must declare a non-empty \
-             path, `harness = false`, and `test = false` (path={path:?}, harness={harness:?}, \
-             test={test_flag:?})"
-        ),
-    })
-}
-
-fn harness_needs_write(
-    robot_root: &Path,
-    discovered: &[crate::project::scenario::DiscoveredScenario],
-    has_managed_test_target: bool,
-) -> bool {
-    let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
-    let expected = super::scenario::generate_harness_source(robot_root, discovered).into_bytes();
-    match fs::read(&harness_path) {
-        // The existing harness content differs from what the
-        // current registry would produce — regenerate.
-        Ok(current) => current != expected,
-        // No harness on disk: regenerate when there is work to
-        // register (scenarios exist) or when a managed test
-        // target is already declared (its generated harness was
-        // removed externally and must be restored). See Gate C
-        // preparation cleanup in the scenario acceptance review:
-        // "Regenerate an empty harness for that retained target
-        // before broad Cargo checks; preserve a no-op only when
-        // there is no managed target to satisfy."
-        Err(_) => has_managed_test_target || !discovered.is_empty(),
-    }
-}
-
-fn managed_target_matches(table: &Table) -> bool {
-    let path = table.get("path").and_then(Item::as_str);
-    let harness = table.get("harness").and_then(Item::as_bool);
-    let test_flag = table.get("test").and_then(Item::as_bool);
-    path == Some(SCENARIO_HARNESS_RELATIVE_PATH)
-        && harness == Some(false)
-        && test_flag == Some(false)
-}
-
-fn dev_dependency_has_scenario_feature(document: &DocumentMut) -> bool {
-    dev_dependency_has_feature(document, "phoxal", "scenario")
-}
-
-fn dev_dependency_has_feature(document: &DocumentMut, dependency: &str, feature: &str) -> bool {
-    let Some(dev) = document.get("dev-dependencies").and_then(Item::as_table) else {
-        return false;
-    };
-    let Some(entry) = dev.get(dependency).and_then(Item::as_value) else {
-        return false;
-    };
-    let Some(inline) = entry.as_inline_table() else {
-        return false;
-    };
-    inline
-        .get("features")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some(feature)))
-        .unwrap_or(false)
-}
-
-fn apply_scenario_change_plan(
-    layout: &ProjectLayout,
-    robot_root: &Path,
-    plan: &ScenarioChangePlan,
-    document: &mut DocumentMut,
-    changes: &mut Vec<PreparationChange>,
+    transaction: &mut ManifestTransaction,
 ) -> Result<(), Error> {
-    if plan.discovered.is_empty() {
-        // Per the plan: never remove authored configuration. The harness is
-        // the disposable part; when the last scenario is removed the binary
-        // still compiles, listing an empty registry.
+    let RobotDocument::V0 { services, .. } = document;
+    if services.is_empty() {
         return Ok(());
     }
-    if plan.add_test_target
-        && let Some(change) =
-            ensure_scenario_test_target(document).map_err(|message| Error::ManifestPreparation {
-                path: robot_root.join("Cargo.toml"),
-                message,
-            })?
-    {
-        changes.push(change);
+    let service_changes = prepare_local_service_contracts(document, layout.root(), options)?;
+    transaction.changes.extend(service_changes);
+    let candidate = robot_api::candidate(document, layout.root())?;
+    let generated_root = layout.root().join(robot_api::DIRECTORY);
+    let files = [
+        (
+            generated_root.join("Cargo.toml"),
+            candidate.manifest.as_bytes(),
+        ),
+        (generated_root.join("src/lib.rs"), candidate.lib.as_bytes()),
+        (
+            generated_root.join("src/contracts.rs"),
+            candidate.contracts.as_bytes(),
+        ),
+        (
+            generated_root.join("src/services.rs"),
+            candidate.services.as_bytes(),
+        ),
+    ];
+
+    let manifest_text =
+        fs::read_to_string(layout.cargo_manifest()).map_err(|source| Error::ReadManifest {
+            path: layout.cargo_manifest().to_owned(),
+            source,
+        })?;
+    let mut manifest =
+        manifest_text
+            .parse::<DocumentMut>()
+            .map_err(|error| Error::ManifestPreparation {
+                path: layout.cargo_manifest().to_owned(),
+                message: format!("Cargo.toml is not valid TOML: {error}"),
+            })?;
+    let expected_dependency = robot_api_dependency(&candidate.package);
+    let dependency_current = manifest
+        .get("dependencies")
+        .and_then(Item::as_table)
+        .and_then(|dependencies| dependencies.get(robot_api::DEPENDENCY_KEY));
+    let dependency_matches = dependency_current
+        .is_some_and(|current| robot_api_dependency_matches(current, &candidate.package));
+    let manifest_matches = fs::read(&files[0].0)
+        .ok()
+        .is_some_and(|contents| contents == files[0].1);
+    let sources_exist = files[1..].iter().all(|(path, _)| path.is_file());
+    if dependency_matches && manifest_matches && sources_exist {
+        return Ok(());
     }
-    if plan.add_scenario_feature
-        && let Some(change) =
-            ensure_scenario_dev_dependency(layout, document).map_err(|message| {
-                Error::ManifestPreparation {
-                    path: robot_root.join("Cargo.toml"),
-                    message,
-                }
-            })?
-    {
-        changes.push(change);
+
+    if let Some(lock_mode) = match options.lock {
+        LockMode::Locked => Some("--locked"),
+        LockMode::Frozen => Some("--frozen"),
+        LockMode::Unlocked => None,
+    } {
+        return Err(Error::MissingInitialization {
+            path: layout.cargo_manifest().to_owned(),
+            dependency: robot_api::DEPENDENCY_KEY.to_owned(),
+            lock_mode,
+        });
     }
-    if plan.add_clap_derive
-        && let Some(change) =
-            ensure_clap_dev_dependency(document).map_err(|message| Error::ManifestPreparation {
-                path: robot_root.join("Cargo.toml"),
-                message,
-            })?
-    {
-        changes.push(change);
+
+    if !dependency_matches {
+        if manifest.get("dependencies").is_none() {
+            manifest["dependencies"] = Item::Table(Table::new());
+        }
+        let dependencies =
+            manifest["dependencies"]
+                .as_table_mut()
+                .ok_or_else(|| Error::ManifestPreparation {
+                    path: layout.cargo_manifest().to_owned(),
+                    message: "[dependencies] must be a standard TOML table".to_owned(),
+                })?;
+        dependencies.insert(robot_api::DEPENDENCY_KEY, expected_dependency);
+        atomic_write(layout.cargo_manifest(), manifest.to_string().as_bytes()).map_err(
+            |source| Error::ManifestWrite {
+                path: layout.cargo_manifest().to_owned(),
+                source,
+            },
+        )?;
+        transaction
+            .changes
+            .push(PreparationChange::RobotApiDependencyAdded {
+                package: candidate.package,
+                path: robot_api::DIRECTORY.to_owned(),
+            });
+    }
+
+    for (path, contents) in files {
+        if fs::read(&path).ok().as_deref() == Some(contents) {
+            continue;
+        }
+        transaction.snapshot_managed_file(&path)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| Error::ManifestWrite {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        atomic_write(&path, contents).map_err(|source| Error::ManifestWrite {
+            path: path.clone(),
+            source,
+        })?;
+        let relative = path
+            .strip_prefix(layout.root())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        transaction
+            .changes
+            .push(PreparationChange::RobotApiFileWritten { path: relative });
     }
     Ok(())
 }
 
-/// Extends an in-flight preparation transaction with the scenario
-/// preparation step. The original manifest captured by the transaction
-/// remains the rollback target — both supervisor and scenario changes
-/// are restored atomically if a later step fails.
-pub(crate) fn prepare_scenario_target_in_transaction(
-    layout: &ProjectLayout,
+#[derive(Debug)]
+struct LocalContractPackage {
+    name: String,
+    root: PathBuf,
+    protos: Vec<PathBuf>,
+    includes: Vec<PathBuf>,
+    generated: PathBuf,
+    dependencies: Vec<ContractDependency>,
+}
+
+#[derive(Debug, Clone)]
+struct ContractDependency {
+    dependency: String,
+    proto_package: String,
+    rust_path: String,
+}
+
+#[derive(Debug)]
+struct ResolvedContractDependency {
+    declaration: ContractDependency,
+    package: String,
+    root: PathBuf,
+    local: bool,
+}
+
+#[derive(Debug)]
+struct ContractPreparation {
+    package: LocalContractPackage,
+    dependencies: Vec<ResolvedContractDependency>,
+}
+
+fn prepare_local_service_contracts(
+    document: &RobotDocument,
+    robot_root: &Path,
     options: &CargoOptions,
-    transaction: &mut ManifestTransaction,
-) -> Result<(), Error> {
-    options.validate()?;
-    let manifest = layout.cargo_manifest();
-    let manifest_text =
-        fs::read_to_string(manifest).map_err(|source| Error::ManifestPreparation {
-            path: manifest.to_owned(),
-            message: format!("cannot read authored manifest: {source}"),
+) -> Result<Vec<PreparationChange>, Error> {
+    let RobotDocument::V0 { services, .. } = document;
+    let mut roots = services
+        .values()
+        .filter_map(|selection| match &selection.source {
+            Some(crate::project::document::ServiceSource::Path(source)) => {
+                Some(robot_root.join(&source.path))
+            }
+            _ => None,
+        })
+        .map(|path| {
+            path.canonicalize()
+                .map_err(|source| Error::ManifestPreparation {
+                    path: path.clone(),
+                    message: format!("cannot resolve local service source: {source}"),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    roots.sort();
+    roots.dedup();
+    let mut preparations = Vec::new();
+    let mut visit_state = BTreeMap::new();
+    for root in roots {
+        collect_contract_preparations(&root, options, &mut visit_state, &mut preparations)?;
+    }
+    let mut packages = preparations
+        .iter()
+        .map(|preparation| preparation.package.root.clone())
+        .collect::<Vec<_>>();
+    packages.sort();
+    packages.dedup();
+
+    let mut locks = Vec::with_capacity(packages.len());
+    for root in &packages {
+        let lock_directory = root.join("target/phoxal");
+        fs::create_dir_all(&lock_directory).map_err(|source| Error::ManifestPreparation {
+            path: root.clone(),
+            message: format!("cannot create local contract lock directory: {source}"),
         })?;
-    let mut document: DocumentMut =
-        manifest_text
-            .parse()
+        let lock_path = lock_directory.join("contract-preparation.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
             .map_err(|source| Error::ManifestPreparation {
-                path: manifest.to_owned(),
-                message: format!("cannot parse authored manifest: {source}"),
+                path: lock_path.clone(),
+                message: format!("cannot open local contract lock: {source}"),
             })?;
-    let plan = compute_scenario_change_plan(layout, layout.root(), &document)?;
-    if plan.needs_persistent_setup {
-        match options.lock {
-            LockMode::Unlocked => {}
-            LockMode::Locked | LockMode::Frozen => {
+        let lock =
+            ExclusiveFileLock::try_acquire(file).map_err(|error| Error::ManifestPreparation {
+                path: lock_path,
+                message: match error {
+                    TryLockError::WouldBlock => {
+                        "another command is preparing this local service contract".to_owned()
+                    }
+                    TryLockError::Error(source) => {
+                        format!("cannot lock local service contract: {source}")
+                    }
+                },
+            })?;
+        locks.push(lock);
+    }
+
+    let mut changes = Vec::new();
+    for preparation in preparations {
+        let package = preparation.package;
+        let root = &package.root;
+        let candidate_parent = root.join("target/phoxal");
+        let candidate = tempfile::Builder::new()
+            .prefix("contract-candidate-")
+            .tempdir_in(&candidate_parent)
+            .map_err(|source| Error::ManifestPreparation {
+                path: candidate_parent,
+                message: format!("cannot create contract candidate: {source}"),
+            })?;
+        let mut descriptor_bytes = BTreeMap::<String, Vec<u8>>::new();
+        let mut extern_paths = Vec::with_capacity(preparation.dependencies.len());
+        for dependency in &preparation.dependencies {
+            let dependency_package = local_contract_package(&dependency.root)?;
+            phoxal_build::verify_contract_metadata(
+                &dependency_package.protos,
+                &dependency_package.includes,
+                &dependency_package.generated,
+            )
+            .map_err(|error| Error::ManifestPreparation {
+                path: dependency.root.join("Cargo.toml"),
+                message: format!(
+                    "contract dependency `{}` is stale or invalid: {error}",
+                    dependency.package
+                ),
+            })?;
+            let descriptor_path = dependency_package.generated.join("phoxal-descriptors.bin");
+            let descriptors =
+                fs::read(&descriptor_path).map_err(|source| Error::ManifestPreparation {
+                    path: descriptor_path.clone(),
+                    message: format!("cannot read dependency contract descriptors: {source}"),
+                })?;
+            let pool =
+                prost_reflect::DescriptorPool::decode(descriptors.as_slice()).map_err(|error| {
+                    Error::ManifestPreparation {
+                        path: descriptor_path,
+                        message: format!("dependency contract descriptors are invalid: {error}"),
+                    }
+                })?;
+            let expected = dependency.declaration.proto_package.trim_start_matches('.');
+            if !pool.files().any(|file| file.package_name() == expected) {
                 return Err(Error::ManifestPreparation {
-                    path: manifest.to_owned(),
+                    path: dependency.root.join("Cargo.toml"),
                     message: format!(
-                        "scenario setup needs to add its `[[test]]`, \
-                         `[dev-dependencies] phoxal.features = [\"scenario\"]`, or \
-                         `[dev-dependencies] clap.features = [\"derive\"]`; refusing \
-                         to mutate the manifest while {:?} is in effect. Re-run without \
-                         --locked / --frozen.",
-                        options.lock
+                        "contract dependency `{}` does not provide Protobuf package `{}`",
+                        dependency.package, dependency.declaration.proto_package
+                    ),
+                });
+            }
+            descriptor_bytes
+                .entry(dependency.package.clone())
+                .or_insert(descriptors);
+            extern_paths.push((
+                dependency.declaration.proto_package.as_str(),
+                dependency.declaration.rust_path.as_str(),
+            ));
+        }
+        let descriptors = descriptor_bytes
+            .iter()
+            .map(|(package, descriptors)| {
+                phoxal_build::DependencyDescriptor::new(package, descriptors)
+            })
+            .collect::<Vec<_>>();
+        phoxal_build::generate_contract_package(
+            &package.protos,
+            &package.includes,
+            candidate.path(),
+            &descriptors,
+            &extern_paths,
+        )
+        .map_err(|error| Error::ManifestPreparation {
+            path: root.join("Cargo.toml"),
+            message: format!("local contract generation failed: {error}"),
+        })?;
+        phoxal_build::verify_contract_metadata(
+            &package.protos,
+            &package.includes,
+            candidate.path(),
+        )
+        .map_err(|error| Error::ManifestPreparation {
+            path: root.join("Cargo.toml"),
+            message: format!("generated local contract candidate is invalid: {error}"),
+        })?;
+        install_contract_candidate(&package, candidate.path(), &mut changes)?;
+    }
+    drop(locks);
+    Ok(changes)
+}
+
+fn collect_contract_preparations(
+    root: &Path,
+    options: &CargoOptions,
+    visit_state: &mut BTreeMap<PathBuf, bool>,
+    preparations: &mut Vec<ContractPreparation>,
+) -> Result<(), Error> {
+    let root = root
+        .canonicalize()
+        .map_err(|source| Error::ManifestPreparation {
+            path: root.to_owned(),
+            message: format!("cannot resolve contract package root: {source}"),
+        })?;
+    match visit_state.get(&root) {
+        Some(true) => return Ok(()),
+        Some(false) => {
+            return Err(Error::ManifestPreparation {
+                path: root.join("Cargo.toml"),
+                message: "contract package dependencies contain a cycle".to_owned(),
+            });
+        }
+        None => {}
+    }
+    visit_state.insert(root.clone(), false);
+    let package = local_contract_package(&root)?;
+    let dependencies = resolve_contract_dependencies(&package, options)?;
+    for dependency in &dependencies {
+        if dependency.root.starts_with(&root) && dependency.root == root {
+            return Err(Error::ManifestPreparation {
+                path: root.join("Cargo.toml"),
+                message: format!(
+                    "contract package `{}` depends on itself through `{}`",
+                    package.name, dependency.declaration.dependency
+                ),
+            });
+        }
+        if dependency.local {
+            collect_contract_preparations(&dependency.root, options, visit_state, preparations)?;
+        }
+    }
+    visit_state.insert(root, true);
+    preparations.push(ContractPreparation {
+        package,
+        dependencies,
+    });
+    Ok(())
+}
+
+fn resolve_contract_dependencies(
+    package: &LocalContractPackage,
+    options: &CargoOptions,
+) -> Result<Vec<ResolvedContractDependency>, Error> {
+    if package.dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let metadata = contract_package_metadata(&package.root, options)?;
+    let manifest = package.root.join("Cargo.toml");
+    let canonical_manifest =
+        manifest
+            .canonicalize()
+            .map_err(|source| Error::ManifestPreparation {
+                path: manifest.clone(),
+                message: format!("cannot resolve contract manifest: {source}"),
+            })?;
+    let owner = metadata
+        .packages
+        .iter()
+        .find(|candidate| {
+            PathBuf::from(candidate.manifest_path.as_std_path())
+                .canonicalize()
+                .is_ok_and(|path| path == canonical_manifest)
+        })
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.clone(),
+            message: "cargo metadata did not return the contract package".to_owned(),
+        })?;
+    let node = metadata
+        .resolve
+        .as_ref()
+        .and_then(|resolve| resolve.nodes.iter().find(|node| node.id == owner.id))
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.clone(),
+            message: "cargo metadata did not resolve the contract package".to_owned(),
+        })?;
+
+    package
+        .dependencies
+        .iter()
+        .map(|declaration| {
+            let normalized = declaration.dependency.replace('-', "_");
+            let node_dependency = node
+                .deps
+                .iter()
+                .find(|dependency| {
+                    dependency.name == declaration.dependency || dependency.name == normalized
+                })
+                .ok_or_else(|| Error::ManifestPreparation {
+                    path: manifest.clone(),
+                    message: format!(
+                        "contract dependency `{}` is not a resolved direct Cargo dependency",
+                        declaration.dependency
+                    ),
+                })?;
+            let resolved = metadata
+                .packages
+                .iter()
+                .find(|candidate| candidate.id == node_dependency.pkg)
+                .ok_or_else(|| Error::ManifestPreparation {
+                    path: manifest.clone(),
+                    message: format!(
+                        "cargo metadata omitted resolved contract dependency `{}`",
+                        declaration.dependency
+                    ),
+                })?;
+            let root = PathBuf::from(resolved.manifest_path.as_std_path())
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| Error::ManifestPreparation {
+                    path: PathBuf::from(resolved.manifest_path.as_std_path()),
+                    message: "resolved dependency manifest has no package directory".to_owned(),
+                })?;
+            Ok(ResolvedContractDependency {
+                declaration: declaration.clone(),
+                package: resolved.name.to_string(),
+                root,
+                local: resolved.source.is_none(),
+            })
+        })
+        .collect()
+}
+
+fn contract_package_metadata(
+    root: &Path,
+    options: &CargoOptions,
+) -> Result<cargo_metadata::Metadata, Error> {
+    let manifest = root.join("Cargo.toml");
+    let mut command = MetadataCommand::new();
+    command
+        .cargo_path(options.cargo_program())
+        .manifest_path(&manifest)
+        .current_dir(root);
+    let mut extra = options
+        .lock
+        .flags()
+        .iter()
+        .map(|flag| (*flag).to_owned())
+        .collect::<Vec<_>>();
+    if options.offline {
+        extra.push("--offline".to_owned());
+    }
+    command.other_options(extra);
+    command.exec().map_err(|error| Error::ManifestPreparation {
+        path: manifest,
+        message: format!("cannot resolve contract dependencies with Cargo: {error}"),
+    })
+}
+
+fn install_contract_candidate(
+    package: &LocalContractPackage,
+    candidate: &Path,
+    changes: &mut Vec<PreparationChange>,
+) -> Result<(), Error> {
+    let candidate_files = read_flat_directory(candidate, "generated contract candidate")?;
+    let accepted_files = if package.generated.is_dir() {
+        read_flat_directory(&package.generated, "accepted generated contract")?
+    } else {
+        BTreeMap::new()
+    };
+    let changed_names = candidate_files
+        .iter()
+        .filter(|(name, contents)| accepted_files.get(*name) != Some(*contents))
+        .map(|(name, _)| name.clone())
+        .chain(
+            accepted_files
+                .keys()
+                .filter(|name| !candidate_files.contains_key(*name))
+                .cloned(),
+        )
+        .collect::<Vec<_>>();
+    if changed_names.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&package.generated).map_err(|source| Error::ManifestPreparation {
+        path: package.generated.clone(),
+        message: format!("cannot create generated contract directory: {source}"),
+    })?;
+    let snapshots = changed_names
+        .iter()
+        .map(|name| LockSnapshot {
+            path: package.generated.join(name),
+            contents: accepted_files.get(name).cloned(),
+        })
+        .collect::<Vec<_>>();
+    let install = (|| -> Result<(), std::io::Error> {
+        for (name, contents) in &candidate_files {
+            if accepted_files.get(name) != Some(contents) {
+                atomic_write(&package.generated.join(name), contents)?;
+            }
+        }
+        for name in accepted_files.keys() {
+            if !candidate_files.contains_key(name) {
+                fs::remove_file(package.generated.join(name))?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(source) = install {
+        for snapshot in &snapshots {
+            if let Err(restore) = restore_snapshot(snapshot) {
+                return Err(Error::ManifestPreparation {
+                    path: snapshot.path.clone(),
+                    message: format!(
+                        "contract installation failed ({source}) and rollback failed: {restore}"
                     ),
                 });
             }
         }
-    }
-    let mut scenario_changes = Vec::new();
-    apply_scenario_change_plan(
-        layout,
-        layout.root(),
-        &plan,
-        &mut document,
-        &mut scenario_changes,
-    )?;
-    let manifest_changed = !scenario_changes.is_empty();
-    // Plan the harness write up front so its `HarnessWritten`
-    // change is recorded before any disk write. The Drop-based
-    // rollback path then restores the manifest regardless of which
-    // subsequent write fails.
-    if plan.harness_changed {
-        scenario_changes.push(PreparationChange::HarnessWritten {
-            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-        });
-    }
-    transaction.extend_with_scenario_changes(scenario_changes);
-    if manifest_changed {
-        let prepared = document.to_string().into_bytes();
-        atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
-            path: manifest.to_owned(),
-            message: format!("cannot persist manifest: {source}"),
-        })?;
-    }
-    if plan.harness_changed
-        && let Err(message) = write_scenario_harness_file(layout.root(), &plan.discovered)
-    {
-        // Restore the manifest before propagating so the workspace
-        // is not left half-mutated.
-        transaction
-            .rollback()
-            .map_err(|source| Error::ManifestPreparation {
-                path: manifest.to_owned(),
-                message: format!("harness write failed ({message}) and rollback failed: {source}"),
-            })?;
         return Err(Error::ManifestPreparation {
-            path: manifest.to_owned(),
-            message,
+            path: package.generated.clone(),
+            message: format!("cannot install complete generated contract candidate: {source}"),
         });
     }
+
+    changes.extend(changed_names.into_iter().map(|name| {
+        let destination = package.generated.join(name);
+        PreparationChange::ServiceContractFileWritten {
+            package: package.name.clone(),
+            path: destination
+                .strip_prefix(&package.root)
+                .unwrap_or(&destination)
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }));
     Ok(())
 }
 
-/// Write the harness source unconditionally — the caller has already
-/// computed `harness_needs_write` and decided to commit. This is the
-/// post-write half of the harness lifecycle; it never inspects content.
-fn write_scenario_harness_file(
-    robot_root: &Path,
-    discovered: &[crate::project::scenario::DiscoveredScenario],
-) -> Result<(), String> {
-    let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
-    if let Some(parent) = harness_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|source| format!("cannot create `{}`: {source}", parent.display()))?;
-    }
-    let harness_source = super::scenario::generate_harness_source(robot_root, discovered);
-    let next = harness_source.into_bytes();
-    atomic_write(&harness_path, &next)
-        .map_err(|source| format!("cannot write generated harness: {source}"))
-}
-
-fn ensure_scenario_test_target(
-    document: &mut DocumentMut,
-) -> Result<Option<PreparationChange>, String> {
-    if let Some(existing) = lookup_scenario_test_target(document) {
-        let path = existing.get("path").and_then(Item::as_str);
-        let harness = existing.get("harness").and_then(Item::as_bool);
-        let test_flag = existing.get("test").and_then(Item::as_bool);
-        if path == Some(SCENARIO_HARNESS_RELATIVE_PATH)
-            && harness == Some(false)
-            && test_flag == Some(false)
+fn read_flat_directory(
+    directory: &Path,
+    description: &str,
+) -> Result<BTreeMap<OsString, Vec<u8>>, Error> {
+    let entries = fs::read_dir(directory)
+        .map_err(|source| Error::ManifestPreparation {
+            path: directory.to_owned(),
+            message: format!("cannot inspect {description}: {source}"),
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| Error::ManifestPreparation {
+            path: directory.to_owned(),
+            message: format!("cannot inspect {description}: {source}"),
+        })?;
+    let mut files = BTreeMap::new();
+    for entry in entries {
+        if !entry
+            .file_type()
+            .map_err(|source| Error::ManifestPreparation {
+                path: entry.path(),
+                message: format!("cannot inspect {description} entry: {source}"),
+            })?
+            .is_file()
         {
-            return Ok(None);
+            return Err(Error::ManifestPreparation {
+                path: entry.path(),
+                message: format!("{description} contains a non-file entry"),
+            });
         }
-        return Err(format!(
-            "authored `[[test]] name = \"{SCENARIO_TEST_TARGET_NAME}\"` exists with a different \
-             path or harness setting ({path:?}, harness={harness:?}, test={test_flag:?}); \
-             refusing to overwrite",
-        ));
+        let contents = fs::read(entry.path()).map_err(|source| Error::ManifestPreparation {
+            path: entry.path(),
+            message: format!("cannot read {description}: {source}"),
+        })?;
+        files.insert(entry.file_name(), contents);
     }
-    match document.get_mut("test") {
-        Some(item) => match item.as_array_of_tables_mut() {
-            Some(arr) => {
-                arr.push(build_scenario_test_table());
-                Ok(Some(PreparationChange::TestTargetAdded {
-                    name: SCENARIO_TEST_TARGET_NAME.to_owned(),
-                    path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-                }))
-            }
-            None => Err(
-                "`[test]]` exists but is not an array-of-tables; cannot add the scenario target"
-                    .to_owned(),
-            ),
-        },
-        None => {
-            let mut arr = ArrayOfTables::new();
-            arr.push(build_scenario_test_table());
-            document["test"] = Item::ArrayOfTables(arr);
-            Ok(Some(PreparationChange::TestTargetAdded {
-                name: SCENARIO_TEST_TARGET_NAME.to_owned(),
-                path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-            }))
-        }
-    }
+    Ok(files)
 }
 
-fn lookup_scenario_test_target(document: &DocumentMut) -> Option<Table> {
-    let item = document.get("test")?;
-    let tests = item.as_array_of_tables()?;
-    tests
-        .iter()
-        .find(|t| t.get("name").and_then(Item::as_str) == Some(SCENARIO_TEST_TARGET_NAME))
-        .cloned()
-}
-
-fn build_scenario_test_table() -> Table {
-    let mut table = Table::new();
-    table["name"] = Item::Value(Value::from(SCENARIO_TEST_TARGET_NAME));
-    table["path"] = Item::Value(Value::from(SCENARIO_HARNESS_RELATIVE_PATH));
-    table["harness"] = Item::Value(Value::from(false));
-    table["test"] = Item::Value(Value::from(false));
-    table
-}
-
-fn ensure_scenario_dev_dependency(
-    layout: &ProjectLayout,
-    document: &mut DocumentMut,
-) -> Result<Option<PreparationChange>, String> {
-    let has_phoxal_dev_dep = document
-        .get("dev-dependencies")
-        .and_then(Item::as_table)
-        .map(|t| t.contains_key("phoxal"))
-        .unwrap_or(false);
-    if !has_phoxal_dev_dep {
-        let mirror = build_phoxal_dev_dependency_from_existing(layout, document)?;
-        let dev_table = ensure_dev_dependencies_table(document)?;
-        dev_table.insert("phoxal", mirror);
-        return Ok(Some(PreparationChange::DevDependencyFeatureAdded {
-            dependency: "phoxal".to_owned(),
-            feature: "scenario".to_owned(),
-        }));
-    }
-    let entry = document
-        .get_mut("dev-dependencies")
-        .and_then(Item::as_table_mut)
-        .and_then(|t| t.get_mut("phoxal"))
-        .ok_or_else(|| "missing phoxal dev-dependency after existence check".to_owned())?;
-    let value = entry.as_value_mut().ok_or_else(|| {
-        "`phoxal` dev-dependency is not a value; cannot add scenario feature".to_owned()
+fn local_contract_package(root: &Path) -> Result<LocalContractPackage, Error> {
+    let manifest = root.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).map_err(|source| Error::ReadManifest {
+        path: manifest.clone(),
+        source,
     })?;
-    let inline = match value.as_inline_table_mut() {
-        Some(t) => t,
-        None => {
-            return Err(
-                "`phoxal` dev-dependency is not an inline table; cannot inspect features"
-                    .to_owned(),
-            );
-        }
-    };
-    let already_has = inline
-        .get("features")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some("scenario")))
-        .unwrap_or(false);
-    if already_has {
-        return Ok(None);
-    }
-    match inline.get_mut("features") {
-        Some(features) => {
-            let arr = features
-                .as_array_mut()
-                .ok_or_else(|| "phoxal `features` is not an array".to_owned())?;
-            arr.push("scenario");
-        }
-        None => {
-            inline.insert(
-                "features",
-                Value::Array(Array::from_iter(["scenario".to_owned()])),
-            );
-        }
-    }
-    Ok(Some(PreparationChange::DevDependencyFeatureAdded {
-        dependency: "phoxal".to_owned(),
-        feature: "scenario".to_owned(),
-    }))
-}
-
-fn ensure_clap_dev_dependency(
-    document: &mut DocumentMut,
-) -> Result<Option<PreparationChange>, String> {
-    let dev_table = ensure_dev_dependencies_table(document)?;
-    if !dev_table.contains_key("clap") {
-        let mut dependency = InlineTable::new();
-        dependency.insert("version", Value::from("4.6.1"));
-        dependency.insert(
-            "features",
-            Value::Array(Array::from_iter(["derive".to_owned()])),
-        );
-        dev_table.insert("clap", Item::Value(Value::InlineTable(dependency)));
-        return Ok(Some(PreparationChange::DevDependencyFeatureAdded {
-            dependency: "clap".to_owned(),
-            feature: "derive".to_owned(),
-        }));
-    }
-
-    let entry = dev_table
-        .get_mut("clap")
-        .ok_or_else(|| "missing clap dev-dependency after existence check".to_owned())?;
-    let value = entry.as_value_mut().ok_or_else(|| {
-        "`clap` dev-dependency is not a value; cannot add derive feature".to_owned()
+    let value = toml::from_str::<toml::Value>(&text).map_err(|source| Error::ParseManifest {
+        path: manifest.clone(),
+        source,
     })?;
-    if let Some(version) = value.as_str().map(str::to_owned) {
-        let mut dependency = InlineTable::new();
-        dependency.insert("version", Value::from(version));
-        dependency.insert(
-            "features",
-            Value::Array(Array::from_iter(["derive".to_owned()])),
-        );
-        *value = Value::InlineTable(dependency);
-    } else {
-        let inline = value.as_inline_table_mut().ok_or_else(|| {
-            "`clap` dev-dependency must be a version string or inline table".to_owned()
+    let name = value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.clone(),
+            message: "local service package has no package.name".to_owned(),
+        })?
+        .to_owned();
+    let contract = value
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("phoxal"))
+        .and_then(|phoxal| phoxal.get("contract"))
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.clone(),
+            message: "selected local service has no package.metadata.phoxal.contract".to_owned(),
         })?;
-        if inline
-            .get("features")
-            .and_then(Value::as_array)
-            .is_some_and(|features| {
-                features
-                    .iter()
-                    .any(|feature| feature.as_str() == Some("derive"))
-            })
-        {
-            return Ok(None);
-        }
-        match inline.get_mut("features") {
-            Some(features) => features
-                .as_array_mut()
-                .ok_or_else(|| "clap `features` is not an array".to_owned())?
-                .push("derive"),
-            None => {
-                inline.insert(
-                    "features",
-                    Value::Array(Array::from_iter(["derive".to_owned()])),
-                );
-            }
-        }
-    }
-    Ok(Some(PreparationChange::DevDependencyFeatureAdded {
-        dependency: "clap".to_owned(),
-        feature: "derive".to_owned(),
-    }))
-}
-
-fn ensure_dev_dependencies_table(document: &mut DocumentMut) -> Result<&mut Table, String> {
-    if document.get("dev-dependencies").is_none() {
-        document["dev-dependencies"] = Item::Table(Table::new());
-    }
-    document
-        .get_mut("dev-dependencies")
-        .and_then(Item::as_table_mut)
-        .ok_or_else(|| "`[dev-dependencies]` exists but is not a table".to_owned())
-}
-
-fn build_phoxal_dev_dependency_from_existing(
-    layout: &ProjectLayout,
-    document: &DocumentMut,
-) -> Result<Item, String> {
-    // Sources are examined in this order:
-    //   1. `[dependencies] phoxal` in the member. The mirror preserves the
-    //      authored form: explicit coordinates are cloned with the
-    //      `scenario` feature added; `workspace = true` inheritance is
-    //      preserved verbatim and only the feature gate is appended.
-    //   2. `[workspace.dependencies] phoxal` — first in the member itself
-    //      (single-package workspace case), then in the parent workspace
-    //      manifest (real workspace-member case).
-    //
-    // String-form declarations such as `phoxal = "0.99"` are accepted and
-    // promoted to `{ version = "0.99" }`. Plain tables (non-inline) are
-    // not accepted because they would lose key ordering on round-trip.
-    if let Some(value) = lookup_phoxal_dependency(document, "dependencies") {
-        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
-            "authored `[dependencies] phoxal` is not an inline table or version string; \
-             cannot mirror its coordinates into [dev-dependencies]"
-                .to_owned()
+    let protos = contract_paths(contract, "protos", root, &manifest)?;
+    let includes = contract_paths(contract, "includes", root, &manifest)?;
+    let generated = contract
+        .get("generated")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.clone(),
+            message: "contract metadata has no generated directory".to_owned(),
         })?;
-        if is_workspace_inherit_only(&inline) {
-            // Preserve the inheritance: the dev-dep keeps `workspace = true`
-            // and only adds the new feature gate, instead of inlining the
-            // resolved workspace coordinates.
-            let mut table = InlineTable::new();
-            table.insert("workspace", Value::from(true));
-            table.insert(
-                "features",
-                Value::Array(Array::from_iter(["scenario".to_owned()])),
-            );
-            return Ok(Item::Value(Value::InlineTable(table)));
-        }
-        return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
-            inline,
-        ))));
-    }
-    // Single-package workspace: the package is its own workspace root, so
-    // `[workspace.dependencies]` lives in the same document.
-    if let Some(value) = lookup_phoxal_dependency(document, "workspace.dependencies") {
-        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
-            "authored `[workspace.dependencies] phoxal` is not an inline table or version \
-             string; cannot mirror its coordinates into [dev-dependencies]"
-                .to_owned()
-        })?;
-        return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
-            inline,
-        ))));
-    }
-    // Real workspace member: load the parent workspace manifest and look
-    // there. `load_workspace_document` returns `None` for single-package
-    // workspaces (where the workspace root is the robot itself) and when
-    // the parent manifest cannot be parsed.
-    if let Some(workspace_document) = load_workspace_document(layout)
-        && let Some(value) = lookup_phoxal_dependency(&workspace_document, "workspace.dependencies")
-    {
-        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
-            "authored `[workspace.dependencies] phoxal` in the parent workspace manifest \
-             is not an inline table or version string; cannot mirror its coordinates into \
-             [dev-dependencies]"
-                .to_owned()
-        })?;
-        return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
-            inline,
-        ))));
-    }
-    Err(
-        "no authored `[dependencies] phoxal` (in the member) or `[workspace.dependencies] phoxal` \
-         (in the member or parent workspace manifest) entry to mirror; cannot author coordinates \
-         on your behalf. Add `phoxal` to one of those tables first."
-            .to_owned(),
-    )
-}
-
-/// Promotes the various authored forms of `phoxal` into a mutable
-/// `InlineTable`:
-///   * `phoxal = { ... }`         → clone of the inline table
-///   * `phoxal = "1.2.3"`         → `{ version = "1.2.3" }`
-fn phoxal_value_to_inline(value: &Value) -> Option<InlineTable> {
-    match value {
-        Value::InlineTable(table) => Some(table.clone()),
-        Value::String(version) => {
-            let mut table = InlineTable::new();
-            table.insert("version", Value::from(version.value().clone()));
-            Some(table)
-        }
-        _ => None,
-    }
-}
-
-fn add_scenario_feature(mut table: InlineTable) -> InlineTable {
-    let existing_features = table
-        .get("features")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
+    let generated = safe_package_path(root, generated, &manifest)?;
+    let dependencies = contract
+        .get("dependencies")
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| Error::ManifestPreparation {
+                    path: manifest.clone(),
+                    message: "contract metadata dependencies must be an array".to_owned(),
+                })?
+                .iter()
+                .map(|value| {
+                    let table = value.as_table().ok_or_else(|| Error::ManifestPreparation {
+                        path: manifest.clone(),
+                        message: "contract dependency entries must be inline tables".to_owned(),
+                    })?;
+                    let field = |name: &str| {
+                        table
+                            .get(name)
+                            .and_then(toml::Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::ManifestPreparation {
+                                path: manifest.clone(),
+                                message: format!(
+                                    "contract dependency entry has no non-empty `{name}`"
+                                ),
+                            })
+                    };
+                    let dependency = field("dependency")?;
+                    let proto_package = field("proto_package")?;
+                    let rust_path = field("rust_path")?;
+                    if !proto_package.starts_with('.') || !rust_path.starts_with("::") {
+                        return Err(Error::ManifestPreparation {
+                            path: manifest.clone(),
+                            message: format!(
+                                "contract dependency `{dependency}` requires a leading-dot proto_package and absolute rust_path"
+                            ),
+                        });
+                    }
+                    Ok(ContractDependency {
+                        dependency,
+                        proto_package,
+                        rust_path,
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()
         })
+        .transpose()?
         .unwrap_or_default();
-    let mut merged = existing_features;
-    if !merged.iter().any(|f| f == "scenario") {
-        merged.push("scenario".to_owned());
-    }
-    table.insert("features", Value::Array(Array::from_iter(merged)));
-    table
+    Ok(LocalContractPackage {
+        name,
+        root: root.to_owned(),
+        protos,
+        includes,
+        generated,
+        dependencies,
+    })
 }
 
-/// True when the inline table contains `workspace = true` and no
-/// substantive coordinate — i.e. it is just inheriting from
-/// `[workspace.dependencies]` rather than declaring its own.
-fn is_workspace_inherit_only(inline: &InlineTable) -> bool {
-    let inherits = inline
-        .get("workspace")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !inherits {
-        return false;
+fn contract_paths(
+    contract: &toml::Value,
+    field: &str,
+    root: &Path,
+    manifest: &Path,
+) -> Result<Vec<PathBuf>, Error> {
+    contract
+        .get(field)
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("contract metadata has no {field} array"),
+        })?
+        .iter()
+        .map(|value| {
+            let path = value.as_str().ok_or_else(|| Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message: format!("contract metadata {field} entries must be strings"),
+            })?;
+            safe_package_path(root, path, manifest)
+        })
+        .collect()
+}
+
+fn safe_package_path(root: &Path, relative: &str, manifest: &Path) -> Result<PathBuf, Error> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("contract metadata path `{relative}` must stay inside the package"),
+        });
     }
-    for key in [
-        "path",
-        "git",
-        "version",
-        "registry",
-        "features",
-        "default-features",
-    ] {
-        if inline.contains_key(key) {
-            return false;
+    Ok(root.join(path))
+}
+
+pub(crate) fn finalize_robot_api_in_transaction(
+    layout: &ProjectLayout,
+    document: &RobotDocument,
+    sources: &crate::project::SourceSelection,
+    options: &CargoOptions,
+    transaction: &mut ManifestTransaction,
+) -> Result<bool, Error> {
+    let RobotDocument::V0 { services, .. } = document;
+    if services.is_empty() {
+        return Ok(false);
+    }
+    for selected in sources.services.values() {
+        let root = robot_api::package_root(selected)?;
+        let package = local_contract_package(&root)?;
+        phoxal_build::verify_contract_metadata(
+            &package.protos,
+            &package.includes,
+            &package.generated,
+        )
+        .map_err(|error| Error::ManifestPreparation {
+            path: root.join("Cargo.toml"),
+            message: format!("resolved service contract artifacts are stale or invalid: {error}"),
+        })?;
+        let resolved_dependencies = resolve_contract_dependencies(&package, options)?;
+        let mut dependency_bytes = BTreeMap::new();
+        for dependency in resolved_dependencies {
+            let path = dependency.root.join("generated/phoxal-descriptors.bin");
+            let bytes = fs::read(&path).map_err(|source| Error::ManifestPreparation {
+                path: path.clone(),
+                message: format!("cannot read resolved dependency descriptors: {source}"),
+            })?;
+            dependency_bytes.entry(dependency.package).or_insert(bytes);
         }
+        let dependency_descriptors = dependency_bytes
+            .iter()
+            .map(|(package, bytes)| phoxal_build::DependencyDescriptor::new(package, bytes))
+            .collect::<Vec<_>>();
+        phoxal_build::verify_contract_dependencies(&package.generated, &dependency_descriptors)
+            .map_err(|error| Error::ManifestPreparation {
+                path: root.join("Cargo.toml"),
+                message: format!("resolved service dependency closure is incompatible: {error}"),
+            })?;
     }
-    true
-}
-
-fn lookup_phoxal_dependency<'a>(document: &'a DocumentMut, section: &str) -> Option<&'a Value> {
-    // `toml_edit::Table::get` is a single-key lookup, not a dotted-path
-    // traversal, so a section path like `workspace.dependencies` must be
-    // descended by hand. Every segment must materialise as a regular
-    // `Table` because `[workspace.dependencies]` is a section header, not
-    // an inline table. Once we have reached the section, we look up the
-    // hardcoded `phoxal` key inside it and return its inline-table value.
-    let mut segments = section.split('.');
-    let last = segments.next_back()?;
-    let mut current: &Item = document.as_item();
-    for segment in segments {
-        let next = current.get(segment)?;
-        if !next.is_table() {
-            return None;
+    let candidate = robot_api::finalized_candidate(document, layout.root(), sources)?;
+    let generated_root = layout.root().join(robot_api::DIRECTORY);
+    let files = [
+        (generated_root.join("src/lib.rs"), candidate.lib.as_bytes()),
+        (
+            generated_root.join("src/contracts.rs"),
+            candidate.contracts.as_bytes(),
+        ),
+        (
+            generated_root.join("src/services.rs"),
+            candidate.services.as_bytes(),
+        ),
+    ];
+    let changed = files.iter().any(|(path, expected)| {
+        fs::read(path)
+            .ok()
+            .is_none_or(|contents| contents != *expected)
+    });
+    if !changed {
+        return Ok(false);
+    }
+    if let Some(lock_mode) = match options.lock {
+        LockMode::Locked => Some("--locked"),
+        LockMode::Frozen => Some("--frozen"),
+        LockMode::Unlocked => None,
+    } {
+        return Err(Error::MissingInitialization {
+            path: layout.cargo_manifest().to_owned(),
+            dependency: "generated robot_api bindings".to_owned(),
+            lock_mode,
+        });
+    }
+    for (path, contents) in files {
+        if fs::read(&path).ok().as_deref() == Some(contents) {
+            continue;
         }
-        current = next;
+        transaction.snapshot_managed_file(&path)?;
+        atomic_write(&path, contents).map_err(|source| Error::ManifestWrite {
+            path: path.clone(),
+            source,
+        })?;
+        let relative = path
+            .strip_prefix(layout.root())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        transaction
+            .changes
+            .push(PreparationChange::RobotApiFileWritten { path: relative });
     }
-    let section_item = current.get(last)?;
-    if !section_item.is_table() {
-        return None;
-    }
-    section_item.get("phoxal")?.as_value()
+    Ok(true)
 }
 
-/// Load the parent workspace's Cargo.toml document, if any. Returns
-/// `None` for standalone packages and when the workspace manifest cannot
-/// be parsed (the latter case is treated as a missing lookup rather
-/// than a hard error).
-fn load_workspace_document(layout: &ProjectLayout) -> Option<DocumentMut> {
-    let workspace_root = cargo_workspace_root(layout, layout.cargo_manifest()).ok()?;
-    let workspace_manifest = workspace_root.join("Cargo.toml");
-    if workspace_manifest == layout.cargo_manifest() {
-        return None;
-    }
-    let source = fs::read_to_string(&workspace_manifest).ok()?;
-    source.parse::<DocumentMut>().ok()
+fn robot_api_dependency(package: &str) -> Item {
+    let mut requirement = InlineTable::new();
+    requirement.insert("package", Value::from(package));
+    requirement.insert("path", Value::from(robot_api::DIRECTORY));
+    Item::Value(Value::InlineTable(requirement))
+}
+
+fn robot_api_dependency_matches(item: &Item, package: &str) -> bool {
+    item.as_inline_table().is_some_and(|requirement| {
+        requirement.get("package").and_then(Value::as_str) == Some(package)
+            && requirement.get("path").and_then(Value::as_str) == Some(robot_api::DIRECTORY)
+            && requirement.len() == 2
+    })
 }
 
 fn acquire_preparation_lock(
@@ -1247,6 +1434,274 @@ mod tests {
             matches!(error, Error::ManifestPreparation { message, .. } if message.contains("another cargo phoxal command"))
         );
         drop(held);
+        Ok(())
+    }
+
+    #[test]
+    fn local_contract_refresh_is_automatic_and_failure_preserves_the_last_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let service = directory.path().join("motion");
+        fs::create_dir_all(service.join("proto/example/motion/v1"))?;
+        fs::write(
+            service.join("Cargo.toml"),
+            r#"[package]
+name = "example-motion"
+version = "0.1.0"
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/motion/v1/motion.proto"]
+includes = ["proto"]
+generated = "generated"
+"#,
+        )?;
+        let proto = service.join("proto/example/motion/v1/motion.proto");
+        fs::write(
+            &proto,
+            r#"syntax = "proto3";
+package example.motion.v1;
+import "google/protobuf/empty.proto";
+message Status { bool stopped = 1; }
+service Motion { rpc ObserveStatus(google.protobuf.Empty) returns (stream Status); }
+"#,
+        )?;
+        let document: RobotDocument = serde_yaml::from_str(
+            r#"schema: phoxal/robot/v0
+robot: { id: rover, components: {} }
+services:
+  motion:
+    source: { path: motion }
+"#,
+        )?;
+
+        let first =
+            prepare_local_service_contracts(&document, directory.path(), &CargoOptions::default())?;
+        assert!(!first.is_empty());
+        let generated = service.join("generated/example.motion.v1.rs");
+        let accepted = fs::read(&generated)?;
+        assert!(service.join("generated/lib.rs").is_file());
+        assert!(service.join("generated/phoxal-descriptors.bin").is_file());
+        fs::write(service.join("generated/obsolete.rs"), "stale")?;
+
+        fs::write(
+            &proto,
+            r#"syntax = "proto3";
+package example.motion.v1;
+import "google/protobuf/empty.proto";
+message Status { bool stopped = 1; uint64 revision = 2; }
+service Motion { rpc ObserveStatus(google.protobuf.Empty) returns (stream Status); }
+"#,
+        )?;
+        let second =
+            prepare_local_service_contracts(&document, directory.path(), &CargoOptions::default())?;
+        assert!(!second.is_empty());
+        let refreshed = fs::read(&generated)?;
+        assert_ne!(accepted, refreshed);
+        assert!(!service.join("generated/obsolete.rs").exists());
+
+        fs::write(&proto, "this is not protobuf")?;
+        let error =
+            prepare_local_service_contracts(&document, directory.path(), &CargoOptions::default())
+                .expect_err("invalid local contract must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("local contract generation failed")
+        );
+        assert_eq!(fs::read(&generated)?, refreshed);
+        Ok(())
+    }
+
+    #[test]
+    fn robot_api_initialization_is_locked_repeatable_and_rolls_back_with_cargo_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::create_dir_all(directory.path().join("src"))?;
+        fs::write(directory.path().join("src/main.rs"), "fn main() {}\n")?;
+        fs::write(
+            directory.path().join("robot.yaml"),
+            "schema: phoxal/robot/v0\nrobot: { id: rover, components: {} }\n",
+        )?;
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            r#"[package]
+name = "robot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+phoxal-supervisor = "1"
+"#,
+        )?;
+        let original_lock = b"# accepted lock\n";
+        fs::write(directory.path().join("Cargo.lock"), original_lock)?;
+
+        let service = directory.path().join("motion");
+        fs::create_dir_all(service.join("proto/example/motion/v1"))?;
+        fs::write(
+            service.join("Cargo.toml"),
+            r#"[package]
+name = "example-motion"
+version = "0.1.0"
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/motion/v1/motion.proto"]
+includes = ["proto"]
+generated = "generated"
+"#,
+        )?;
+        fs::write(
+            service.join("proto/example/motion/v1/motion.proto"),
+            r#"syntax = "proto3";
+package example.motion.v1;
+import "google/protobuf/empty.proto";
+message Status { bool stopped = 1; }
+service Motion { rpc ObserveStatus(google.protobuf.Empty) returns (stream Status); }
+"#,
+        )?;
+        let document: RobotDocument = serde_yaml::from_str(
+            r#"schema: phoxal/robot/v0
+robot: { id: rover, components: {} }
+services:
+  motion:
+    source: { path: motion }
+"#,
+        )?;
+        let layout = ProjectLayout::discover(directory.path())?;
+        let mut first = ensure_required_dependencies(&layout, &CargoOptions::default())?;
+        prepare_robot_api_in_transaction(&layout, &document, &CargoOptions::default(), &mut first)?;
+        first.commit();
+
+        let accepted_manifest = fs::read(layout.cargo_manifest())?;
+        let accepted_api = fs::read(directory.path().join(".phoxal/robot-api/Cargo.toml"))?;
+        let locked = CargoOptions {
+            lock: LockMode::Locked,
+            ..CargoOptions::default()
+        };
+        let mut repeat = ensure_required_dependencies(&layout, &locked)?;
+        prepare_robot_api_in_transaction(&layout, &document, &locked, &mut repeat)?;
+        assert!(repeat.commit().is_empty());
+
+        let replacement: RobotDocument = serde_yaml::from_str(
+            r#"schema: phoxal/robot/v0
+robot: { id: replacement, components: {} }
+services:
+  motion:
+    source: { path: motion }
+"#,
+        )?;
+        let mut failed = ensure_required_dependencies(&layout, &CargoOptions::default())?;
+        prepare_robot_api_in_transaction(
+            &layout,
+            &replacement,
+            &CargoOptions::default(),
+            &mut failed,
+        )?;
+        fs::write(directory.path().join("Cargo.lock"), b"# rejected lock\n")?;
+        drop(failed);
+
+        assert_eq!(fs::read(layout.cargo_manifest())?, accepted_manifest);
+        assert_eq!(
+            fs::read(directory.path().join("Cargo.lock"))?,
+            original_lock
+        );
+        assert_eq!(
+            fs::read(directory.path().join(".phoxal/robot-api/Cargo.toml"))?,
+            accepted_api
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_contract_preparation_resolves_transitive_owner_descriptors_through_cargo()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path().join("base");
+        let derived = directory.path().join("derived");
+        for root in [&base, &derived] {
+            fs::create_dir_all(root.join("generated"))?;
+            fs::write(root.join("generated/lib.rs"), "")?;
+        }
+        fs::create_dir_all(base.join("proto/example/base/v1"))?;
+        fs::write(
+            base.join("Cargo.toml"),
+            r#"[package]
+name = "example-base"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "generated/lib.rs"
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/base/v1/base.proto"]
+includes = ["proto"]
+generated = "generated"
+"#,
+        )?;
+        fs::write(
+            base.join("proto/example/base/v1/base.proto"),
+            "syntax = \"proto3\"; package example.base.v1; message Shared { uint64 sequence = 1; }\n",
+        )?;
+
+        fs::create_dir_all(derived.join("proto/example/derived/v1"))?;
+        fs::write(
+            derived.join("Cargo.toml"),
+            r#"[package]
+name = "example-derived"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "generated/lib.rs"
+
+[dependencies]
+base = { package = "example-base", path = "../base" }
+
+[package.metadata.phoxal.contract]
+protos = ["proto/example/derived/v1/derived.proto"]
+includes = ["proto"]
+generated = "generated"
+dependencies = [
+  { dependency = "base", proto_package = ".example.base.v1", rust_path = "::base" },
+]
+"#,
+        )?;
+        fs::write(
+            derived.join("proto/example/derived/v1/derived.proto"),
+            r#"syntax = "proto3";
+package example.derived.v1;
+import "google/protobuf/empty.proto";
+import "phoxal/api.proto";
+import "example/base/v1/base.proto";
+service Derived {
+  rpc Current(google.protobuf.Empty) returns (stream example.base.v1.Shared) {
+    option (phoxal.api.retained_latest) = true;
+  }
+}
+"#,
+        )?;
+        let document: RobotDocument = serde_yaml::from_str(
+            r#"schema: phoxal/robot/v0
+robot: { id: rover, components: {} }
+services:
+  derived:
+    source: { path: derived }
+"#,
+        )?;
+
+        let changes =
+            prepare_local_service_contracts(&document, directory.path(), &CargoOptions::default())?;
+        assert!(changes.iter().any(|change| {
+            matches!(change, PreparationChange::ServiceContractFileWritten { package, .. } if package == "example-base")
+        }));
+        assert!(changes.iter().any(|change| {
+            matches!(change, PreparationChange::ServiceContractFileWritten { package, .. } if package == "example-derived")
+        }));
+        let generated = fs::read_to_string(derived.join("generated/example.derived.v1.rs"))?;
+        assert!(generated.contains("::base::Shared"));
+        let metadata = fs::read_to_string(derived.join("generated/phoxal-contract.json"))?;
+        assert!(metadata.contains("example-base"));
         Ok(())
     }
 }

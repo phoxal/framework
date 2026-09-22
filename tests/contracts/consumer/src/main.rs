@@ -1,33 +1,28 @@
-use prost::Name;
-
-use phoxal::port::{
-    Commands, Event, PortDescriptor, PortKind, Read, Sample, Setpoint, State, Stream,
-};
+use phoxal::contract::{CallMethod, Empty, MethodDescriptor, MethodShape, ObservationMethod};
 use phoxal_contract_owner_fixture::{
     InspectionCommandRequest, InspectionCommandResponse, InspectionEvent, InspectionReadRequest,
     InspectionReadResponse, InspectionSample, InspectionSetpoint, InspectionState,
-    InspectionStream, inspection,
+    InspectionStream, inspection::methods,
 };
 
-const _: State<InspectionState> = inspection::STATUS;
-const _: Sample<InspectionSample> = inspection::SAMPLES;
-const _: Event<InspectionEvent> = inspection::EVENTS;
-const _: Stream<InspectionStream> = inspection::RECORDS;
-const _: Setpoint<InspectionSetpoint> = inspection::TARGET;
-const _: Read<InspectionReadRequest, InspectionReadResponse> = inspection::READ;
-const _: Commands<InspectionCommandRequest, InspectionCommandResponse> = inspection::COMMANDS;
+const _: ObservationMethod<InspectionState> = methods::STATUS;
+const _: ObservationMethod<InspectionSample> = methods::SAMPLES;
+const _: ObservationMethod<InspectionEvent> = methods::EVENTS;
+const _: ObservationMethod<InspectionStream> = methods::RECORDS;
+const _: CallMethod<InspectionSetpoint, Empty> = methods::TARGET;
+const _: CallMethod<InspectionReadRequest, InspectionReadResponse> = methods::READ;
+const _: CallMethod<InspectionCommandRequest, InspectionCommandResponse> = methods::COMMANDS;
 
 fn main() {
-    assert_eq!(inspection::STATUS.name(), "status");
-    assert_eq!(inspection::SAMPLES.name(), "samples");
-    assert_eq!(inspection::EVENTS.name(), "events");
-    assert_eq!(inspection::RECORDS.name(), "records");
-    assert_eq!(inspection::TARGET.name(), "target");
-    assert_eq!(inspection::READ.name(), "read");
-    assert_eq!(inspection::COMMANDS.name(), "commands");
-    assert_eq!(State::<InspectionState>::KIND, PortKind::State);
+    assert_eq!(methods::STATUS.signature().shape, MethodShape::Observation);
+    assert!(methods::STATUS.signature().retained_latest);
+    assert_eq!(methods::TARGET.signature().shape, MethodShape::Call);
     assert_eq!(
-        InspectionState::full_name(),
-        "example.inspection.v1.InspectionState"
+        methods::TARGET
+            .signature()
+            .lease
+            .map(|lease| lease.valid_for_ms()),
+        Some(100)
     );
+    assert_eq!(methods::READ.signature().method, "Read");
 }

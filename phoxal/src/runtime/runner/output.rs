@@ -1,8 +1,9 @@
 //! Accepted output publication, managed work, and immutable read projections.
 use super::exchange::{
     AcceptedActivation, ActivationStateMap, CorrelationMap, ExchangeCompletion,
-    ExchangeCompletionQueue, ExchangeKind, ExpiredCorrelationSet, MAX_EXPIRED_CORRELATIONS,
-    OperationQueue, PendingCorrelation, not_sent_completion,
+    ExchangeCompletionQueue, ExchangeKind, ExpiredCorrelationSet, GeneratedCompletionQueue,
+    GeneratedCorrelation, GeneratedCorrelationMap, MAX_EXPIRED_CORRELATIONS, OperationQueue,
+    PendingCorrelation, not_sent_completion,
 };
 use super::read;
 use super::{
@@ -38,6 +39,7 @@ pub(super) struct OutputReservation {
     records: Vec<PreparedOutput>,
     activations: Vec<StagedActivation>,
     views: Option<read::Snapshot>,
+    generated_correlations: Vec<(u64, GeneratedCorrelation)>,
 }
 
 struct StagedActivation {
@@ -76,6 +78,9 @@ pub(super) struct ExecutionOutputAdapter<R> {
     operation_completions: Option<OperationQueue>,
     exchange_completions: Option<ExchangeCompletionQueue>,
     activation_states: Option<ActivationStateMap>,
+    generated_correlations: Option<GeneratedCorrelationMap>,
+    generated_completions: Option<GeneratedCompletionQueue>,
+    generated_manifest: Option<RuntimeLaunchManifest>,
     next_refresh_steps: BTreeMap<&'static str, u64>,
     last_state_values: BTreeMap<&'static str, ChangeToken>,
     next_command_id: u64,
@@ -108,6 +113,9 @@ impl<R> ExecutionOutputAdapter<R> {
             operation_completions: None,
             exchange_completions: None,
             activation_states: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            generated_correlations: None,
+            generated_completions: None,
+            generated_manifest: None,
             next_refresh_steps: BTreeMap::new(),
             last_state_values: BTreeMap::new(),
             next_command_id: 1,
@@ -133,6 +141,16 @@ impl<R> ExecutionOutputAdapter<R> {
         self.operation_completions = Some(operation_completions);
         self.exchange_completions = Some(exchange_completions);
         self.activation_states = Some(activation_states);
+        self
+    }
+
+    pub(super) fn with_generated_calls(
+        mut self,
+        correlations: GeneratedCorrelationMap,
+        completions: GeneratedCompletionQueue,
+    ) -> Self {
+        self.generated_correlations = Some(correlations);
+        self.generated_completions = Some(completions);
         self
     }
 
@@ -387,6 +405,7 @@ impl<R> ExecutionOutputAdapter<R> {
         self.instance = Some(instance.to_owned());
         self.read_workers = read_workers;
         self.activation_routes = activation_routes;
+        self.generated_manifest = Some(manifest.clone());
         Ok(())
     }
 
@@ -526,6 +545,57 @@ impl<R> ExecutionOutputAdapter<R> {
         Ok(())
     }
 
+    fn expire_generated_correlations(&self) -> crate::Result<()> {
+        let Some(correlations) = &self.generated_correlations else {
+            return Ok(());
+        };
+        let completions = self.generated_completions.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "generated completion queue is not bound".to_owned(),
+            ))
+        })?;
+        let now = Instant::now();
+        let retired = {
+            let mut correlations = correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let current = std::mem::take(&mut *correlations);
+            let mut retained = BTreeMap::new();
+            let mut retired = Vec::new();
+            for (command_id, correlation) in current {
+                if correlation.deadline.is_some_and(|deadline| deadline <= now) {
+                    retired.push(correlation.ticket);
+                } else {
+                    retained.insert(command_id, correlation);
+                }
+            }
+            *correlations = retained;
+            retired
+        };
+        if !retired.is_empty() {
+            let mut completions = completions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if completions.len().saturating_add(retired.len()) > MAX_EXPIRED_CORRELATIONS {
+                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: "generated-calls".to_owned(),
+                    what: "completion count",
+                    actual: completions.len().saturating_add(retired.len()) as u64,
+                    maximum: MAX_EXPIRED_CORRELATIONS as u64,
+                }));
+            }
+            completions.extend(retired.into_iter().map(|ticket| {
+                crate::runtime::input::TransportCallCompletion {
+                    ticket,
+                    result: Err(RequestError::OutcomeUnknown(
+                        "generated call response deadline elapsed after admission".to_owned(),
+                    )),
+                }
+            }));
+        }
+        Ok(())
+    }
+
     fn poll_operations(&mut self) -> crate::Result<()> {
         let fields = self.operations.keys().copied().collect::<Vec<_>>();
         for field in fields {
@@ -586,6 +656,7 @@ impl<R> ExecutionOutputAdapter<R> {
     fn poll_transport(&mut self) -> crate::Result<()> {
         self.ensure_open()?;
         self.expire_correlations()?;
+        self.expire_generated_correlations()?;
         self.poll_operations()
     }
 
@@ -1097,11 +1168,69 @@ where
             })
         })?;
         let resolve_input_port = |field: &str| transport::input_port_signature::<R::Inputs>(field);
-        let transient = outputs.encode_transport(
+        let mut transient = outputs.encode_transport(
             context,
             &resolve_input_port,
             self.instance.as_deref().unwrap_or_default(),
         )?;
+        let mut generated_correlations = Vec::new();
+        for record in &mut transient {
+            let Some((target, signature, ticket, payload_bytes, request)) =
+                record.generated_identity()
+            else {
+                continue;
+            };
+            let manifest = self.generated_manifest.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: "generated operation has no admitted launch manifest".to_owned(),
+                })
+            })?;
+            let route = manifest.generated_call_route(&target, signature)?;
+            if payload_bytes as u64 > route.request_max_bytes {
+                return Err(anyhow::anyhow!(TransportError::BodyTooLarge {
+                    port: signature.name.to_owned(),
+                    bytes: payload_bytes,
+                    maximum: route.request_max_bytes,
+                }));
+            }
+            if request {
+                if !<R::Inputs as InputSet>::FIELDS
+                    .iter()
+                    .any(|field| field.kind == crate::runtime::input::InputKind::Completions)
+                {
+                    return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!(
+                            "generated call {}.{} requires a Completions input field",
+                            signature.service, signature.method
+                        ),
+                    }));
+                }
+                let caller_rank = route.caller_rank.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: "generated ordinary call has no caller rank".to_owned(),
+                    })
+                })?;
+                let command_id = self.next_command_id()?;
+                record.bind_generated_request(
+                    &route.caller,
+                    caller_rank,
+                    command_id,
+                    route.request_max_bytes,
+                )?;
+                generated_correlations.push((
+                    command_id,
+                    GeneratedCorrelation {
+                        ticket,
+                        expected_source: target,
+                        endpoint: signature.name.to_owned(),
+                        caller: route.caller,
+                        caller_rank,
+                        max_response_bytes: route.response_max_bytes,
+                        deadline: Instant::now().checked_add(Duration::from_secs(5)),
+                    },
+                ));
+            }
+        }
         let mut records = std::mem::take(&mut self.projections);
         records.extend(transient);
         let mut activations = std::mem::take(&mut self.staged);
@@ -1115,6 +1244,7 @@ where
             records,
             activations,
             views: self.staged_views.take(),
+            generated_correlations,
         })
     }
 }
@@ -1281,17 +1411,53 @@ where
     ) -> crate::Result<()> {
         self.ensure_open()?;
         let (_invocation, _context, _outputs, reservation) = accepted.into_parts();
-        self.commit_activation_keys(reservation.keys)?;
-        // Correlations must exist before a fast peer can return its reply.
-        self.dispatch_activations(reservation.activations, self.delivery_context.is_some())?;
-        self.publish_records(reservation.records, false)?;
-        if let Some(views) = reservation.views {
-            self.read_views
+        let mut installed_generated_correlations = Vec::new();
+        if !reservation.generated_correlations.is_empty() {
+            let correlations = self.generated_correlations.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: "generated calls have no correlation table".to_owned(),
+                })
+            })?;
+            let mut correlations = correlations
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .commit(views);
+                .unwrap_or_else(|error| error.into_inner());
+            for (ticket, correlation) in reservation.generated_correlations {
+                if correlations.insert(ticket, correlation).is_some() {
+                    for installed in &installed_generated_correlations {
+                        correlations.remove(installed);
+                    }
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!("generated call ticket {ticket} was reused")
+                    )));
+                }
+                installed_generated_correlations.push(ticket);
+            }
         }
-        Ok(())
+        let publication = (|| {
+            self.commit_activation_keys(reservation.keys)?;
+            // Correlations must exist before a fast peer can return its reply.
+            self.dispatch_activations(reservation.activations, self.delivery_context.is_some())?;
+            self.publish_records(reservation.records, false)?;
+            if let Some(views) = reservation.views {
+                self.read_views
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .commit(views);
+            }
+            Ok(())
+        })();
+        if publication.is_err()
+            && !installed_generated_correlations.is_empty()
+            && let Some(correlations) = &self.generated_correlations
+        {
+            let mut correlations = correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for ticket in installed_generated_correlations {
+                correlations.remove(&ticket);
+            }
+        }
+        publication
     }
 
     fn take_product_receipts(&mut self) -> Vec<RuntimeProductReceipt> {
@@ -1364,6 +1530,18 @@ where
                 Err(poisoned) => poisoned.into_inner().clear(),
             }
         }
+        if let Some(correlations) = &self.generated_correlations {
+            correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        if let Some(queue) = &self.generated_completions {
+            queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         self.bus = None;
         self.instance = None;
         first_error.map_or(Ok(()), Err)
@@ -1389,7 +1567,6 @@ where
         }
         self.next_refresh_steps.clear();
         self.last_state_values.clear();
-        self.next_command_id = 1;
         self.last_product_receipts.clear();
         self.last_actuations.clear();
         for (field, operation) in &mut self.operations {
@@ -1423,6 +1600,18 @@ where
                 Ok(mut queue) => queue.clear(),
                 Err(poisoned) => poisoned.into_inner().clear(),
             }
+        }
+        if let Some(correlations) = &self.generated_correlations {
+            correlations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        if let Some(queue) = &self.generated_completions {
+            queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
         }
         if self.bus.is_none() || self.instance.is_none() {
             return Err(anyhow::anyhow!(TransportError::Transport(

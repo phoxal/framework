@@ -1,23 +1,13 @@
-error: #[phoxal::scenario] requires `impl <trait> for <type>`, not an inherent impl
-  --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:13:1
-   |
-13 | / impl Inherent {
-14 | |     fn plan(&self) -> phoxal::Result<ScenarioPlan> {
-15 | |         Ok(ScenarioPlan::new("x", Duration::from_secs(1)))
-...  |
-20 | | }
-   | |_^
-
-warning: unused imports: `ScenarioPlan`, `ScenarioRun`, and `Scenario`
- --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:6:24
+error: the scenario argument must be mutable: `&mut Simulation`
+ --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:8:28
   |
-6 | use phoxal::scenario::{Scenario, ScenarioPlan, ScenarioRun};
-  |                        ^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^
+8 | fn immutable_fixture(_sim: &Simulation) -> phoxal::Result<()> {
+  |                            ^^^^^^^^^^^
+
+warning: unused import: `phoxal::scenario::Simulation`
+ --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:5:5
+  |
+5 | use phoxal::scenario::Simulation;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused import: `std::time::Duration`
- --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:7:5
-  |
-7 | use std::time::Duration;
-  |     ^^^^^^^^^^^^^^^^^^^

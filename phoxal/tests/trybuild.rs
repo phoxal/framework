@@ -24,9 +24,7 @@ fn trybuild_host_ui() {
 }
 
 // Scenario authoring surface: positive and negative compile coverage for the
-// `#[phoxal::scenario]` attribute. The attribute verifies the impl block's
-// trait is `Scenario`, rejects generic impls and anonymous types, and rejects
-// inherent impls.
+// function-to-`#[test]` attribute and its exact mutable fixture signature.
 #[cfg(feature = "scenario")]
 #[test]
 fn trybuild_scenario_ui() {

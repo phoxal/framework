@@ -5,17 +5,17 @@
 //! parse Protobuf source into a second schema model.
 //!
 //! The inert record family (`ArtifactSummary`, `DescriptorSummary`,
-//! `RuntimeRecord`, `InputRecord`, `OutputRecord`, `PortKind`, `InputKind`,
-//! `OutputKind`, `PortSignature`) is owned by `phoxal::artifact` and
+//! `RuntimeRecord`, `InputRecord`, `OutputRecord`, `MethodShape`, `InputRole`,
+//! `OutputRole`, `MethodSignature`) is owned by `phoxal::artifact` and
 //! re-exported here so internal call sites continue to compile unchanged.
 
-#[cfg(test)]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use object::{Object, ObjectSection};
+use prost::Message;
 use prost_reflect::DescriptorPool;
 use sha2::{Digest, Sha256};
 
@@ -26,11 +26,11 @@ use crate::project::document::RobotDocument;
 // truth; this module re-exports the inert record family so
 // existing internal references continue to use `crate::project::artifact::*`.
 pub use phoxal::artifact::{
-    ArtifactSummary, DescriptorSummary, InputKind, OutputKind, OutputRecord, PortKind,
+    ArtifactSummary, DescriptorSummary, InputRole, MethodShape, OutputRecord, OutputRole,
     RUNTIME_RECORD, RuntimeRecord,
 };
 #[cfg(test)]
-pub use phoxal::artifact::{InputRecord, PortSignature};
+pub use phoxal::artifact::{InputRecord, MethodSignature};
 
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
@@ -363,10 +363,14 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
             )));
         }
         let requires_request = matches!(
-            input.kind,
-            InputKind::Read | InputKind::Request | InputKind::Commands
+            input.role,
+            InputRole::CallResult | InputRole::CallTarget | InputRole::CallIngress
+        ) || (input.role == InputRole::LeasedValue
+            && input.signature.is_some());
+        let requires_response = !matches!(
+            input.role,
+            InputRole::OperationResult | InputRole::CallCompletions
         );
-        let requires_response = input.kind != InputKind::Operation;
         if input.request_fqn.is_some() != requires_request
             || input.response_fqn.is_some() != requires_response
             || input
@@ -387,16 +391,22 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
             )));
         }
         if let Some(signature) = &input.signature {
-            if input.port.as_deref() != Some(signature.name.as_str()) {
+            if input.port.as_deref() != Some(signature.endpoint.as_str()) {
                 return Err(Error::InvalidContract(format!(
                     "input '{}' port name does not match its signature",
                     input.name
                 )));
             }
-            if input.kind == InputKind::Commands && signature.kind != PortKind::Commands {
+            if input.role == InputRole::CallIngress && signature.shape != MethodShape::Call {
                 return Err(Error::InvalidContract(format!(
-                    "Commands input '{}' is bound to {:?}",
-                    input.name, signature.kind
+                    "call ingress '{}' is bound to {:?}",
+                    input.name, signature.shape
+                )));
+            }
+            if input.role == InputRole::LeasedValue && signature.lease_valid_for_ms.is_none() {
+                return Err(Error::InvalidContract(format!(
+                    "leased input '{}' is bound to a method without a lease",
+                    input.name
                 )));
             }
         }
@@ -421,34 +431,23 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
                 output.name
             )));
         }
-        if output.kind == OutputKind::Read
-            && output.max_request_bytes.is_none_or(|bound| bound == 0)
-        {
+        if output.project.is_some() && output.max_request_bytes.is_none_or(|bound| bound == 0) {
             return Err(Error::InvalidContract(format!(
                 "read output '{}' has no positive request byte bound",
                 output.name
             )));
         }
         if let Some(signature) = &output.signature {
-            if output.port.as_deref() != Some(signature.name.as_str()) {
+            if output.port.as_deref() != Some(signature.endpoint.as_str()) {
                 return Err(Error::InvalidContract(format!(
                     "output '{}' port name does not match its signature",
                     output.name
                 )));
             }
-            let expected = match output.kind {
-                OutputKind::State => Some(PortKind::State),
-                OutputKind::Sample => Some(PortKind::Sample),
-                OutputKind::Event => Some(PortKind::Event),
-                OutputKind::Stream => Some(PortKind::Stream),
-                OutputKind::Setpoint => Some(PortKind::Setpoint),
-                OutputKind::Read => Some(PortKind::Read),
-                OutputKind::Reply | OutputKind::Activate | OutputKind::Operation => None,
-            };
-            if expected != Some(signature.kind) {
+            if output.role != OutputRole::Method {
                 return Err(Error::InvalidContract(format!(
-                    "output '{}' role {:?} does not match {:?}",
-                    output.name, output.kind, signature.kind
+                    "output '{}' has generated method metadata on private role {:?}",
+                    output.name, output.role
                 )));
             }
         }
@@ -465,12 +464,90 @@ pub use connections::validate_connected_endpoints;
 /// filtering can remove service evidence.
 pub use connections::validate_connected_endpoints_with_virtual_producers;
 
+/// Rejects conflicting imported definitions across the executable contract
+/// closures admitted into one bundle.
+///
+/// Source locations and comments are excluded from the definition identity.
+/// File contents and qualified symbols must otherwise have one owner and one
+/// definition across consumer and provider Cargo roots.
+pub fn validate_descriptor_closure_consistency<'a>(
+    contracts: impl IntoIterator<Item = (&'a str, &'a ArtifactContract)>,
+) -> Result<(), Error> {
+    let mut files = BTreeMap::<String, (String, Vec<u8>)>::new();
+    let mut symbols = BTreeMap::<String, (String, String)>::new();
+    for (instance, contract) in contracts {
+        for descriptor in &contract.descriptors {
+            let pool = DescriptorPool::decode(descriptor.raw.as_slice())?;
+            for file in pool.files() {
+                let name = file.name().to_owned();
+                let mut definition = file.file_descriptor_proto().clone();
+                definition.source_code_info = None;
+                let encoded = definition.encode_to_vec();
+                if let Some((owner, accepted)) = files.get(&name) {
+                    if accepted != &encoded {
+                        return Err(Error::InvalidContract(format!(
+                            "descriptor file `{name}` differs between `{owner}` and `{instance}`"
+                        )));
+                    }
+                } else {
+                    files.insert(name.clone(), (instance.to_owned(), encoded));
+                }
+                let identities = pool
+                    .all_messages()
+                    .map(|item| {
+                        (
+                            item.parent_file().name().to_owned(),
+                            item.full_name().to_owned(),
+                        )
+                    })
+                    .chain(pool.all_enums().map(|item| {
+                        (
+                            item.parent_file().name().to_owned(),
+                            item.full_name().to_owned(),
+                        )
+                    }))
+                    .chain(pool.services().map(|item| {
+                        (
+                            item.parent_file().name().to_owned(),
+                            item.full_name().to_owned(),
+                        )
+                    }))
+                    .chain(pool.all_extensions().map(|item| {
+                        (
+                            item.parent_file().name().to_owned(),
+                            item.full_name().to_owned(),
+                        )
+                    }))
+                    .filter(|(owner_file, _)| owner_file == &name)
+                    .map(|(_, identity)| identity)
+                    .collect::<Vec<_>>();
+                for identity in identities {
+                    if let Some((owner, owner_file)) = symbols.get(&identity) {
+                        if owner_file != &name {
+                            return Err(Error::InvalidContract(format!(
+                                "qualified Protobuf definition `{identity}` is owned by both `{owner_file}` from `{owner}` and `{name}` from `{instance}`"
+                            )));
+                        }
+                    } else {
+                        symbols.insert(identity, (instance.to_owned(), name.clone()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 mod connections;
 
 #[cfg(test)]
 mod tests {
     use object::write::Object;
     use object::{Architecture, BinaryFormat, Endianness, SectionKind};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        field_descriptor_proto,
+    };
 
     use super::*;
 
@@ -487,6 +564,37 @@ mod tests {
             object.add_section(Vec::new(), section_name.to_vec(), SectionKind::ReadOnlyData);
         object.append_section_data(section, &frame(json), 1);
         object.write().expect("synthetic object")
+    }
+
+    fn descriptor(file: &str, field_type: field_descriptor_proto::Type) -> DescriptorInfo {
+        let raw = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some(file.to_owned()),
+                package: Some("example.shared.v1".to_owned()),
+                syntax: Some("proto3".to_owned()),
+                message_type: vec![DescriptorProto {
+                    name: Some("Shared".to_owned()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("value".to_owned()),
+                        number: Some(1),
+                        label: Some(prost_types::field_descriptor_proto::Label::Optional.into()),
+                        r#type: Some(field_type.into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+        .encode_to_vec();
+        let mut hasher = Sha256::new();
+        hasher.update(&raw);
+        DescriptorInfo {
+            sha256: format!("{:x}", hasher.finalize()),
+            bytes: raw.len() as u64,
+            files: vec![file.to_owned()],
+            raw,
+        }
     }
 
     const EMPTY_RUNTIME: &str = r#"{
@@ -536,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_kind_only_incompatibility_before_payload_filtering() {
+    fn rejects_call_observation_incompatibility_before_payload_filtering() {
         let document: RobotDocument = serde_yaml::from_str(
             r#"
 schema: phoxal/robot/v0
@@ -551,13 +659,15 @@ connections:
 "#,
         )
         .expect("document parses");
-        let signature = PortSignature {
-            name: "output".to_owned(),
+        let signature = MethodSignature {
+            endpoint: "output".to_owned(),
             service: "example.Service".to_owned(),
             method: "Output".to_owned(),
-            kind: PortKind::Event,
+            shape: MethodShape::Observation,
             request: "google.protobuf.Empty".to_owned(),
             response: "example.Payload".to_owned(),
+            retained_latest: false,
+            lease_valid_for_ms: None,
         };
         let producer = ArtifactContract {
             runtime: RuntimeRecord::V0 {
@@ -570,7 +680,7 @@ connections:
                 transient_outputs: Vec::new(),
                 service_outputs: vec![OutputRecord {
                     name: "output".to_owned(),
-                    kind: OutputKind::Event,
+                    role: OutputRole::Method,
                     port: Some("output".to_owned()),
                     signature: Some(signature),
                     input: None,
@@ -597,14 +707,14 @@ connections:
                 config_schema: serde_json::json!({"type":"object"}),
                 inputs: vec![InputRecord {
                     name: "input".to_owned(),
-                    kind: InputKind::Latest,
+                    role: InputRole::CallResult,
                     max_age_ms: None,
                     max_items: None,
                     max_bytes: None,
                     port: None,
                     signature: None,
-                    request_fqn: None,
-                    response_fqn: None,
+                    request_fqn: Some("google.protobuf.Empty".to_owned()),
+                    response_fqn: Some("example.Payload".to_owned()),
                 }],
                 transient_outputs: Vec::new(),
                 service_outputs: Vec::new(),
@@ -616,7 +726,47 @@ connections:
             ("producer".to_owned(), producer),
         ]);
         let error = validate_connected_endpoints(&document, &contracts)
-            .expect_err("event cannot satisfy a latest state input");
-        assert!(error.to_string().contains("requires Some(State)"));
+            .expect_err("an observation cannot satisfy a call input");
+        assert!(error.to_string().contains("requires Some(Call)"));
+    }
+
+    #[test]
+    fn rejects_incompatible_imported_definitions_across_bundle_artifacts() {
+        let contract = |descriptor| ArtifactContract {
+            runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
+            descriptors: vec![descriptor],
+        };
+        let consumer = contract(descriptor(
+            "example/shared/v1/shared.proto",
+            field_descriptor_proto::Type::Uint64,
+        ));
+        let provider = contract(descriptor(
+            "example/shared/v1/shared.proto",
+            field_descriptor_proto::Type::String,
+        ));
+        let error = validate_descriptor_closure_consistency([
+            ("consumer", &consumer),
+            ("provider", &provider),
+        ])
+        .expect_err("different imported definitions must be rejected");
+        assert!(error.to_string().contains("differs between"));
+    }
+
+    #[test]
+    fn accepts_identical_imported_definitions_across_bundle_artifacts() {
+        let contract = |descriptor| ArtifactContract {
+            runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
+            descriptors: vec![descriptor],
+        };
+        let consumer = contract(descriptor(
+            "example/shared/v1/shared.proto",
+            field_descriptor_proto::Type::Uint64,
+        ));
+        let provider = contract(descriptor(
+            "example/shared/v1/shared.proto",
+            field_descriptor_proto::Type::Uint64,
+        ));
+        validate_descriptor_closure_consistency([("consumer", &consumer), ("provider", &provider)])
+            .expect("identical imported definitions are admitted");
     }
 }

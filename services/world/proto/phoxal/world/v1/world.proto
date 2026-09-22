@@ -4,7 +4,7 @@ package phoxal.world.v1;
 
 import "google/protobuf/empty.proto";
 import "phoxal/kinematics/v1/kinematics.proto";
-import "phoxal/port.proto";
+import "phoxal/api.proto";
 
 message WorldBelief {
   string frame_id = 1;
@@ -93,22 +93,19 @@ message WorldStatus {
 
 service World {
   rpc Pose(google.protobuf.Empty) returns (stream phoxal.kinematics.v1.OdometryState) {
-    option (phoxal.port.kind) = SAMPLE;
   }
 
   rpc Belief(google.protobuf.Empty) returns (stream WorldBelief) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 
   rpc Revision(google.protobuf.Empty) returns (stream WorldRevision) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 
-  rpc Window(WindowRequest) returns (WindowResponse) {
-    option (phoxal.port.kind) = READ;
-  }
+  rpc Window(WindowRequest) returns (WindowResponse);
 
   rpc Status(google.protobuf.Empty) returns (stream WorldStatus) {
-    option (phoxal.port.kind) = STATE;
+    option (phoxal.api.retained_latest) = true;
   }
 }

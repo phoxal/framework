@@ -28,8 +28,8 @@ use zenoh::query::{ConsolidationMode, QueryTarget};
 use crate::communication::bootstrap::SessionOffers;
 use crate::communication::route::{PublicOperation, PublicRoute};
 use crate::communication::session::{
-    BindPortRequest, BindPortResponse, CloseSessionRequest, CloseSessionResponse,
-    ListExecutionsRequest, ListExecutionsResponse, ListPortsRequest, ListPortsResponse,
+    BindMethodRequest, BindMethodResponse, CloseSessionRequest, CloseSessionResponse,
+    ListExecutionsRequest, ListExecutionsResponse, ListMethodsRequest, ListMethodsResponse,
     OpenSessionRequest, OpenSessionResponse, OperationOutcome, OperationRequest, OperationResponse,
     RecordKind, RenewSessionRequest, RenewSessionResponse, SubscriptionAdmission,
     SubscriptionRecord, SubscriptionRequest, SupervisorInfoRequest, SupervisorInfoResponse,
@@ -1288,52 +1288,46 @@ impl PublicSessionConnection {
         .await
     }
 
-    /// Read one bounded page of generated public port metadata.
-    pub async fn list_ports(
+    /// Read one bounded page of generated public method metadata.
+    pub async fn list_methods(
         &self,
-        request: ListPortsRequest,
-    ) -> Result<ListPortsResponse, PublicTransportError> {
+        request: ListMethodsRequest,
+    ) -> Result<ListMethodsResponse, PublicTransportError> {
         self.ensure_lease()?;
-        let route = self.route(PublicOperation::ListPorts)?;
-        query_proto::<ListPortsRequest, ListPortsResponse>(
+        let route = self.route(PublicOperation::ListMethods)?;
+        query_proto::<ListMethodsRequest, ListMethodsResponse>(
             &self.session,
             &route,
             &request,
-            "list-ports",
+            "list-methods",
             &self.limits,
         )
         .await
     }
 
-    /// Bind one exact generated public port descriptor.
-    pub async fn bind(
+    /// Bind one exact generated public method descriptor.
+    pub async fn bind_method(
         &self,
-        request: BindPortRequest,
-    ) -> Result<BindPortResponse, PublicTransportError> {
+        request: BindMethodRequest,
+    ) -> Result<BindMethodResponse, PublicTransportError> {
         self.ensure_lease()?;
-        let route = self.route(PublicOperation::Bind)?;
-        query_proto::<BindPortRequest, BindPortResponse>(
+        let route = self.route(PublicOperation::BindMethod)?;
+        query_proto::<BindMethodRequest, BindMethodResponse>(
             &self.session,
             &route,
             &request,
-            "bind",
+            "bind-method",
             &self.limits,
         )
         .await
     }
 
-    /// Execute one admitted public Read or Commands operation.
-    pub async fn operation(
+    /// Execute one admitted public unary call.
+    pub async fn call(
         &self,
-        operation: PublicOperation,
         request: OperationRequest,
     ) -> Result<OperationResponse, PublicTransportError> {
-        if !matches!(operation, PublicOperation::Read | PublicOperation::Command) {
-            return Err(PublicTransportError::Malformed {
-                operation: operation.segment().to_owned(),
-                detail: "operation must be read or command".to_owned(),
-            });
-        }
+        let operation = PublicOperation::Call;
         self.ensure_lease()?;
         let route = self.route(operation)?;
         let response = query_proto::<OperationRequest, OperationResponse>(
@@ -1387,32 +1381,22 @@ impl PublicSessionConnection {
     }
 
     /// Establish one admitted public observation.
-    pub async fn subscribe(
+    pub async fn observe(
         &self,
-        operation: PublicOperation,
         request: SubscriptionRequest,
     ) -> Result<PublicSubscription, PublicTransportError> {
-        self.subscribe_with_cancel(operation, request, CancellationToken::new())
+        self.observe_with_cancel(request, CancellationToken::new())
             .await
     }
 
     /// Establish one observation whose task is additionally cancelled when
     /// its owning logical supervisor session is replaced or lost.
-    pub async fn subscribe_with_cancel(
+    pub async fn observe_with_cancel(
         &self,
-        operation: PublicOperation,
         request: SubscriptionRequest,
         cancellation: CancellationToken,
     ) -> Result<PublicSubscription, PublicTransportError> {
-        if !matches!(
-            operation,
-            PublicOperation::Watch | PublicOperation::Subscribe
-        ) {
-            return Err(PublicTransportError::Malformed {
-                operation: operation.segment().to_owned(),
-                detail: "operation must be watch or subscribe".to_owned(),
-            });
-        }
+        let operation = PublicOperation::Observe;
         self.ensure_lease()?;
         if request.session_id != self.session_id {
             return Err(PublicTransportError::Malformed {
@@ -1490,14 +1474,13 @@ impl PublicSessionConnection {
                 return Err(error);
             }
         };
-        let initial =
-            match validate_subscription_admission(&admission, &request, &self.limits, operation) {
-                Ok(initial) => initial,
-                Err(error) => {
-                    task.abort();
-                    return Err(error);
-                }
-            };
+        let initial = match validate_subscription_admission(&admission, &request, &self.limits) {
+            Ok(initial) => initial,
+            Err(error) => {
+                task.abort();
+                return Err(error);
+            }
+        };
         Ok(PublicSubscription {
             initial,
             records: receiver,
@@ -1818,8 +1801,8 @@ fn operation_keys_are_explicit_and_lane_separated() {
         "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/inspection/status"
     );
     assert_eq!(
-        operation_key_expression(&target, PublicOperation::Command),
-        "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/mutation/command"
+        operation_key_expression(&target, PublicOperation::Call),
+        "phoxal/workshop/supervisors/rover-01/session/v1/clients/*/mutation/call"
     );
     assert_eq!(
         operation_key_expression(&target, PublicOperation::PrepareBoundary),
@@ -1827,7 +1810,7 @@ fn operation_keys_are_explicit_and_lane_separated() {
     );
 }
 #[test]
-fn subscription_admission_keeps_non_state_initial_absence_out_of_data() {
+fn observation_admission_accepts_absent_or_retained_initial_cursor() {
     let request = SubscriptionRequest {
         session_id: b"session".to_vec(),
         binding_id: b"binding".to_vec(),
@@ -1846,17 +1829,12 @@ fn subscription_admission_keeps_non_state_initial_absence_out_of_data() {
         initial: None,
     };
     assert_eq!(
-        validate_subscription_admission(
-            &admission,
-            &request,
-            &PublicTransportLimits::default(),
-            PublicOperation::Subscribe,
-        )
-        .expect("Subscribe admission"),
+        validate_subscription_admission(&admission, &request, &PublicTransportLimits::default(),)
+            .expect("Subscribe admission"),
         None
     );
 
-    let invalid = SubscriptionAdmission {
+    let retained = SubscriptionAdmission {
         initial: Some(SubscriptionRecord {
             session_id: request.session_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1873,17 +1851,17 @@ fn subscription_admission_keeps_non_state_initial_absence_out_of_data() {
     };
     assert!(matches!(
         validate_subscription_admission(
-            &invalid,
+            &retained,
             &request,
             &PublicTransportLimits::default(),
-            PublicOperation::Subscribe,
         ),
-        Err(PublicTransportError::Malformed { .. })
+        Ok(Some(SubscriptionRecord { kind, .. }))
+            if kind == RecordKind::InitialAbsent as i32
     ));
 }
 
 #[test]
-fn state_watch_admission_accepts_only_a_value_or_initial_absence() {
+fn retained_observation_admission_accepts_initial_absence() {
     let request = SubscriptionRequest {
         session_id: b"session".to_vec(),
         binding_id: b"binding".to_vec(),
@@ -1917,7 +1895,6 @@ fn state_watch_admission_accepts_only_a_value_or_initial_absence() {
             &admission,
             &request,
             &PublicTransportLimits::default(),
-            PublicOperation::Watch,
         ),
         Ok(Some(SubscriptionRecord {
             kind,

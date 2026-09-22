@@ -1,6 +1,7 @@
 use crate::config::{WorldConfig, validate_config};
 use crate::inputs::WorldInputs;
 use crate::outputs::WorldOutputs;
+use crate::validation;
 #[cfg(test)]
 use phoxal::runtime::input::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
@@ -8,15 +9,14 @@ use phoxal::runtime::{InitContext, Runtime, StepContext};
 use phoxal_service_kinematics::OdometryState;
 use phoxal_service_world::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
-    WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus, ports,
-    window_response,
+    WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
+    window_response, world,
 };
 use std::collections::VecDeque;
 
 struct WorldSnapshot {
     window: GridWindow,
 }
-
 /// Private world state retained by the serialized Runtime owner.
 pub struct WorldState {
     config: WorldConfig,
@@ -130,53 +130,63 @@ impl Runtime for World {
         mut state: Self::State,
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        let Some(pose) = inputs
+        inputs
+            .windows
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let pose = inputs
             .pose
             .is_fresh_at(ctx.now(), Some(state.config.max_age_ms))
             .then(|| inputs.pose.value())
             .flatten()
             .filter(|pose| {
-                pose.capture_is_fresh_at(
+                validation::capture_is_fresh_at(
+                    pose.oldest_capture_time_nanos,
                     ctx.now().as_nanos(),
                     state.config.max_age_ms.saturating_mul(1_000_000),
                 )
-            })
-        else {
+            });
+        if pose.is_none() {
             state.available = false;
             state.unavailable_reasons = vec![UnavailableReason::StalePose as i32];
             state.belief.available = false;
-            return Ok((state, ()));
-        };
-        if pose.validate().is_err() {
+        } else if pose.is_some_and(|pose| validation::odometry(pose).is_err()) {
             state.available = false;
             state.unavailable_reasons = vec![UnavailableReason::InvalidPose as i32];
             state.belief.available = false;
-            return Ok((state, ()));
-        }
-        if !pose.available {
+        } else if pose.is_some_and(|pose| !pose.available) {
             state.available = false;
             state.unavailable_reasons = vec![UnavailableReason::Pose as i32];
             state.belief.available = false;
-            return Ok((state, ()));
+        } else if let Some(pose) = pose {
+            state.revision = state.revision.saturating_add(1);
+            state.belief = WorldBelief {
+                frame_id: state.config.frame_id.clone(),
+                x_m: pose.x_m,
+                y_m: pose.y_m,
+                yaw_rad: pose.yaw_rad,
+                confidence: 1.0,
+                revision: state.revision,
+                available: true,
+                oldest_capture_time_nanos: pose.oldest_capture_time_nanos,
+            };
+            state.available = true;
+            state.unavailable_reasons.clear();
+            let requested = state.covered_bounds();
+            let window = state.window(requested, state.revision);
+            state.retain_snapshot(WorldSnapshot { window });
         }
 
-        state.revision = state.revision.saturating_add(1);
-        state.belief = WorldBelief {
-            frame_id: state.config.frame_id.clone(),
-            x_m: pose.x_m,
-            y_m: pose.y_m,
-            yaw_rad: pose.yaw_rad,
-            confidence: 1.0,
-            revision: state.revision,
-            available: true,
-            oldest_capture_time_nanos: pose.oldest_capture_time_nanos,
-        };
-        state.available = true;
-        state.unavailable_reasons.clear();
-        let requested = state.covered_bounds();
-        let window = state.window(requested, state.revision);
-        state.retain_snapshot(WorldSnapshot { window });
-        Ok((state, ()))
+        validation::belief(&state.belief).map_err(|error| anyhow::anyhow!(error))?;
+        validation::revision(&state.revision_marker()).map_err(|error| anyhow::anyhow!(error))?;
+        validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
+        let mut outputs = WorldOutputs::default();
+        for command in inputs.windows.items() {
+            let response = window_for(&state, command.request());
+            validation::window_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+            outputs.window_replies.push(command.reply(response));
+        }
+        Ok((state, outputs))
     }
 }
 
@@ -187,98 +197,58 @@ impl Runtime for World {
 )]
 impl World {
     /// Projects the current estimated spatial belief.
-    #[phoxal::runtime::outputs::state(port = ports::BELIEF, max_bytes = 512, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = world::methods::BELIEF.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn belief(&self, state: &WorldState) -> WorldBelief {
         state.belief.clone()
     }
 
     /// Projects the coherent current revision marker.
-    #[phoxal::runtime::outputs::state(port = ports::REVISION, max_bytes = 128, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = world::methods::REVISION.__state_port(), max_bytes = 128, bootstrap, on_change)]
     fn revision(&self, state: &WorldState) -> WorldRevision {
         state.revision_marker()
     }
 
     /// Projects availability separately from the belief payload.
-    #[phoxal::runtime::outputs::state(port = ports::STATUS, max_bytes = 512, bootstrap, on_change)]
+    #[phoxal::runtime::outputs::state(port = world::methods::STATUS.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn status(&self, state: &WorldState) -> WorldStatus {
         state.status()
     }
-
-    fn read_view(&self, state: &WorldState) -> WorldReadView {
-        WorldReadView {
-            available: state.available,
-            current_revision: state.revision,
-            current: state
-                .snapshots
-                .back()
-                .map(|snapshot| snapshot.window.clone()),
-            history: state
-                .snapshots
-                .iter()
-                .map(|snapshot| snapshot.window.clone())
-                .collect(),
-        }
-    }
-
-    /// Reads an immutable window at the current or explicitly retained revision.
-    #[phoxal::runtime::outputs::read(
-        port = ports::WINDOW,
-        project = Self::read_view,
-        max_request_bytes = 512,
-        max_response_bytes = 8_192
-    )]
-    fn window(&self, view: &WorldReadView, request: &WindowRequest) -> WindowResponse {
-        let Some(requested) = request.requested.as_ref() else {
-            return unavailable(
-                WindowUnavailableReason::WorldUnavailable,
-                view.current_revision,
-            );
-        };
-        if requested.validate().is_err() || !view.available {
-            return unavailable(
-                WindowUnavailableReason::WorldUnavailable,
-                view.current_revision,
-            );
-        }
-        let window = if request.revision == 0 {
-            view.current.as_ref()
-        } else {
-            view.history
-                .iter()
-                .find(|window| window.revision == request.revision)
-        };
-        let Some(window) = window else {
-            return unavailable(
-                WindowUnavailableReason::RevisionNotRetained,
-                view.current_revision,
-            );
-        };
-        let Some(covered) = window.covered.as_ref() else {
-            return unavailable(
-                WindowUnavailableReason::WorldUnavailable,
-                view.current_revision,
-            );
-        };
-        if requested.min_x_m < covered.min_x_m
-            || requested.min_y_m < covered.min_y_m
-            || requested.max_x_m > covered.max_x_m
-            || requested.max_y_m > covered.max_y_m
-        {
-            return unavailable(WindowUnavailableReason::OutOfBounds, window.revision);
-        }
-        let mut selected = window.clone();
-        selected.requested = Some(*requested);
-        WindowResponse {
-            result: Some(window_response::Result::Window(selected)),
-        }
-    }
 }
 
-struct WorldReadView {
-    available: bool,
-    current_revision: u64,
-    current: Option<GridWindow>,
-    history: Vec<GridWindow>,
+fn window_for(state: &WorldState, request: &WindowRequest) -> WindowResponse {
+    let Some(requested) = request.requested.as_ref() else {
+        return unavailable(WindowUnavailableReason::WorldUnavailable, state.revision);
+    };
+    if validation::window_request(request).is_err() || !state.available {
+        return unavailable(WindowUnavailableReason::WorldUnavailable, state.revision);
+    }
+    let window = if request.revision == 0 {
+        state.snapshots.back().map(|snapshot| &snapshot.window)
+    } else {
+        state
+            .snapshots
+            .iter()
+            .map(|snapshot| &snapshot.window)
+            .find(|window| window.revision == request.revision)
+    };
+    let Some(window) = window else {
+        return unavailable(WindowUnavailableReason::RevisionNotRetained, state.revision);
+    };
+    let Some(covered) = window.covered.as_ref() else {
+        return unavailable(WindowUnavailableReason::WorldUnavailable, state.revision);
+    };
+    if requested.min_x_m < covered.min_x_m
+        || requested.min_y_m < covered.min_y_m
+        || requested.max_x_m > covered.max_x_m
+        || requested.max_y_m > covered.max_y_m
+    {
+        return unavailable(WindowUnavailableReason::OutOfBounds, window.revision);
+    }
+    let mut selected = window.clone();
+    selected.requested = Some(*requested);
+    WindowResponse {
+        result: Some(window_response::Result::Window(selected)),
+    }
 }
 
 fn unavailable(reason: WindowUnavailableReason, revision: u64) -> WindowResponse {
@@ -335,12 +305,14 @@ mod tests {
             .step(
                 &context(0, 20, None),
                 state,
-                &WorldInputs { pose: pose(20, 7) },
+                &WorldInputs {
+                    pose: pose(20, 7),
+                    windows: Default::default(),
+                },
             )
             .expect("fresh pose");
         assert!(state.available);
         assert_eq!(state.revision, 1);
-        let view = World.read_view(&state);
         let request = WindowRequest {
             requested: Some(Bounds {
                 min_x_m: 0.2,
@@ -350,8 +322,8 @@ mod tests {
             }),
             revision: 1,
         };
-        let response = World.window(&view, &request);
-        response.validate().expect("retained window response");
+        let response = window_for(&state, &request);
+        validation::window_response(&response).expect("retained window response");
         let Some(window_response::Result::Window(window)) = response.result else {
             panic!("available window")
         };
@@ -382,6 +354,7 @@ mod tests {
                                 None,
                             ),
                         )),
+                        windows: Default::default(),
                     },
                 )
                 .unwrap();
@@ -405,6 +378,7 @@ mod tests {
                             None,
                         ),
                     )),
+                    windows: Default::default(),
                 },
             )
             .unwrap();
@@ -423,7 +397,10 @@ mod tests {
             .step(
                 &context(0, 200, None),
                 state,
-                &WorldInputs { pose: pose(20, 7) },
+                &WorldInputs {
+                    pose: pose(20, 7),
+                    windows: Default::default(),
+                },
             )
             .expect("stale pose is a valid transition");
         assert!(!state.available);

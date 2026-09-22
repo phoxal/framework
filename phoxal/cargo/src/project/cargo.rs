@@ -370,12 +370,23 @@ pub(crate) fn run(
     operation: CargoOperation,
     options: &CargoOptions,
 ) -> Result<Vec<CargoOutput>, Error> {
+    run_with_env(prepared, operation, options, &[])
+}
+
+/// Run Cargo with immutable environment entries inherited by test binaries.
+pub(crate) fn run_with_env(
+    prepared: &crate::PreparedProject,
+    operation: CargoOperation,
+    options: &CargoOptions,
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<CargoOutput>, Error> {
     options.validate()?;
     let mut outputs = Vec::new();
     match operation {
         CargoOperation::Test => {
             let root = prepared.cargo_root_package();
             let mut command = command_for(prepared, operation, options, true, true);
+            command.envs(environment.iter().cloned());
             if options.selection.is_empty() {
                 command.args(["--package", root.id.to_string().as_str()]);
             }
@@ -390,6 +401,7 @@ pub(crate) fn run(
         CargoOperation::Check | CargoOperation::Build => {
             if !options.selection.is_empty() {
                 let mut command = command_for(prepared, operation, options, true, true);
+                command.envs(environment.iter().cloned());
                 command.args([
                     "--manifest-path",
                     &prepared.cargo_manifest_path().display().to_string(),
@@ -399,6 +411,7 @@ pub(crate) fn run(
             }
             for target in prepared.execution_targets() {
                 let mut command = command_for(prepared, operation, options, true, false);
+                command.envs(environment.iter().cloned());
                 command.args([
                     "--manifest-path",
                     &prepared.cargo_manifest_path().display().to_string(),

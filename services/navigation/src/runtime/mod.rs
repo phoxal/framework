@@ -1,6 +1,7 @@
 use crate::config::{NavigationConfig, validate_navigation_config};
 use crate::inputs::NavigationInputs;
 use crate::outputs::NavigationOutputs;
+use crate::validation;
 #[cfg(test)]
 use phoxal::runtime::Sample;
 #[cfg(test)]
@@ -11,7 +12,7 @@ use phoxal_service_navigation::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
     UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
-    ports,
+    navigation,
 };
 #[cfg(test)]
 use phoxal_service_world::WorldRevision;
@@ -71,18 +72,11 @@ impl PlannerState {
     }
 
     fn retain_terminal(&mut self, finished: GoalFinished) {
-        if self.terminal_results.len() == phoxal_service_navigation::TERMINAL_RESULT_RETENTION {
+        if self.terminal_results.len() == validation::TERMINAL_RESULT_RETENTION {
             self.terminal_results.pop_front();
         }
         self.terminal_results.push_back(finished);
     }
-}
-
-/// The immutable projection used by the goal-status Read endpoint.
-#[derive(Clone, Debug)]
-struct NavigationReadView {
-    status: NavigationState,
-    terminal_results: Vec<GoalFinished>,
 }
 
 /// The official navigation service implementation.
@@ -114,17 +108,46 @@ impl Runtime for Navigation {
             .commands
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
+        inputs
+            .status_calls
+            .validate_order()
+            .map_err(|error| anyhow::anyhow!(error))?;
 
         state.unavailable_reasons = unavailable_reasons(inputs, ctx.now());
         state.map_revision = fresh_map_revision(inputs, ctx.now());
         let mut outputs = NavigationOutputs::default();
 
-        for command in inputs.commands.items() {
-            let (response, terminal) = apply_command(&mut state, command.request());
-            outputs.replies.push(command.reply(response));
-            if let Some(finished) = terminal {
-                state.retain_terminal(finished.clone());
-                outputs.finished.push(finished);
+        let mut command_index = 0;
+        let mut status_index = 0;
+        while command_index < inputs.commands.items().len()
+            || status_index < inputs.status_calls.items().len()
+        {
+            let next_is_command = match (
+                inputs.commands.items().get(command_index),
+                inputs.status_calls.items().get(status_index),
+            ) {
+                (Some(command), Some(status)) => command.order() <= status.order(),
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if next_is_command {
+                let command = &inputs.commands.items()[command_index];
+                command_index += 1;
+                let (response, terminal) = apply_command(&mut state, command.request());
+                validation::command_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+                outputs.replies.push(command.reply(response));
+                if let Some(finished) = terminal {
+                    validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
+                    state.retain_terminal(finished.clone());
+                    outputs.finished.push(finished);
+                }
+            } else {
+                let call = &inputs.status_calls.items()[status_index];
+                status_index += 1;
+                let response = goal_status(&state, call.request());
+                validation::status_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+                outputs.status_replies.push(call.reply(response));
             }
         }
 
@@ -137,6 +160,7 @@ impl Runtime for Navigation {
                 };
                 state.clear_active();
                 state.retain_terminal(finished.clone());
+                validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
                 outputs.finished.push(finished);
             }
         } else if state.active_goal_id.is_some() {
@@ -151,10 +175,12 @@ impl Runtime for Navigation {
                 };
                 state.clear_active();
                 state.retain_terminal(finished.clone());
+                validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
                 outputs.finished.push(finished);
             }
         }
 
+        validation::state(&public_status(&state)).map_err(|error| anyhow::anyhow!(error))?;
         Ok((state, outputs))
     }
 }
@@ -167,58 +193,49 @@ impl Runtime for Navigation {
 impl Navigation {
     /// Projects the private planner state to its public status port.
     #[phoxal::runtime::outputs::state(
-        port = ports::STATUS,
+        port = navigation::methods::STATUS.__state_port(),
         max_bytes = 1_024,
         bootstrap
     )]
     fn status(&self, state: &PlannerState) -> NavigationState {
         public_status(state)
     }
+}
 
-    fn read_view(&self, state: &PlannerState) -> NavigationReadView {
-        NavigationReadView {
-            status: public_status(state),
-            terminal_results: state.terminal_results.iter().cloned().collect(),
-        }
-    }
-
-    /// Returns the current or retained status for one goal id.
-    #[phoxal::runtime::outputs::read(
-        port = ports::GET_GOAL_STATUS,
-        project = Self::read_view,
-        max_request_bytes = 256,
-        max_response_bytes = 1_024
-    )]
-    fn goal_status(
-        &self,
-        view: &NavigationReadView,
-        request: &GetGoalStatusRequest,
-    ) -> GetGoalStatusResponse {
-        if view.status.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
-            return GetGoalStatusResponse {
-                status: Some(get_goal_status_response::Status::Running(
-                    phoxal_service_navigation::GoalRunning {
-                        goal_id: request.goal_id.clone(),
-                    },
-                )),
-            };
-        }
-        if let Some(finished) = view
-            .terminal_results
-            .iter()
-            .find(|finished| finished.goal_id == request.goal_id)
-        {
-            return GetGoalStatusResponse {
-                status: Some(get_goal_status_response::Status::Finished(finished.clone())),
-            };
-        }
-        GetGoalStatusResponse {
+fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalStatusResponse {
+    if validation::status_request(request).is_err() {
+        return GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
                 phoxal_service_navigation::GoalUnknownOrNoLongerRetained {
                     goal_id: request.goal_id.clone(),
                 },
             )),
-        }
+        };
+    }
+    if state.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
+        return GetGoalStatusResponse {
+            status: Some(get_goal_status_response::Status::Running(
+                phoxal_service_navigation::GoalRunning {
+                    goal_id: request.goal_id.clone(),
+                },
+            )),
+        };
+    }
+    if let Some(finished) = state
+        .terminal_results
+        .iter()
+        .find(|finished| finished.goal_id == request.goal_id)
+    {
+        return GetGoalStatusResponse {
+            status: Some(get_goal_status_response::Status::Finished(finished.clone())),
+        };
+    }
+    GetGoalStatusResponse {
+        status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
+            phoxal_service_navigation::GoalUnknownOrNoLongerRetained {
+                goal_id: request.goal_id.clone(),
+            },
+        )),
     }
 }
 
@@ -237,9 +254,10 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32
         .localization
         .is_fresh_at(now, Some(LOCALIZATION_MAX_AGE_MS))
         && inputs.localization.value().is_some_and(|pose| {
-            pose.validate().is_ok()
+            validation::odometry(pose).is_ok()
                 && pose.available
-                && pose.capture_is_fresh_at(
+                && validation::capture_is_fresh_at(
+                    pose.oldest_capture_time_nanos,
                     now.as_nanos(),
                     LOCALIZATION_MAX_AGE_MS.saturating_mul(1_000_000),
                 )
@@ -249,10 +267,13 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32
     }
     let map_ready = inputs.map.is_fresh_at(now, Some(MAP_MAX_AGE_MS))
         && inputs.map.value().is_some_and(|revision| {
-            revision.validate().is_ok()
+            validation::world_revision(revision).is_ok()
                 && revision.available
-                && revision
-                    .capture_is_fresh_at(now.as_nanos(), MAP_MAX_AGE_MS.saturating_mul(1_000_000))
+                && validation::capture_is_fresh_at(
+                    revision.oldest_capture_time_nanos,
+                    now.as_nanos(),
+                    MAP_MAX_AGE_MS.saturating_mul(1_000_000),
+                )
         });
     if !map_ready {
         reasons.push(UnavailableReason::Map.into());
@@ -269,9 +290,10 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
                 .map
                 .value()
                 .filter(|value| {
-                    value.validate().is_ok()
+                    validation::world_revision(value).is_ok()
                         && value.available
-                        && value.capture_is_fresh_at(
+                        && validation::capture_is_fresh_at(
+                            value.oldest_capture_time_nanos,
                             now.as_nanos(),
                             MAP_MAX_AGE_MS.saturating_mul(1_000_000),
                         )
@@ -315,6 +337,9 @@ fn apply_command(
     state: &mut PlannerState,
     request: &ApplyCommandRequest,
 ) -> (ApplyCommandResponse, Option<GoalFinished>) {
+    if validation::command_request(request).is_err() {
+        return (refused(RefusalReason::InvalidGoal), None);
+    }
     let Some(command) = request.command.as_ref() else {
         return (refused(RefusalReason::InvalidGoal), None);
     };
@@ -323,9 +348,9 @@ fn apply_command(
             if goal
                 .target
                 .as_ref()
-                .is_none_or(|target| target.validate().is_err())
+                .is_none_or(|target| validation::goal_target(target).is_err())
                 || goal.goal_id.is_empty()
-                || goal.goal_id.len() > phoxal_service_navigation::MAX_ID_BYTES
+                || goal.goal_id.len() > validation::MAX_ID_BYTES
             {
                 return (refused(RefusalReason::InvalidGoal), None);
             }
@@ -464,6 +489,7 @@ mod tests {
     ) -> NavigationInputs {
         NavigationInputs {
             commands: Commands::new(commands),
+            status_calls: Default::default(),
             localization: odometry(
                 OdometryState {
                     x_m: 0.0,
@@ -558,6 +584,7 @@ mod tests {
                 CommandId::new(1),
                 start("goal-a", 1.0, 0.0),
             )]),
+            status_calls: Default::default(),
             localization: Latest::unavailable(),
             map: Latest::unavailable(),
         };
@@ -613,22 +640,19 @@ mod tests {
 
     #[test]
     fn goal_status_read_reconciles_running_finished_and_evicted_ids() {
-        let service = Navigation;
         let mut state = PlannerState {
             phase: Phase::Searching,
             active_goal_id: Some("running".to_owned()),
             ..PlannerState::new(config())
         };
-        let running = service.read_view(&state);
         assert!(matches!(
-            service
-                .goal_status(
-                    &running,
-                    &GetGoalStatusRequest {
-                        goal_id: "running".to_owned()
-                    }
-                )
-                .status,
+            goal_status(
+                &state,
+                &GetGoalStatusRequest {
+                    goal_id: "running".to_owned()
+                }
+            )
+            .status,
             Some(get_goal_status_response::Status::Running(_))
         ));
 
@@ -638,27 +662,24 @@ mod tests {
             outcome: GoalOutcome::Cancelled.into(),
             unavailable_reasons: Vec::new(),
         });
-        let finished = service.read_view(&state);
         assert!(matches!(
-            service
-                .goal_status(
-                    &finished,
-                    &GetGoalStatusRequest {
-                        goal_id: "finished".to_owned()
-                    }
-                )
-                .status,
+            goal_status(
+                &state,
+                &GetGoalStatusRequest {
+                    goal_id: "finished".to_owned()
+                }
+            )
+            .status,
             Some(get_goal_status_response::Status::Finished(_))
         ));
         assert!(matches!(
-            service
-                .goal_status(
-                    &finished,
-                    &GetGoalStatusRequest {
-                        goal_id: "evicted".to_owned()
-                    }
-                )
-                .status,
+            goal_status(
+                &state,
+                &GetGoalStatusRequest {
+                    goal_id: "evicted".to_owned()
+                }
+            )
+            .status,
             Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
                 _
             ))

@@ -20,8 +20,8 @@ pub fn runtime(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Register an `impl Scenario for ConcreteType` block in the static
-/// scenario registry. See `phoxal::scenario` for the public surface.
+/// Turn a function taking `&mut phoxal::scenario::Simulation` into a standard
+/// Rust test. See `phoxal::scenario` for the public surface.
 #[proc_macro_attribute]
 pub fn scenario(attr: TokenStream, item: TokenStream) -> TokenStream {
     scenario::expand_scenario(attr.into(), item.into())

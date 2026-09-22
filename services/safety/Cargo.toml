@@ -9,10 +9,10 @@ description = "Public safety assessment contract and private safety service exec
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["build.rs", "lib.rs", "validation.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
+include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "Cargo.lock", "README.md"]
 
 [lib]
-path = "lib.rs"
+path = "generated/lib.rs"
 
 [[bin]]
 name = "phoxal-service-safety"
@@ -21,21 +21,24 @@ required-features = ["runtime"]
 
 [features]
 default = []
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
+runtime = ["phoxal/runtime", "phoxal/robotics", "dep:anyhow", "dep:serde", "dep:thiserror", "dep:phoxal-service-world"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port", "robotics"] }
+phoxal = { workspace = true, default-features = false, features = ["contract"] }
 phoxal-service-motion = { workspace = true }
-phoxal-service-world = { workspace = true }
+phoxal-service-world = { workspace = true, optional = true }
 prost = { workspace = true }
-thiserror = { workspace = true }
+thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build", "robotics"] }
-phoxal-service-motion = { workspace = true }
-phoxal-service-world = { workspace = true }
+[package.metadata.phoxal.contract]
+protos = ["proto/phoxal/safety/v1/safety.proto"]
+includes = ["proto"]
+generated = "generated"
+dependencies = [
+    { dependency = "phoxal-service-motion", proto_package = ".phoxal.motion.v1", rust_path = "::phoxal_service_motion" },
+]
 
 [lints]
 workspace = true

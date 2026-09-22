@@ -46,10 +46,9 @@ fn assert_absent(tree: &str, forbidden: &[&str]) {
 #[test]
 fn contract_consumer_uses_lightweight_phoxal_facade_without_runtime() {
     let tree = dependency_tree("contracts/consumer");
-    // The contract consumer pulls in the lightweight phoxal facade, which now
-    // owns the typed-port vocabulary as a gated module (`phoxal::port` behind
-    // the `port` feature) so generated messages and inert typed port
-    // references resolve. The facade must not drag in the runtime runner,
+    // The contract consumer pulls in the lightweight phoxal facade so
+    // generated messages and inert typed methods resolve. The facade must not
+    // drag in the runtime runner,
     // session/transport, project compiler, supervisor, or native simulation
     // dependencies.
     assert!(

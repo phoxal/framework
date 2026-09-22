@@ -54,10 +54,27 @@ pub struct ScenarioCaptureEvidence {
     pub name: String,
     /// `state`, `sample`, or `event`.
     pub kind: String,
-    /// Boundary of the most recently observed payload.
-    pub boundary: u64,
-    /// Ordered payload bytes. State captures retain only the latest value.
-    pub payloads: Vec<Vec<u8>>,
+    /// Ordered records retained according to the admitted capture policy.
+    pub records: Vec<ScenarioObservationEvidence>,
+    /// Whether a bounded best-effort capture discarded an earlier prefix.
+    pub gap_before_first: bool,
+    /// Whether required completeness was preserved through the final drain.
+    pub complete: bool,
+    /// Whether the supervisor completed the final drain for this capture.
+    pub terminal: bool,
+}
+
+/// One observation with the provenance carried by its runtime envelope.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioObservationEvidence {
+    /// Exact generated Protobuf payload bytes.
+    pub payload: Vec<u8>,
+    /// Original source identity, preserved through forwarding and replay.
+    pub source: String,
+    /// Original logical capture time in nanoseconds.
+    pub capture_time_ns: u64,
+    /// Monotonic source publication sequence.
+    pub sequence: u64,
 }
 
 /// Native terminal evidence emitted by the simulator application.
@@ -161,8 +178,15 @@ mod tests {
             captures: vec![ScenarioCaptureEvidence {
                 name: "pose".to_owned(),
                 kind: "state".to_owned(),
-                boundary: 4,
-                payloads: vec![b"\x00\x01".to_vec()],
+                records: vec![ScenarioObservationEvidence {
+                    payload: b"\x00\x01".to_vec(),
+                    source: "world.pose".to_owned(),
+                    capture_time_ns: 8_000_000,
+                    sequence: 4,
+                }],
+                gap_before_first: false,
+                complete: true,
+                terminal: true,
             }],
             command_replies: BTreeMap::from([("reset".to_owned(), b"\x02".to_vec())]),
         };
