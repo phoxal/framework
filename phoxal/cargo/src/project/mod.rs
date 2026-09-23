@@ -11,6 +11,7 @@ mod discovery;
 mod document;
 mod error;
 mod file_lock;
+pub(crate) mod participant;
 mod preparation;
 mod publication;
 mod robot_api;

@@ -30,7 +30,12 @@ For framework development before those packages are released, run the workspace 
 cargo run --locked -p cargo-phoxal -- phoxal --help
 ```
 
-The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
+The tooling supports `cargo phoxal prepare`, `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
+
+`cargo phoxal prepare` installs runnable packages declared with exact `package` and `version` values in `robot.yaml` into the managed Phoxal home.
+It copies registry and Git package Protobuf sources into the project's ignored `.phoxal/` tree, while local path sources remain at their authored paths.
+It uses Cargo for acquisition and installation, preserves the authored selection, and leaves the robot's Cargo manifest unchanged.
+The existing check, build, run, test, and update commands still use the Cargo graph selection path until the remaining migration is complete.
 
 Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
 

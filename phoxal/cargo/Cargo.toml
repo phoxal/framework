@@ -20,6 +20,7 @@ path = "src/main.rs"
 # Public CLI surface.
 clap = { workspace = true }
 serde_json = { workspace = true }
+semver = { workspace = true }
 
 # Project compiler implementation (private module).
 base64 = { workspace = true }

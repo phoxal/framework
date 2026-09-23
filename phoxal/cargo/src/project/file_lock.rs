@@ -8,6 +8,11 @@ use fs4::{FileExt, TryLockError};
 pub(crate) struct ExclusiveFileLock(File);
 
 impl ExclusiveFileLock {
+    pub(crate) fn acquire(file: File) -> std::io::Result<Self> {
+        FileExt::lock(&file)?;
+        Ok(Self(file))
+    }
+
     pub(crate) fn try_acquire(file: File) -> Result<Self, TryLockError> {
         FileExt::try_lock(&file)?;
         Ok(Self(file))

@@ -41,6 +41,24 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
     let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
+        Command::Prepare(arguments) => {
+            let layout = crate::project::ProjectLayout::discover(
+                std::env::current_dir().map_err(|source| {
+                    crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
+                        path: ".".into(),
+                        source,
+                    })
+                })?,
+            )?;
+            let changes = crate::project::participant::prepare(
+                &layout,
+                &arguments.options.into_options(Vec::new(), Vec::new()),
+            )?;
+            for change in changes {
+                eprintln!("prepared {change}");
+            }
+            Ok(())
+        }
         Command::Simulation(arguments) => match arguments.command {
             SimulationCommand::Install(arguments) => run_simulator_install(arguments, false),
             SimulationCommand::Upgrade(arguments) => run_simulator_install(arguments, true),
@@ -99,6 +117,7 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                 }
                 Command::Simulation(_) => unreachable!("simulation was handled above"),
                 Command::Publish(_) => unreachable!("publish was handled above"),
+                Command::Prepare(_) => unreachable!("prepare was handled above"),
             }
         }
     }
@@ -583,12 +602,15 @@ impl Cli {
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
             },
             Command::Publish(_) => false,
+            Command::Prepare(arguments) => json_common(&arguments.options, &[]),
         }
     }
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Install exact selected participants and prepare their Protobuf sources.
+    Prepare(PrepareArgs),
     /// Prepare the project, validate composition, and Cargo-check selected targets.
     Check(CommandArgs),
     /// Prepare the project, validate composition, and build selected targets.
@@ -603,6 +625,12 @@ enum Command {
     Simulation(SimulationArgs),
     /// Prepare an authored component or service package for registry review.
     Publish(PublishArgs),
+}
+
+#[derive(Debug, Args)]
+struct PrepareArgs {
+    #[command(flatten)]
+    options: CommonArgs,
 }
 
 #[derive(Debug, Args)]
