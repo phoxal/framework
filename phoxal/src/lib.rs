@@ -65,6 +65,37 @@ pub use anyhow::{Result, anyhow};
 #[cfg_attr(docsrs, doc(cfg(feature = "contract")))]
 pub mod contract;
 
+/// Attaches the build-script generated API once at the crate root.
+#[macro_export]
+macro_rules! api {
+    () => {
+        pub mod api {
+            include!(concat!(env!("OUT_DIR"), "/phoxal_api.rs"));
+        }
+    };
+}
+
+/// Implementation dependencies used by generated API code.
+#[cfg(feature = "contract")]
+#[doc(hidden)]
+pub mod __generated {
+    pub use prost;
+
+    const fn version_marker(version: &str) -> u64 {
+        let bytes = version.as_bytes();
+        let mut hash = 0xcbf29ce484222325_u64;
+        let mut index = 0;
+        while index < bytes.len() {
+            hash ^= bytes[index] as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+            index += 1;
+        }
+        hash
+    }
+
+    pub const API_GENERATOR_MARKER: u64 = version_marker(env!("CARGO_PKG_VERSION"));
+}
+
 // Private compatibility descriptors used only by runtime and scenario
 // implementation adapters during the direct generated-method cutover.
 #[cfg(any(feature = "runtime", feature = "scenario"))]

@@ -28,8 +28,10 @@ The supervisor executable owns its host implementation privately and consumes th
 The `contract` profile provides generated method descriptors and typed call and observation handles without a runner or host implementation.
 The `protocol` profile provides the public Protobuf transport contracts.
 
-The project compiler is the only owner of authored source parsing and project validation.
-It is implemented inside the `cargo-phoxal` package and exposed through `cargo phoxal`.
+`phoxal::build::api(BuildApiConfig::default())` reads package-local `api/` files and exact prepared robot selections in an ordinary Cargo build script.
+Place `phoxal::api!();` once at a binary or library crate root to attach its generated `api` module.
+The helper reads local sources only, so prepare selected registry or Git participants with `cargo phoxal prepare` before the first bare Cargo build.
+The project compiler owns source preparation and project validation inside the `cargo-phoxal` package.
 
 Use <https://docs.rs/phoxal> as the authority for the published Rust API.
 Visit <https://phoxal.com> for the project vision and public introduction.

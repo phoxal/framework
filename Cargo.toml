@@ -77,6 +77,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_derive_internals = "0.29.1"
 serde_bytes = "0.11.19"
 serde_json = "1.0.149"
+semver = "1.0"
 serde_yaml = "0.9"
 serial_test = "3"
 system_shutdown = "4.1.0"
