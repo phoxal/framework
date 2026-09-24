@@ -1,19 +1,19 @@
-use phoxal::contract::Empty;
-use phoxal::runtime::input::{Commands, Latest, Setpoint};
-use phoxal_service_kinematics::OdometryState;
-use phoxal_service_motion::MotionConstraints;
-use phoxal_service_motion::{
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+use crate::api::motion::v1::MotionConstraints;
+use crate::api::motion::v1::{
     ApplyEmergencyResponse, ArmRequest, MotionIntent, ReleaseEmergencyRequest, motion,
 };
+use phoxal::contract::Empty;
+use phoxal::runtime::input::{Commands, Latest, Setpoint};
 
 /// One immutable input cut for Motion.
 #[phoxal::runtime::inputs]
 pub struct MotionInputs {
     /// Manual and autonomous control intents replace older values and expire
     /// independently from their publication timestamps.
-    #[phoxal::runtime::input(port = motion::methods::MANUAL.__setpoint_port())]
+    #[phoxal::runtime::input(port = motion::methods::MANUAL.__setpoint_port(), max_bytes = 4096)]
     pub manual: Setpoint<MotionIntent>,
-    #[phoxal::runtime::input(port = motion::methods::AUTONOMOUS.__setpoint_port())]
+    #[phoxal::runtime::input(port = motion::methods::AUTONOMOUS.__setpoint_port(), max_bytes = 4096)]
     pub autonomous: Setpoint<MotionIntent>,
     /// Safety is an expiring protective constraint product, never an
     /// authority lease or a motion-owned duplicate state.

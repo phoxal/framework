@@ -60,9 +60,6 @@ pub enum ProgramError {
         step_label: String,
         bytes: usize,
     },
-    EmptyPayload {
-        step_label: String,
-    },
     /// Anything that escaped the plan-level validation surface.
     Other(String),
 }
@@ -86,9 +83,6 @@ impl fmt::Display for ProgramError {
                 f,
                 "step `{step_label}` payload is {bytes} bytes, exceeding the {MAX_PAYLOAD}-byte cap"
             ),
-            Self::EmptyPayload { step_label } => {
-                write!(f, "step `{step_label}` has an empty encoded payload")
-            }
             Self::Other(message) => write!(f, "{message}"),
         }
     }
@@ -263,7 +257,7 @@ impl Program {
                     ..
                 } => {
                     check_target_instance(&label, target_instance)?;
-                    check_payload(&label, encoded_payload)?;
+                    check_payload_size(&label, encoded_payload)?;
                 }
                 Action::Command {
                     target_instance,
@@ -272,7 +266,7 @@ impl Program {
                     ..
                 } => {
                     check_target_instance(&label, target_instance)?;
-                    check_payload(&label, request_encoded)?;
+                    check_payload_size(&label, request_encoded)?;
                     if *host_deadline == Duration::ZERO {
                         return Err(ProgramError::Other(format!(
                             "step `{label}` declares a zero host deadline"
@@ -449,6 +443,7 @@ fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
             consumer_kind,
             consumer_request,
             consumer_response,
+            consumer_lease_valid_for_ms,
             encoded_payload_b64,
             validity,
         } => {
@@ -473,16 +468,18 @@ fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
                     )));
                 }
             };
+            let mut consumer_signature = port_signature(
+                &consumer_name,
+                &consumer_service,
+                &consumer_method,
+                &consumer_kind,
+                &consumer_request,
+                &consumer_response,
+            )?;
+            consumer_signature.lease_valid_for_ms = consumer_lease_valid_for_ms;
             Action::Setpoint {
                 target_instance,
-                consumer_signature: port_signature(
-                    &consumer_name,
-                    &consumer_service,
-                    &consumer_method,
-                    &consumer_kind,
-                    &consumer_request,
-                    &consumer_response,
-                )?,
+                consumer_signature,
                 encoded_payload: BASE64_ENGINE
                     .decode(&encoded_payload_b64)
                     .map_err(|error| ProgramError::Other(format!("setpoint payload: {error}")))?,
@@ -497,16 +494,21 @@ fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
             producer_kind,
             producer_request,
             producer_response,
+            producer_lease_valid_for_ms,
         } => Action::Withdraw {
             target_instance,
-            producer_signature: port_signature(
-                &producer_name,
-                &producer_service,
-                &producer_method,
-                &producer_kind,
-                &producer_request,
-                &producer_response,
-            )?,
+            producer_signature: {
+                let mut signature = port_signature(
+                    &producer_name,
+                    &producer_service,
+                    &producer_method,
+                    &producer_kind,
+                    &producer_request,
+                    &producer_response,
+                )?;
+                signature.lease_valid_for_ms = producer_lease_valid_for_ms;
+                signature
+            },
         },
         WireAction::Command {
             target_instance,
@@ -648,12 +650,7 @@ fn decode_port_kind(kind: &str) -> Result<crate::port::PortKind, ProgramError> {
     }
 }
 
-fn check_payload(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
-    if payload.is_empty() {
-        return Err(ProgramError::EmptyPayload {
-            step_label: step_label.to_owned(),
-        });
-    }
+fn check_payload_size(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
     if payload.len() > MAX_PAYLOAD {
         return Err(ProgramError::PayloadTooLarge {
             step_label: step_label.to_owned(),
@@ -715,6 +712,8 @@ enum WireAction {
         consumer_kind: String,
         consumer_request: String,
         consumer_response: String,
+        #[serde(default)]
+        consumer_lease_valid_for_ms: Option<u64>,
         encoded_payload_b64: String,
         validity: String,
     },
@@ -726,6 +725,8 @@ enum WireAction {
         producer_kind: String,
         producer_request: String,
         producer_response: String,
+        #[serde(default)]
+        producer_lease_valid_for_ms: Option<u64>,
     },
     Command {
         target_instance: String,
@@ -802,6 +803,7 @@ fn wire_step(step: &Step) -> WireStep {
                     consumer_kind: kind,
                     consumer_request: request.to_owned(),
                     consumer_response: response.to_owned(),
+                    consumer_lease_valid_for_ms: consumer_signature.lease_valid_for_ms,
                     encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
                     validity: validity.wire_label(),
                 }
@@ -820,6 +822,7 @@ fn wire_step(step: &Step) -> WireStep {
                     producer_kind: kind,
                     producer_request: request.to_owned(),
                     producer_response: response.to_owned(),
+                    producer_lease_valid_for_ms: producer_signature.lease_valid_for_ms,
                 }
             }
             Action::Command {
@@ -1105,11 +1108,13 @@ mod tests {
         // and the typed payload so the decoded program is identical
         // to what the author wrote.
         let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let mut signature = setpoint_sig();
+        signature.lease_valid_for_ms = Some(100);
         let action = Action::Setpoint {
             target_instance: "motion_target".to_owned(),
-            consumer_signature: setpoint_sig(),
+            consumer_signature: signature,
             encoded_payload: vec![0xAB, 0xCD],
-            validity: crate::scenario::plan::Validity::Permanent,
+            validity: crate::scenario::plan::Validity::Lease { valid_for_ms: 100 },
         };
         let program = Program::normalize(
             "scenarios/Sparse",
@@ -1129,11 +1134,16 @@ mod tests {
                 target_instance,
                 encoded_payload,
                 validity,
+                consumer_signature,
                 ..
             } => {
                 assert_eq!(target_instance, "motion_target");
                 assert_eq!(encoded_payload, &vec![0xAB, 0xCD]);
-                assert_eq!(*validity, crate::scenario::plan::Validity::Permanent);
+                assert_eq!(
+                    *validity,
+                    crate::scenario::plan::Validity::Lease { valid_for_ms: 100 }
+                );
+                assert_eq!(consumer_signature.lease_valid_for_ms, Some(100));
             }
             other => panic!("expected setpoint, got {other:?}"),
         }

@@ -1,41 +1,32 @@
 [package]
 name = "phoxal-service-navigation"
-version = "0.0.0-dev.2"
+version = "0.0.0-dev.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Public navigation contract and private navigation service executable for Phoxal."
+description = "Phoxal navigation service executable and packaged API."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "Cargo.lock", "README.md"]
-
-[lib]
-path = "generated/lib.rs"
+include = ["src/**", "api/**", "build.rs", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-service-navigation"
 path = "src/main.rs"
-required-features = ["runtime"]
 
 [features]
-default = []
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror", "dep:phoxal-service-kinematics", "dep:phoxal-service-world"]
+default = ["runtime"]
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror"]
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["contract"] }
-phoxal-service-kinematics = { workspace = true, optional = true }
-phoxal-service-world = { workspace = true, optional = true }
-prost = { workspace = true }
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
-[package.metadata.phoxal.contract]
-protos = ["proto/phoxal/navigation/v1/navigation.proto"]
-includes = ["proto"]
-generated = "generated"
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

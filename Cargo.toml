@@ -77,6 +77,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_derive_internals = "0.29.1"
 serde_bytes = "0.11.19"
 serde_json = "1.0.149"
+semver = "1.0"
 serde_yaml = "0.9"
 serial_test = "3"
 system_shutdown = "4.1.0"
@@ -124,14 +125,9 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # `default-features = false`: `phoxal` carries one consumer profile per
 # supported role, and a member that inherits a default profile never says which
 # role it is. Every member below names its own.
-phoxal = { path = "phoxal", version = "=0.0.0-dev.2", registry = "phoxal", default-features = false }
-phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-motion = { path = "services/motion", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-kinematics = { path = "services/kinematics", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-world = { path = "services/world", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-safety = { path = "services/safety", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-navigation = { path = "services/navigation", version = "=0.0.0-dev.2", registry = "phoxal" }
+phoxal = { path = "phoxal", version = "=0.0.0-dev.3", registry = "phoxal", default-features = false }
+phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.3", registry = "phoxal" }
+phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.3", registry = "phoxal" }
 
 [workspace.lints.rust]
 unused = "warn"

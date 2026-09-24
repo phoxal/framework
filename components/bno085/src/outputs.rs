@@ -1,8 +1,8 @@
+use crate::api::bno085::v1::AccelerometerSample;
+use crate::api::bno085::v1::GyroscopeSample;
+use crate::api::bno085::v1::ImuSample;
+use crate::api::bno085::v1::bno085;
 use phoxal::runtime::Sample;
-use phoxal_component_bno085::AccelerometerSample;
-use phoxal_component_bno085::GyroscopeSample;
-use phoxal_component_bno085::ImuSample;
-use phoxal_component_bno085::bno085;
 
 /// BNO085 observations admitted at one Runtime boundary.
 #[phoxal::runtime::outputs]

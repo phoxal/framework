@@ -359,7 +359,7 @@ enum PackageRole {
 /// same Cargo metadata and definition rules used by package publication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimePackageRole {
-    /// A service implementation with importable library and executable.
+    /// A service implementation with a runnable binary and packaged API.
     Service,
     /// A passive or Rust-backed component with a component definition root.
     Component,
@@ -679,14 +679,16 @@ fn classify_package(
     }
     if matches!(requested, PublicationKind::Component) {
         require_component_definition(source_root, package, manifest)?;
-        return if targets.library {
+        return if targets.binaries && !targets.library {
+            require_participant_api(source_root, package, "component")?;
             Ok(PackageRole::RustComponent)
-        } else if targets.binaries || has_authored_target(source_root, manifest) {
+        } else if targets.library || has_authored_target(source_root, manifest) {
             Err(PublicationError::InvalidPackageShape {
                 package: package.to_owned(),
                 kind: "component".to_owned(),
-                requirement: "component packages with Rust targets must expose a library target"
-                    .to_owned(),
+                requirement:
+                    "API-bearing components must expose a runnable binary and packaged API"
+                        .to_owned(),
             }
             .into())
         } else {
@@ -694,7 +696,8 @@ fn classify_package(
         };
     }
     let (role, requirement) = match requested {
-        PublicationKind::Service if targets.library && targets.binaries => {
+        PublicationKind::Service if targets.binaries && !targets.library => {
+            require_participant_api(source_root, package, "service")?;
             return Ok(PackageRole::Service);
         }
         PublicationKind::Service
@@ -704,7 +707,7 @@ fn classify_package(
         }
         PublicationKind::Service => (
             PackageRole::Service,
-            "service packages must expose both library and binary targets",
+            "service packages must expose a runnable binary and packaged API",
         ),
         PublicationKind::Preset
             if !targets.binaries && source_root.join("service.yaml").is_file() =>
@@ -752,6 +755,30 @@ fn classify_package(
         requirement: requirement.to_owned(),
     }
     .into())
+}
+
+fn require_participant_api(source_root: &Path, package: &str, kind: &str) -> Result<(), Error> {
+    let api = source_root.join("api");
+    if !source_root.join("build.rs").is_file() || !api.is_dir() {
+        return Err(PublicationError::InvalidPackageShape {
+            package: package.to_owned(),
+            kind: kind.to_owned(),
+            requirement: "runnable participants must package build.rs and api/".to_owned(),
+        }
+        .into());
+    }
+    let validation = tempfile::tempdir().map_err(|source| PublicationError::CaptureSource {
+        path: std::env::temp_dir(),
+        source,
+    })?;
+    phoxal_build::validate_participant_api(&api, validation.path()).map_err(|error| {
+        PublicationError::InvalidPackageShape {
+            package: package.to_owned(),
+            kind: kind.to_owned(),
+            requirement: format!("invalid packaged API: {error}"),
+        }
+    })?;
+    Ok(())
 }
 
 /// Validates a package selected as a runtime service or component.
@@ -3832,7 +3859,7 @@ mod tests {
     }
 
     #[test]
-    fn service_publication_requires_the_importable_library_and_exact_binary()
+    fn service_publication_requires_a_packaged_api_and_exact_binary()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         write(
@@ -3846,7 +3873,7 @@ mod tests {
             path: Some(directory.path().to_owned()),
             dry_run: true,
         })
-        .expect_err("a service without its public library must fail");
+        .expect_err("a service without its packaged API must fail");
         assert!(matches!(
             error,
             Error::Publication(PublicationError::InvalidPackageShape { .. })
@@ -4030,16 +4057,17 @@ mod tests {
     }
 
     #[test]
-    fn real_service_dry_run_preserves_library_and_binary_targets()
+    fn real_service_dry_run_preserves_api_and_binary_target()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
         )?;
+        write(&directory.path().join("build.rs"), "fn main() {}\n")?;
         write(
-            &directory.path().join("src/lib.rs"),
-            "pub struct Service;\n",
+            &directory.path().join("api/example.proto"),
+            "syntax = \"proto3\"; package example.v1; message Request {} service Example { rpc Run(Request) returns (Request); }\n",
         )?;
         write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
         let result = prepare_publication(&PublicationOptions {
@@ -4049,7 +4077,12 @@ mod tests {
             dry_run: true,
         })?;
         assert_eq!(result.kind(), PublicationKind::Service);
-        assert!(result.files().iter().any(|file| file.path == "src/lib.rs"));
+        assert!(
+            result
+                .files()
+                .iter()
+                .any(|file| file.path == "api/example.proto")
+        );
         assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
         assert!(!result.files().iter().any(|file| file.path == GENERATED_LIB));
         Ok(())
@@ -4077,7 +4110,7 @@ mod tests {
             "pub struct Service;\n",
         )?;
         let result = prepare_publication(&PublicationOptions {
-            kind: PublicationKind::Service,
+            kind: PublicationKind::Tool,
             name: "workspace-service".to_owned(),
             path: Some(directory.path().join("services/example")),
             dry_run: true,
@@ -4177,7 +4210,7 @@ mod tests {
         )?;
 
         let options = PublicationOptions {
-            kind: PublicationKind::Service,
+            kind: PublicationKind::Tool,
             name: "publication-workspace-service".to_owned(),
             path: Some(directory.path().join("services/example")),
             dry_run: true,
@@ -4293,7 +4326,7 @@ mod tests {
         )?;
 
         let options = PublicationOptions {
-            kind: PublicationKind::Service,
+            kind: PublicationKind::Tool,
             name: "publication-nested-workspace-service".to_owned(),
             path: Some(directory.path().join("service")),
             dry_run: true,

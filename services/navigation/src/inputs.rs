@@ -1,10 +1,10 @@
-use phoxal::runtime::input::{Commands, Latest};
-use phoxal_service_kinematics::OdometryState;
-use phoxal_service_navigation::{
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+use crate::api::__contracts::phoxal::world::v1::WorldRevision;
+use crate::api::navigation::v1::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     navigation,
 };
-use phoxal_service_world::WorldRevision;
+use phoxal::runtime::input::{Commands, Latest};
 
 /// One immutable input cut for Navigation.
 #[phoxal::runtime::inputs]

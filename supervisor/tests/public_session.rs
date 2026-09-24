@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use phoxal::session::{CallOutcome, Connection, ConnectionConfig, ObservationItem, connect};
-use phoxal_contract_owner_fixture::{InspectionReadRequest, inspection};
-use phoxal_service_motion::{apply_emergency_response, motion};
+phoxal::api!();
+use crate::api::__contracts::example::inspection::v1::{InspectionReadRequest, inspection};
 
 use sha2::{Digest, Sha256};
 
@@ -157,8 +157,14 @@ async fn a_session_attaches_to_a_live_supervisor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn packaged_motion_contract_crosses_the_real_runner_and_supervisor() {
-    let bundle = build_motion_bundle();
+#[ignore = "requires independently installed Motion and a prepared robot consumer"]
+async fn installed_motion_contract_crosses_the_real_runner_and_supervisor() {
+    let binary = std::env::var_os("PHOXAL_PACKAGED_MOTION_BINARY")
+        .map(PathBuf::from)
+        .expect("set PHOXAL_PACKAGED_MOTION_BINARY to the installed Motion executable");
+    let client = std::env::var_os("PHOXAL_PACKAGED_MOTION_CONSUMER")
+        .expect("set PHOXAL_PACKAGED_MOTION_CONSUMER to the prepared robot executable");
+    let bundle = build_motion_bundle(&binary);
     let root = bundle.root.canonicalize().expect("bundle root resolves");
     let socket = root
         .parent()
@@ -196,57 +202,20 @@ async fn packaged_motion_contract_crosses_the_real_runner_and_supervisor() {
     })
     .await
     .expect("Motion runtime reaches Ready");
-    let execution_id = supervisor_session
-        .management()
-        .executions()
-        .await
-        .expect("execution inventory")
-        .first()
-        .expect("one execution")
-        .execution_id
-        .clone();
-    let execution = supervisor_session
-        .execution(&execution_id)
-        .await
-        .expect("select execution");
-    let motion_service = execution.service("motion").await.expect("select Motion");
-    let status = motion_service
-        .method(motion::methods::STATUS)
-        .await
-        .expect("bind Motion status");
-    let mut observations = status.observe().await.expect("observe Motion status");
-    let observed = tokio::time::timeout(STARTUP, async {
-        loop {
-            if let ObservationItem::Value { value, .. } = observations
-                .recv()
-                .await
-                .expect("status stream remains open")
-                .expect("status decodes")
-            {
-                break value;
-            }
-        }
-    })
-    .await
-    .expect("Motion status arrives");
-    assert!(observed.stopped);
-
-    let disarm = motion_service
-        .method(motion::methods::DISARM)
-        .await
-        .expect("bind Motion disarm");
-    let outcome = disarm
-        .call(phoxal::contract::Empty {}, STARTUP)
-        .await
-        .expect("Motion disarm transport completes");
-    assert!(matches!(
-        outcome,
-        CallOutcome::Received(response)
-            if matches!(response.decision, Some(apply_emergency_response::Decision::Accepted(_)))
-    ));
-
     supervisor_session.close().await.expect("session closes");
     connection.close().await.expect("connection closes");
+    let output = tokio::process::Command::new(client)
+        .arg(&endpoint)
+        .output()
+        .await
+        .expect("start separately prepared robot consumer");
+    assert!(
+        output.status.success(),
+        "separate consumer failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     supervisor.shutdown().await;
 }
 
@@ -288,22 +257,16 @@ fn build_bundle() -> TestBundle {
     fs::copy(source, &executable).expect("copy compiled Runtime fixture");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
         .expect("make compiled Runtime fixture executable");
-    let bytes = fs::read(&executable).expect("read copied Runtime fixture");
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let document = serde_json::json!({
+        "schema": "phoxal/robot/v0",
+        "robot": {"id": "session-attachment", "model": null, "components": {}},
+        "brain": null,
+        "services": {},
+        "connections": {}
+    });
     let manifest = serde_json::json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "session-attachment",
-        "document": {
-            "schema": "phoxal/robot/v0",
-            "robot": {
-                "id": "session-attachment",
-                "model": null,
-                "components": {}
-            },
-            "brain": null,
-            "services": {},
-            "connections": {}
-        },
         "root_package": {
             "id": "session-attachment",
             "name": "session-attachment",
@@ -319,8 +282,6 @@ fn build_bundle() -> TestBundle {
             "package": "session-attachment",
             "target": "phoxal-runtime-reference",
             "path": "bin/brain",
-            "bytes": bytes.len(),
-            "sha256": sha256,
             "artifact": support::reference_runtime_artifact()
         }],
         "components": []
@@ -330,41 +291,59 @@ fn build_bundle() -> TestBundle {
         serde_json::to_vec_pretty(&manifest).expect("source manifest serializes"),
     )
     .expect("write source manifest");
+    fs::write(
+        root.join("robot.yaml"),
+        serde_yaml::to_string(&document).expect("compiled robot serializes"),
+    )
+    .expect("write compiled robot");
     TestBundle {
         _temporary_root: temporary_root,
         root,
     }
 }
 
-fn build_motion_bundle() -> TestBundle {
+fn build_motion_bundle(packaged: &Path) -> TestBundle {
     let temporary_root = tempfile::tempdir().expect("temporary bundle root");
     let root = temporary_root.path().join("bundle");
     fs::create_dir_all(root.join("bin")).expect("bundle bin directory");
 
-    let source = Path::new(env!("CARGO_BIN_EXE_supervisor-test-motion-runtime"));
     let executable = root.join("bin/motion");
-    fs::copy(source, &executable).expect("copy compiled Motion contract Runtime");
+    fs::copy(packaged, &executable).expect("copy installed Motion executable");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
         .expect("make Motion contract Runtime executable");
     let bytes = fs::read(&executable).expect("read copied Runtime fixture");
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let brain_source = Path::new(env!("CARGO_BIN_EXE_supervisor-test-runtime"));
+    let brain_source = Path::new(env!("CARGO_BIN_EXE_supervisor-test-motion-inputs"));
     let brain_executable = root.join("bin/brain");
     fs::copy(brain_source, &brain_executable).expect("copy compiled brain Runtime");
     fs::set_permissions(&brain_executable, fs::Permissions::from_mode(0o755))
         .expect("make brain Runtime executable");
     let brain_bytes = fs::read(&brain_executable).expect("read copied brain Runtime");
-    let brain_sha256 = format!("{:x}", Sha256::digest(&brain_bytes));
+    let artifact = packaged_artifact(&bytes);
+    let config = serde_json::json!({
+        "max_linear_mps": 1.0,
+        "max_angular_radps": 1.0,
+        "wheel_radius_m": 0.1,
+        "wheel_base_m": 0.4,
+        "left_wheels": [{"actuator_id": "left"}],
+        "right_wheels": [{"actuator_id": "right"}]
+    });
+    let document = serde_json::json!({
+        "schema": "phoxal/robot/v0",
+        "robot": {"id": "motion-contract-qualification", "model": null, "components": {}},
+        "brain": null,
+        "services": {"motion": {
+            "package": "phoxal-service-motion",
+            "version": "0.0.0-dev.2",
+            "config": config
+        }},
+        "connections": {
+            "motion.safety": "brain.constraints",
+            "motion.measurements": "brain.odometry"
+        }
+    });
     let manifest = serde_json::json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "motion-contract-qualification",
-        "document": {
-            "schema": "phoxal/robot/v0",
-            "robot": {"id": "motion-contract-qualification", "model": null, "components": {}},
-            "brain": null,
-            "services": {"motion": {"config": null}},
-            "connections": {}
-        },
         "root_package": {"id": "motion-contract-qualification", "name": "motion-contract-qualification", "source": "local"},
         "target": "host",
         "profile": "dev",
@@ -375,22 +354,18 @@ fn build_motion_bundle() -> TestBundle {
                 "instance": "brain",
                 "package_id": "motion-contract-qualification",
                 "package": "motion-contract-qualification",
-                "target": "supervisor-test-runtime",
+                "target": "supervisor-test-motion-inputs",
                 "path": "bin/brain",
-                "bytes": brain_bytes.len(),
-                "sha256": brain_sha256,
-                "artifact": support::reference_runtime_artifact()
+                "artifact": packaged_artifact(&brain_bytes)
             },
             {
                 "role": "service",
                 "instance": "motion",
                 "package_id": "phoxal-service-motion",
                 "package": "phoxal-service-motion",
-                "target": "supervisor-test-motion-runtime",
+                "target": "phoxal-service-motion",
                 "path": "bin/motion",
-                "bytes": bytes.len(),
-                "sha256": sha256,
-                "artifact": support::motion_runtime_artifact()
+                "artifact": artifact
             }
         ],
         "components": []
@@ -400,8 +375,59 @@ fn build_motion_bundle() -> TestBundle {
         serde_json::to_vec_pretty(&manifest).expect("manifest serializes"),
     )
     .expect("write manifest");
+    fs::write(
+        root.join("robot.yaml"),
+        serde_yaml::to_string(&document).expect("compiled robot serializes"),
+    )
+    .expect("write compiled robot");
     TestBundle {
         _temporary_root: temporary_root,
         root,
     }
+}
+
+fn packaged_artifact(bytes: &[u8]) -> serde_json::Value {
+    let magic = b"PHXART0\n";
+    let offsets = bytes
+        .windows(magic.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == magic).then_some(offset))
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "installed Motion has one runtime record");
+    let start = offsets[0] + magic.len();
+    let length = u32::from_le_bytes(
+        bytes[start..start + 4]
+            .try_into()
+            .expect("runtime record length"),
+    ) as usize;
+    let runtime =
+        serde_json::from_slice::<serde_json::Value>(&bytes[start + 4..start + 4 + length])
+            .expect("installed Motion runtime record decodes");
+    let descriptor_magic = &phoxal::contract::DESCRIPTOR_FRAME_MAGIC;
+    let descriptors = bytes
+        .windows(descriptor_magic.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == descriptor_magic).then_some(offset))
+        .map(|offset| {
+            let start = offset + descriptor_magic.len();
+            let length = u64::from_le_bytes(
+                bytes[start..start + 8]
+                    .try_into()
+                    .expect("descriptor frame length"),
+            ) as usize;
+            let raw = &bytes[start + 8..start + 8 + length];
+            let pool = prost_reflect::DescriptorPool::decode(raw)
+                .expect("installed binary descriptor closure decodes");
+            serde_json::json!({
+                "sha256": format!("{:x}", Sha256::digest(raw)),
+                "bytes": raw.len(),
+                "files": pool.files().map(|file| file.name().to_owned()).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !descriptors.is_empty(),
+        "installed binary retains API descriptors"
+    );
+    serde_json::json!({"runtime": runtime, "descriptors": descriptors})
 }

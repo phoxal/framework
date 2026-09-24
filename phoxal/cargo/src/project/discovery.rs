@@ -83,12 +83,6 @@ impl ProjectLayout {
     pub fn cargo_manifest(&self) -> &Path {
         &self.cargo_manifest
     }
-
-    /// Returns the logical root lock path after Cargo reports the workspace.
-    #[must_use]
-    pub fn cargo_lock(&self, workspace_root: &Path) -> PathBuf {
-        workspace_root.join("Cargo.lock")
-    }
 }
 
 #[cfg(test)]

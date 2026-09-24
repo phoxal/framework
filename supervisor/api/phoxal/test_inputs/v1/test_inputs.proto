@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package phoxal.test_inputs.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/api.proto";
+import "phoxal/motion/v1/constraints.proto";
+import "phoxal/kinematics/v1/odometry.proto";
+
+service TestInputs {
+  rpc Constraints(google.protobuf.Empty) returns (stream phoxal.motion.v1.MotionConstraints) {
+    option (phoxal.api.retained_latest) = true;
+  }
+
+  rpc Odometry(google.protobuf.Empty) returns (stream phoxal.kinematics.v1.OdometryState) {
+    option (phoxal.api.retained_latest) = true;
+  }
+}

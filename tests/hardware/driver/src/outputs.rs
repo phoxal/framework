@@ -1,5 +1,7 @@
+use crate::api::__contracts::phoxal::fixture::hardware::v1::{
+    FixtureObservation, hardware_fixture,
+};
 use phoxal::runtime::Sample;
-use phoxal_hardware_driver_fixture::{FixtureObservation, hardware_fixture};
 
 /// Fresh observations emitted by the fixture driver.
 #[derive(Default)]

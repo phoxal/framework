@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-build"
-version = "0.0.0-dev.2"
+version = "0.0.0-dev.3"
 # The framework workspace root lives at `../..` from this crate, but cargo's
 # default workspace walk-up passes through `phoxal/Cargo.toml` (the facade
 # package) first and fails to parse it because the facade inherits from the
@@ -26,7 +26,12 @@ prost-types = { workspace = true }
 protoc-bin-vendored = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+semver = { workspace = true }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+prettyplease = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

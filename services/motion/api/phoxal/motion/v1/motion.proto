@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package phoxal.motion.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/api.proto";
+import "phoxal/kinematics/v1/odometry.proto";
+import "phoxal/motion/v1/types.proto";
+
+service Motion {
+  rpc Actuators(google.protobuf.Empty) returns (stream ActuatorSetpoint) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
+  }
+
+  rpc Manual(MotionIntent) returns (google.protobuf.Empty) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
+  }
+
+  rpc Autonomous(MotionIntent) returns (google.protobuf.Empty) {
+    option (phoxal.api.lease) = { valid_for_ms: 100 };
+  }
+
+  rpc Status(google.protobuf.Empty) returns (stream MotionStatus) {
+    option (phoxal.api.retained_latest) = true;
+  }
+
+  rpc Arm(ArmRequest) returns (ApplyEmergencyResponse);
+
+  rpc Disarm(google.protobuf.Empty) returns (ApplyEmergencyResponse);
+
+  rpc EngageEmergency(google.protobuf.Empty) returns (ApplyEmergencyResponse);
+
+  rpc ReleaseEmergency(ReleaseEmergencyRequest) returns (ApplyEmergencyResponse);
+}

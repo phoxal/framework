@@ -1,45 +1,35 @@
 [package]
 name = "phoxal-service-world"
-version = "0.0.0-dev.2"
+version = "0.0.0-dev.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Public world estimation contract and private world service executable for Phoxal."
+description = "Phoxal world estimation service executable and packaged API."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "Cargo.lock", "README.md"]
-
-[lib]
-path = "generated/lib.rs"
+include = ["src/**", "api/**", "build.rs", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-service-world"
 path = "src/main.rs"
-required-features = ["runtime"]
 
 [features]
-default = []
+default = ["runtime"]
 runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror"]
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["contract"] }
-phoxal-service-kinematics = { workspace = true }
-prost = { workspace = true }
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
-[package.metadata.phoxal.contract]
-protos = ["proto/phoxal/world/v1/world.proto"]
-includes = ["proto"]
-generated = "generated"
-dependencies = [
-    { dependency = "phoxal-service-kinematics", proto_package = ".phoxal.kinematics.v1", rust_path = "::phoxal_service_kinematics" },
-]
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [dev-dependencies]
+prost = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }

@@ -1,4 +1,4 @@
-use phoxal_service_navigation::{
+use crate::api::navigation::v1::{
     ApplyCommandResponse, GetGoalStatusResponse, GoalFinished, navigation,
 };
 

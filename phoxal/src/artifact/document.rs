@@ -88,8 +88,19 @@ pub struct RobotSection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
-    /// Cargo dependency key selecting the component package.
+    /// Obsolete dependency key retained only for internal legacy readers.
+    #[serde(default, skip_deserializing, skip_serializing)]
     pub component: String,
+    /// Exact package selected for this mounted component.
+    pub package: String,
+    /// Exact published or local package version.
+    pub version: String,
+    /// Binary target if it differs from the package name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    /// Source override for this component.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ServiceSource>,
     /// Persistent native site in the parent robot model receiving the component root.
     pub mount_site: String,
     /// Component-owned driver connection and configuration.
@@ -173,8 +184,11 @@ pub struct CapabilityDeclaration {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSelection {
-    /// Optional Cargo source override. Absence selects the official package
-    /// for this explicit service instance.
+    /// Exact package selected for this service instance.
+    pub package: String,
+    /// Exact published or local package version.
+    pub version: String,
+    /// Optional source override. Absence selects the Phoxal registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ServiceSource>,
     /// Binary target when the package exposes more than one executable.
@@ -213,7 +227,8 @@ pub struct ServiceGitSource {
     pub git: String,
     /// Immutable commit revision.
     pub rev: String,
-    /// Exact Cargo package selected from the repository.
+    /// Legacy internal field, never authored in new selections.
+    #[serde(default, skip_deserializing, skip_serializing)]
     pub package: String,
     /// Package path below the repository root.
     #[serde(default)]
@@ -226,7 +241,8 @@ pub struct ServiceGitSource {
 pub struct ServiceRegistrySource {
     /// Registry name.
     pub registry: String,
-    /// Cargo version requirement.
+    /// Legacy internal field, never authored in new selections.
+    #[serde(default, skip_deserializing, skip_serializing)]
     pub version: String,
 }
 
@@ -323,12 +339,15 @@ robot:
   model: model.xml
   components:
     imu:
-      component: imu-package
+      package: imu-package
+      version: 1.0.0
       mount_site: imu_mount
       config:
         rate_hz: 100
 services:
   navigation:
+    package: navigation-package
+    version: 1.0.0
     config:
       gain: 1.5
 connections:
@@ -348,10 +367,13 @@ robot:
   id: rover
   components:
     imu:
-      component: imu-package
+      package: imu-package
+      version: 1.0.0
       mount_site: imu_mount
 services:
-  navigation: {}
+  navigation:
+    package: navigation-package
+    version: 1.0.0
 "#;
         let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let ids = document.instance_ids();

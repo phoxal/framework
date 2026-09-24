@@ -1,3 +1,6 @@
+#[cfg(test)]
+#[cfg(test)]
+use crate::api::zed_f9p::v1::zed_f9p;
 use crate::config::ZedF9pConfig;
 use crate::outputs::ZedF9pOutputs;
 use anyhow::Result;
@@ -5,10 +8,6 @@ use anyhow::anyhow;
 use phoxal::runtime::InitContext;
 use phoxal::runtime::Runtime;
 use phoxal::runtime::StepContext;
-#[cfg(test)]
-use phoxal_component_zed_f9p::FILE_DESCRIPTOR_SET;
-#[cfg(test)]
-use phoxal_component_zed_f9p::zed_f9p;
 
 const BACKEND_UNAVAILABLE: &str =
     "zed_f9p hardware backend unavailable: refusing to publish fabricated GNSS measurements";
@@ -48,9 +47,7 @@ impl Runtime for ZedF9p {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, ZedF9p, ZedF9pConfig, ZedF9pOutputs, zed_f9p,
-    };
+    use super::{BACKEND_UNAVAILABLE, ZedF9p, ZedF9pConfig, ZedF9pOutputs, zed_f9p};
     use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
@@ -66,7 +63,6 @@ mod tests {
             zed_f9p::methods::GNSS.signature().shape,
             MethodShape::Observation
         );
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert!(
             !zed_f9p::methods::GNSS
                 .signature()

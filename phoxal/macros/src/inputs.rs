@@ -186,11 +186,9 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             | InputKind::Stream
             | InputKind::Commands
             | InputKind::Read
-            | InputKind::Request => max_bytes.clone(),
-            InputKind::Latest
-            | InputKind::Setpoint
-            | InputKind::Operation
-            | InputKind::Completions => quote!(None),
+            | InputKind::Request
+            | InputKind::Setpoint => max_bytes.clone(),
+            InputKind::Latest | InputKind::Operation | InputKind::Completions => quote!(None),
         };
         generated_transport_fields.push(quote! {
             ::phoxal::runtime::transport::InputTransportField {
@@ -964,13 +962,25 @@ fn expand_transport_decoder(
             let payload = fresh_param(params);
             type_args.push(payload_type);
             bounds.push(prost_bound(&payload));
-            quote! {
-                #field_text => {
-                    let binding = #binding_fn(binding, #field_text)?;
+            let validate_binding = if options.port.is_some() {
+                quote! {
+                    ::phoxal::runtime::transport::validate_exchange_binding::<
+                        #payload,
+                        ::phoxal::contract::Empty,
+                    >(binding, ::phoxal::__private::PortKind::Setpoint)?;
+                }
+            } else {
+                quote! {
                     ::phoxal::runtime::transport::validate_publication_binding::<#payload>(
                         binding,
                         ::phoxal::__private::PortKind::Setpoint,
                     )?;
+                }
+            };
+            quote! {
+                #field_text => {
+                    let binding = #binding_fn(binding, #field_text)?;
+                    #validate_binding
                     if samples.len() > 1 {
                         return Err(::phoxal::__private::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::BatchTooLarge {
@@ -1792,6 +1802,7 @@ fn parse_options(
                         | InputKind::Events
                         | InputKind::Stream
                         | InputKind::Commands
+                        | InputKind::Setpoint
                 ) =>
             {
                 set_u64(&mut options.max_bytes, &meta, "max_bytes")?;
@@ -1860,6 +1871,12 @@ fn validate_options(kind: InputKind, options: &Options, field: &Field) -> syn::R
         return Err(syn::Error::new_spanned(
             field,
             "Commands requires port = public::CONSTANT",
+        ));
+    }
+    if kind == InputKind::Setpoint && options.port.is_some() && options.max_bytes.is_none() {
+        return Err(syn::Error::new_spanned(
+            field,
+            "a bound Setpoint input requires max_bytes",
         ));
     }
     if !matches!(kind, InputKind::Commands | InputKind::Setpoint) && options.port.is_some() {

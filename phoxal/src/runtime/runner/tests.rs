@@ -394,25 +394,9 @@ fn launch_manifest_reads_component_driver_configuration() {
     let manifest = serde_json::json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "driver-fixture",
-        "document": {
-            "robot": {
-                "id": "driver-fixture",
-                "components": {
-                    "sensor": {
-                        "component": "hardware-driver-fixture",
-                        "mount_site": "sensor_mount",
-                        "driver": {"config": {"value": 42}}
-                    }
-                }
-            },
-            "services": {},
-            "connections": {}
-        },
         "executables": [{
             "instance": "sensor",
-            "path": "bin/sensor",
-            "bytes": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(bytes))
+            "path": "bin/sensor"
         }]
     });
     std::fs::write(
@@ -420,6 +404,11 @@ fn launch_manifest_reads_component_driver_configuration() {
         serde_json::to_vec(&manifest).expect("manifest serializes"),
     )
     .expect("manifest writes");
+    std::fs::write(
+        temporary.join("robot.yaml"),
+        "schema: phoxal/robot/v0\nrobot:\n  id: driver-fixture\n  components:\n    sensor:\n      component: hardware-driver-fixture\n      mount_site: sensor_mount\n      driver:\n        config:\n          value: 42\nservices: {}\nconnections: {}\n",
+    )
+    .expect("compiled robot document writes");
 
     let launch =
         RuntimeLaunchManifest::open(&temporary, "sensor").expect("component driver bundle opens");

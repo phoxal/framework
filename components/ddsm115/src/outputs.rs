@@ -1,6 +1,6 @@
-use phoxal::robotics::EncoderSample;
+use crate::api::__contracts::phoxal::robotics::v1::EncoderSample;
+use crate::api::ddsm115::v1::ddsm115;
 use phoxal::runtime::Sample;
-use phoxal_component_ddsm115::ddsm115;
 
 #[phoxal::runtime::outputs]
 #[derive(Default)]

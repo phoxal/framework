@@ -15,8 +15,10 @@ use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner}
 use phoxal::runtime::execution_protocol::{self, wire as execution_wire};
 use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireSample};
 use phoxal::runtime::{ExecutionTime, ObservationStamp};
-use phoxal_service_kinematics::{OdometryState, kinematics};
-use phoxal_service_world::{Bounds, WindowRequest, WindowResponse, window_response, world};
+phoxal::api!();
+
+use api::__contracts::phoxal::kinematics::v1::OdometryState;
+use api::world::v1::{Bounds, WindowRequest, WindowResponse, window_response, world};
 use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -55,7 +57,6 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
     std::fs::copy(binary, &installed).expect("copy world binary");
     let bytes = std::fs::read(&installed).expect("read world binary");
     let digest = Sha256::digest(&bytes);
-    let signature = kinematics::methods::ODOMETRY.signature();
     let manifest = json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "world-read-transport-proof",
@@ -72,13 +73,13 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
         "simulation": {
             "providers": [{
                 "service_instance": "kinematics",
-                "port": signature.endpoint,
-                "service_fqn": signature.service,
-                "method": signature.method,
+                "port": "odometry",
+                "service_fqn": "phoxal.kinematics.v1.Kinematics",
+                "method": "Odometry",
                 "shape": "observation",
-                "retained_latest": signature.retained_latest,
-                "input_fqn": signature.request,
-                "payload_fqn": signature.response,
+                "retained_latest": true,
+                "input_fqn": "google.protobuf.Empty",
+                "payload_fqn": "phoxal.kinematics.v1.OdometryState",
                 "max_message_bytes": 512,
                 "max_buffered_items": 2
             }]
@@ -175,11 +176,7 @@ async fn publish_odometry(bus: &Connection, sequence: u64, elapsed: Duration) {
     bus.session()
         .expect("session is open")
         .put(
-            bus.full_key(&transport::port_key(
-                "kinematics",
-                kinematics::methods::ODOMETRY.signature().endpoint,
-                "publish",
-            )),
+            bus.full_key(&transport::port_key("kinematics", "odometry", "publish")),
             transport::encode_prost(&value).expect("odometry encodes"),
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))

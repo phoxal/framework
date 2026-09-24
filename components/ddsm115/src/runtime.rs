@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::api::ddsm115::v1::ddsm115;
 use crate::config::Ddsm115Config;
 use crate::inputs::Ddsm115Inputs;
 use crate::outputs::Ddsm115Outputs;
@@ -6,10 +8,6 @@ use anyhow::anyhow;
 use phoxal::runtime::InitContext;
 use phoxal::runtime::Runtime;
 use phoxal::runtime::StepContext;
-#[cfg(test)]
-use phoxal_component_ddsm115::FILE_DESCRIPTOR_SET;
-#[cfg(test)]
-use phoxal_component_ddsm115::ddsm115;
 
 const BACKEND_UNAVAILABLE: &str = "ddsm115 hardware backend unavailable: refusing to model motor or publish fabricated encoder measurements";
 
@@ -49,8 +47,7 @@ impl Runtime for Ddsm115 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, Ddsm115Inputs, Ddsm115Outputs,
-        FILE_DESCRIPTOR_SET, ddsm115,
+        BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, Ddsm115Inputs, Ddsm115Outputs, ddsm115,
     };
     use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::input::InputSet;
@@ -68,7 +65,6 @@ mod tests {
             ddsm115::methods::ENCODER.signature().shape,
             MethodShape::Observation
         );
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert!(
             !ddsm115::methods::ENCODER
                 .signature()

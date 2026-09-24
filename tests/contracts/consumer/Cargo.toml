@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["contract"] }
-phoxal-contract-owner-fixture = { path = "../producer", version = "0.1.0" }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

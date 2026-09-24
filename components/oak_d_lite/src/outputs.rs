@@ -1,10 +1,10 @@
+use crate::api::oak_d_lite::v1::AccelerometerSample;
+use crate::api::oak_d_lite::v1::CameraFrame;
+use crate::api::oak_d_lite::v1::DepthFrame;
+use crate::api::oak_d_lite::v1::GyroscopeSample;
+use crate::api::oak_d_lite::v1::ImuSample;
+use crate::api::oak_d_lite::v1::oak_d_lite;
 use phoxal::runtime::Sample;
-use phoxal_component_oak_d_lite::AccelerometerSample;
-use phoxal_component_oak_d_lite::CameraFrame;
-use phoxal_component_oak_d_lite::DepthFrame;
-use phoxal_component_oak_d_lite::GyroscopeSample;
-use phoxal_component_oak_d_lite::ImuSample;
-use phoxal_component_oak_d_lite::oak_d_lite;
 
 /// OAK-D Lite observations admitted at one Runtime boundary.
 #[phoxal::runtime::outputs]

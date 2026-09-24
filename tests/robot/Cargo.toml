@@ -9,10 +9,11 @@ description = "Internal four-wheel native-motion qualification robot."
 
 [dependencies]
 phoxal = { workspace = true, features = ["runtime"] }
-phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.2" }
-ddsm115 = { package = "phoxal-component-ddsm115", path = "../../components/ddsm115", version = "=0.0.0-dev.2" }
+phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.3" }
 serde_json.workspace = true
-robot_api = { package = "phoxal-test-robot-api", path = ".phoxal/robot-api" }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

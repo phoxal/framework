@@ -1,3 +1,14 @@
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+#[cfg(test)]
+use crate::api::motion::v1::actuator_target;
+use crate::api::motion::v1::{
+    ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyAccepted,
+    EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus, ReleaseEmergencyRequest,
+    apply_emergency_response, motion,
+};
+#[cfg(test)]
+use crate::api::motion::v1::{Constraint, ConstraintReason};
+use crate::api::motion::v1::{MotionConstraints, Permission};
 use crate::config::{MotionConfig, validate_motion_config};
 #[cfg(test)]
 use crate::drive::setpoint_from_twist;
@@ -9,17 +20,6 @@ use phoxal::contract::Empty;
 #[cfg(test)]
 use phoxal::runtime::input::{Latest, Setpoint};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
-use phoxal_service_kinematics::OdometryState;
-#[cfg(test)]
-use phoxal_service_motion::actuator_target;
-use phoxal_service_motion::{
-    ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyAccepted,
-    EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus, ReleaseEmergencyRequest,
-    apply_emergency_response, motion,
-};
-#[cfg(test)]
-use phoxal_service_motion::{Constraint, ConstraintReason};
-use phoxal_service_motion::{MotionConstraints, Permission};
 
 const INPUT_MAX_AGE_MS: u64 = 100;
 
@@ -376,13 +376,20 @@ fn intent_matches(
     };
     intent
         .filter(|_| match mode {
-            ArmedMode::Manual => inputs.manual.source() == Some(owner_id),
-            ArmedMode::Autonomous => inputs.autonomous.source() == Some(owner_id),
+            ArmedMode::Manual => intent_owner_matches(owner_id, inputs.manual.source()),
+            ArmedMode::Autonomous => intent_owner_matches(owner_id, inputs.autonomous.source()),
         })
         .is_some_and(|_| match mode {
             ArmedMode::Manual => inputs.manual.is_valid_at(now),
             ArmedMode::Autonomous => inputs.autonomous.is_valid_at(now),
         })
+}
+
+fn intent_owner_matches(command_owner: &str, intent_source: Option<&str>) -> bool {
+    // The supervisor publishes scenario setpoints as its virtual graph source.
+    // Its external Commands ingress names that same authority supervisor.public.
+    intent_source == Some(command_owner)
+        || (command_owner == "supervisor.public" && intent_source == Some("supervisor"))
 }
 
 fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now: ExecutionTime) {
@@ -430,7 +437,7 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
     if state
         .selected_owner_id
         .as_deref()
-        .is_some_and(|selected_owner| selected_owner != owner)
+        .is_some_and(|selected_owner| !intent_owner_matches(selected_owner, Some(owner)))
     {
         state.disarm();
         return;
@@ -919,6 +926,22 @@ mod tests {
         let status = service.status(&state);
         assert_eq!(status.mode, ControlMode::Disarmed as i32);
         assert!(status.stopped);
+    }
+
+    #[test]
+    fn supervisor_scenario_setpoint_matches_authenticated_public_command() {
+        assert!(super::intent_owner_matches(
+            "supervisor.public",
+            Some("supervisor")
+        ));
+        assert!(!super::intent_owner_matches(
+            "operator-a",
+            Some("supervisor")
+        ));
+        assert!(!super::intent_owner_matches(
+            "supervisor.public",
+            Some("operator-a")
+        ));
     }
 
     #[test]

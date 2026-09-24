@@ -41,6 +41,24 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
     let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
+        Command::Prepare(arguments) => {
+            let layout = crate::project::ProjectLayout::discover(
+                std::env::current_dir().map_err(|source| {
+                    crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
+                        path: ".".into(),
+                        source,
+                    })
+                })?,
+            )?;
+            let changes = crate::project::participant::prepare(
+                &layout,
+                &arguments.options.into_options(Vec::new(), Vec::new()),
+            )?;
+            for change in changes {
+                eprintln!("prepared {change}");
+            }
+            Ok(())
+        }
         Command::Simulation(arguments) => match arguments.command {
             SimulationCommand::Install(arguments) => run_simulator_install(arguments, false),
             SimulationCommand::Upgrade(arguments) => run_simulator_install(arguments, true),
@@ -65,7 +83,6 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                     let output = arguments.output.clone();
                     let options = arguments.into_options();
                     let prepared = project.prepare(&options)?;
-                    print_preparation(&prepared);
                     let output = output.unwrap_or_else(|| prepared.default_bundle_path());
                     let bundle = prepared.build_bundle(&options, output)?;
                     print_status(
@@ -78,7 +95,6 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                     let output = arguments.output.clone();
                     let options = arguments.into_options();
                     let prepared = project.prepare(&options)?;
-                    print_preparation(&prepared);
                     let output = output.unwrap_or_else(|| prepared.default_bundle_path());
                     let bundle = prepared.run_local(&options, output)?;
                     print_status(
@@ -89,16 +105,21 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                 }
                 Command::Test(arguments) => run_test(&project, arguments),
                 Command::Update(arguments) => {
-                    let options = arguments.into_options();
-                    let outputs = project.update(&options)?;
-                    for output in outputs {
-                        print_bytes(&output.stdout, false);
-                        print_bytes(&output.stderr, true);
+                    let options = arguments.options.into_options(Vec::new(), Vec::new());
+                    let changes = project.update(
+                        &options,
+                        arguments.dry_run,
+                        arguments.role.as_deref(),
+                        arguments.instance.as_deref(),
+                    )?;
+                    for change in changes {
+                        println!("{change}");
                     }
                     Ok(())
                 }
                 Command::Simulation(_) => unreachable!("simulation was handled above"),
                 Command::Publish(_) => unreachable!("publish was handled above"),
+                Command::Prepare(_) => unreachable!("prepare was handled above"),
             }
         }
     }
@@ -359,12 +380,9 @@ fn run_cargo(
 ) -> Result<(), crate::project::Error> {
     let json = json_requested(&options);
     let prepared = project.prepare(&options)?;
-    print_preparation(&prepared);
     let outputs = match operation {
         CargoOperation::Check => prepared.check(&options)?,
-        CargoOperation::Test | CargoOperation::Build | CargoOperation::Update => {
-            prepared.run(operation, &options)?
-        }
+        CargoOperation::Test | CargoOperation::Build => prepared.run(operation, &options)?,
     };
     for output in outputs {
         print_bytes(&output.stdout, false);
@@ -395,7 +413,6 @@ fn run_test(project: &Project, arguments: TestArgs) -> Result<(), crate::project
     let options = options.into_options(cargo_args, test_args);
     let json = json_requested(&options);
     let prepared = project.prepare(&options)?;
-    print_preparation(&prepared);
     let outputs = crate::project::scenario::fixture_host::run_tests(
         project,
         &prepared,
@@ -525,26 +542,6 @@ fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
     }
 }
 
-fn print_preparation(prepared: &crate::project::PreparedProject) {
-    for change in prepared.preparation_changes() {
-        match change {
-            crate::project::PreparationChange::SupervisorDependencyAdded {
-                dependency,
-                requirement,
-            } => eprintln!("prepared dependency {dependency} ({requirement})"),
-            crate::project::PreparationChange::RobotApiDependencyAdded { package, path } => {
-                eprintln!("prepared generated dependency robot_api ({package} at {path})")
-            }
-            crate::project::PreparationChange::RobotApiFileWritten { path } => {
-                eprintln!("prepared generated robot API file {path}")
-            }
-            crate::project::PreparationChange::ServiceContractFileWritten { package, path } => {
-                eprintln!("prepared generated contract {package}/{path}")
-            }
-        }
-    }
-}
-
 fn print_bytes(bytes: &[u8], stderr: bool) {
     if bytes.is_empty() {
         return;
@@ -576,19 +573,22 @@ impl Cli {
                 json_common(&arguments.options, &arguments.cargo_args)
             }
             Command::Test(arguments) => json_common(&arguments.options, &[]),
-            Command::Update(arguments) => json_common(&arguments.options, &arguments.cargo_args),
+            Command::Update(arguments) => json_common(&arguments.options, &[]),
             Command::Simulation(arguments) => match &arguments.command {
                 SimulationCommand::Install(_) | SimulationCommand::Upgrade(_) => false,
                 SimulationCommand::Status(_) | SimulationCommand::Uninstall => false,
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
             },
             Command::Publish(_) => false,
+            Command::Prepare(arguments) => json_common(&arguments.options, &[]),
         }
     }
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Install exact selected participants and prepare their Protobuf sources.
+    Prepare(PrepareArgs),
     /// Prepare the project, validate composition, and Cargo-check selected targets.
     Check(CommandArgs),
     /// Prepare the project, validate composition, and build selected targets.
@@ -597,12 +597,18 @@ enum Command {
     Run(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
-    /// Resolve permitted Cargo updates and validate the resulting Phoxal graph.
+    /// Inspect or apply newer exact versions of selected participants.
     Update(UpdateArgs),
     /// Provision and run the independent native simulator application.
     Simulation(SimulationArgs),
     /// Prepare an authored component or service package for registry review.
     Publish(PublishArgs),
+}
+
+#[derive(Debug, Args)]
+struct PrepareArgs {
+    #[command(flatten)]
+    options: CommonArgs,
 }
 
 #[derive(Debug, Args)]
@@ -687,15 +693,15 @@ struct SimulationRunArgs {
 struct UpdateArgs {
     #[command(flatten)]
     options: CommonArgs,
-    /// Additional arguments passed to `cargo update`.
-    #[arg(last = true, allow_hyphen_values = true)]
-    cargo_args: Vec<OsString>,
-}
-
-impl UpdateArgs {
-    fn into_options(self) -> CargoOptions {
-        self.options.into_options(self.cargo_args, Vec::new())
-    }
+    /// Report proposed exact versions without changing the project.
+    #[arg(long)]
+    dry_run: bool,
+    /// Select one existing service or component.
+    #[arg(value_parser = ["service", "component"], requires = "instance")]
+    role: Option<String>,
+    /// Instance name of the selected service or component.
+    #[arg(requires = "role")]
+    instance: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1175,23 +1181,25 @@ mod tests {
     }
 
     #[test]
-    fn update_command_preserves_its_cargo_boundary() {
+    fn update_command_selects_one_existing_participant() {
         let parsed = Cli::try_parse_from([
             "cargo-phoxal",
             "update",
             "--offline",
-            "--package",
-            "robot",
-            "--",
             "--dry-run",
+            "service",
+            "motion",
         ])
         .expect("update command parses");
-        let options = match parsed.command {
-            Command::Update(arguments) => arguments.into_options(),
+        let arguments = match parsed.command {
+            Command::Update(arguments) => arguments,
             _ => panic!("the update command parsed as a different variant"),
         };
+        assert!(arguments.dry_run);
+        assert_eq!(arguments.role.as_deref(), Some("service"));
+        assert_eq!(arguments.instance.as_deref(), Some("motion"));
+        let options = arguments.options.into_options(Vec::new(), Vec::new());
         assert!(options.offline);
-        assert_eq!(options.selection.packages, ["robot"]);
-        assert_eq!(options.cargo_args, [OsString::from("--dry-run")]);
+        assert!(options.cargo_args.is_empty());
     }
 }

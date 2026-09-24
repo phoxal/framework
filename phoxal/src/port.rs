@@ -220,41 +220,6 @@ impl PortSignature {
     }
 }
 
-/// Magic prefix used for framed descriptor payloads in native artifact
-/// sections.
-pub const DESCRIPTOR_FRAME_MAGIC: [u8; 8] = *b"PHXDESC0";
-
-/// Number of bytes before a framed descriptor payload.
-pub const DESCRIPTOR_FRAME_HEADER_BYTES: usize = 16;
-
-/// Builds one bounded, length-delimited descriptor frame at compile time.
-///
-/// A length prefix is required because linkers concatenate same-named section
-/// fragments from every object file and may add alignment padding between
-/// them.  The generated owner code supplies the exact output array length.
-pub const fn descriptor_frame<const N: usize>(descriptor_set: &[u8]) -> [u8; N] {
-    assert!(N == DESCRIPTOR_FRAME_HEADER_BYTES + descriptor_set.len());
-    let mut frame = [0_u8; N];
-    let mut index = 0;
-    while index < DESCRIPTOR_FRAME_MAGIC.len() {
-        frame[index] = DESCRIPTOR_FRAME_MAGIC[index];
-        index += 1;
-    }
-    let length = descriptor_set.len() as u64;
-    let length_bytes = length.to_le_bytes();
-    index = 0;
-    while index < length_bytes.len() {
-        frame[8 + index] = length_bytes[index];
-        index += 1;
-    }
-    index = 0;
-    while index < descriptor_set.len() {
-        frame[DESCRIPTOR_FRAME_HEADER_BYTES + index] = descriptor_set[index];
-        index += 1;
-    }
-    frame
-}
-
 /// Common metadata exposed by every typed port reference.
 pub trait PortDescriptor: Copy + fmt::Debug + Send + Sync + 'static {
     /// The semantic kind fixed by the owning Protobuf method.

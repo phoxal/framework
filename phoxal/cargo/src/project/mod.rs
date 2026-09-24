@@ -9,12 +9,17 @@ mod bundle;
 mod cargo;
 mod discovery;
 mod document;
+#[allow(dead_code)]
 mod error;
 mod file_lock;
+pub(crate) mod participant;
+#[allow(dead_code)]
 mod preparation;
+#[allow(dead_code)]
 mod publication;
-mod robot_api;
+#[allow(dead_code)]
 pub mod scenario;
+#[allow(dead_code)]
 mod selection;
 mod simulation;
 mod submission;
@@ -23,23 +28,15 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-pub use bundle::{BundleSourceFile, BundleSourceKind, digest_source_files};
 pub use bundle::{CompiledBundle, SimulationModelFacts};
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
 pub use document::RobotDocument;
 pub use error::{DiscoveryError, Error, PublicationError, SourceError};
-pub use preparation::PreparationChange;
 pub use publication::{
     PublicationKind, PublicationOptions, PublicationResult, prepare_publication,
 };
-#[cfg(test)]
-pub use selection::TargetRole;
-pub use selection::{
-    PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,
-    SourceSelection, resolve_sources,
-};
+pub use selection::{SelectedTarget, SourceSelection};
 pub use simulation::{
     SimulationBound, SimulationPresentation, SimulationRunOptions, SimulationRunReport,
     install_simulator, simulator_status, uninstall_simulator,
@@ -110,163 +107,44 @@ impl Project {
         options: &CargoOptions,
         before_resolution: impl FnOnce(&Path, &Path, Option<&Path>) -> Result<T, Error>,
     ) -> Result<(PreparedProject, T), Error> {
-        let mut preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
-        if let Err(error) = preparation::prepare_robot_api_in_transaction(
-            &self.layout,
-            &self.document,
+        participant::prepare(&self.layout, options)?;
+        let result = before_resolution(self.layout.cargo_manifest(), self.layout.root(), None)?;
+        let metadata = cargo::load_metadata_at(
+            self.layout.cargo_manifest(),
+            self.layout.root(),
+            None,
             options,
-            &mut preparation,
-        ) {
-            return rollback_preparation(preparation, error);
-        }
-        let local_source = match publication::prepare_local_project_source(&self.layout) {
-            Ok(source) => source,
-            Err(error) => return rollback_preparation(preparation, error),
-        };
-        let metadata_manifest = local_source
-            .as_ref()
-            .map_or_else(|| self.layout.cargo_manifest(), |source| source.manifest());
-        let metadata_workdir = local_source
-            .as_ref()
-            .map_or_else(|| self.layout.root(), |source| source.cargo_workdir());
-        let metadata_target = local_source.as_ref().map(|source| source.target_dir());
-        let result = match before_resolution(metadata_manifest, metadata_workdir, metadata_target) {
-            Ok(result) => result,
-            Err(error) => return rollback_preparation(preparation, error),
-        };
-        let metadata = match cargo::load_metadata_at(
-            metadata_manifest,
-            metadata_workdir,
-            metadata_target,
-            options,
-        ) {
-            Ok(metadata) => metadata,
-            Err(error) => return rollback_preparation(preparation, error),
-        };
-        if let Err(error) = reject_direct_targetless_git(&metadata) {
-            return rollback_preparation(preparation, error);
-        }
-        let mut cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest)
-        {
-            Ok(sources) => sources,
-            Err(error) => return rollback_preparation(preparation, error.into()),
-        };
-        let mut metadata = metadata;
-        let robot_api_changed = match preparation::finalize_robot_api_in_transaction(
-            &self.layout,
-            &self.document,
-            &cargo_sources,
-            options,
-            &mut preparation,
-        ) {
-            Ok(changed) => changed,
-            Err(error) => return rollback_preparation(preparation, error),
-        };
-        if robot_api_changed {
-            if let Some(source) = &local_source {
-                for relative in [
-                    ".phoxal/robot-api/src/lib.rs",
-                    ".phoxal/robot-api/src/contracts.rs",
-                    ".phoxal/robot-api/src/services.rs",
-                ] {
-                    if let Err(error) =
-                        source.sync_project_file(self.layout.root(), Path::new(relative))
-                    {
-                        return rollback_preparation(preparation, error);
-                    }
-                }
-            }
-            metadata = match cargo::load_metadata_at(
-                metadata_manifest,
-                metadata_workdir,
-                metadata_target,
-                options,
-            ) {
-                Ok(metadata) => metadata,
-                Err(error) => return rollback_preparation(preparation, error),
-            };
-            cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest) {
-                Ok(sources) => sources,
-                Err(error) => return rollback_preparation(preparation, error.into()),
-            };
-        }
-        let cargo_root_package = match metadata.root_package().cloned() {
-            Some(package) => package,
-            None => return rollback_preparation(preparation, SourceError::MissingBrain.into()),
-        };
-        if let Some(source) = &local_source
-            && let Err(error) = source.sync_lock()
-        {
-            return rollback_preparation(preparation, error);
-        }
-        let (logical_metadata, _root_package, _sources) = if let Some(source) = &local_source {
-            let logical_metadata = match source.logical_metadata(&metadata) {
-                Ok(metadata) => metadata,
-                Err(error) => return rollback_preparation(preparation, error),
-            };
-            let root_package = match logical_metadata.root_package().cloned() {
-                Some(package) => package,
-                None => {
-                    return rollback_preparation(preparation, SourceError::MissingBrain.into());
-                }
-            };
-            (
-                logical_metadata,
-                root_package,
-                logical_source_selection(&cargo_sources, source),
-            )
-        } else {
-            (
-                metadata.clone(),
-                cargo_root_package.clone(),
-                cargo_sources.clone(),
-            )
-        };
-        let preparation_changes = preparation.commit();
-        let logical_workspace_root = local_source.as_ref().map_or_else(
-            || logical_metadata.workspace_root.as_std_path().to_owned(),
-            |source| source.logical_workspace_root().to_owned(),
-        );
+        )?;
+        reject_direct_targetless_git(&metadata)?;
+        let cargo_sources =
+            selection::resolve_prepared_sources(&self.layout, &self.document, &metadata, options)?;
+        let cargo_root_package = metadata
+            .root_package()
+            .cloned()
+            .ok_or(SourceError::MissingBrain)?;
         Ok((
             PreparedProject {
                 layout: self.layout.clone(),
                 document: self.document.clone(),
-                metadata: logical_metadata,
+                metadata: metadata.clone(),
                 cargo_metadata: metadata,
-                #[cfg(test)]
-                root_package: _root_package,
                 cargo_root_package,
-                #[cfg(test)]
-                sources: _sources,
                 cargo_sources,
-                preparation_changes,
-                local_source: local_source.map(Arc::new),
-                logical_workspace_root,
+                local_source: None,
             },
             result,
         ))
     }
 
-    /// Runs an explicit Cargo update and validates the resulting Phoxal graph.
-    ///
-    /// The update is deliberately a project operation rather than a bare
-    /// Cargo passthrough.  Cargo first resolves the caller's permitted update
-    /// request, then a fresh metadata preparation and exact contract check
-    /// must succeed before this method reports success.  Update-only trailing
-    /// Cargo arguments are not replayed into the validation builds.
-    pub fn update(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
-        cargo::validate_update_options(options)?;
-        let (prepared, output) = self.prepare_with(options, |manifest, workdir, target| {
-            cargo::update(manifest, workdir, target, options)
-        })?;
-        let validation_options = CargoOptions {
-            cargo_args: Vec::new(),
-            test_args: Vec::new(),
-            selection: CargoSelection::default(),
-            ..options.clone()
-        };
-        prepared.check(&validation_options)?;
-        Ok(vec![output])
+    /// Updates exact participant versions only after preparing and validating the proposal.
+    pub fn update(
+        &self,
+        options: &CargoOptions,
+        dry_run: bool,
+        role: Option<&str>,
+        instance: Option<&str>,
+    ) -> Result<Vec<String>, Error> {
+        participant::update(&self.layout, options, dry_run, role, instance)
     }
 
     /// Provisions the independent simulator application, probes its native
@@ -336,103 +214,6 @@ fn reject_direct_targetless_git(metadata: &cargo_metadata::Metadata) -> Result<(
     Ok(())
 }
 
-fn rollback_preparation<T>(
-    preparation: preparation::ManifestTransaction,
-    error: Error,
-) -> Result<T, Error> {
-    match preparation.rollback() {
-        Ok(()) => Err(error),
-        Err(restore) => Err(restore),
-    }
-}
-
-fn logical_source_selection(
-    sources: &SourceSelection,
-    source: &publication::LocalProjectSource,
-) -> SourceSelection {
-    SourceSelection {
-        brain: logical_target(&sources.brain, source),
-        supervisor: logical_target(&sources.supervisor, source),
-        services: sources
-            .services
-            .iter()
-            .map(|(instance, service)| {
-                (
-                    instance.clone(),
-                    SelectedService {
-                        instance: service.instance.clone(),
-                        dependency_key: service.dependency_key.clone(),
-                        package_id: source.logical_package_id(&service.package_id),
-                        package: service.package.clone(),
-                        source: logical_package_source(&service.source, source),
-                        library: logical_target(&service.library, source),
-                        binary: logical_target(&service.binary, source),
-                    },
-                )
-            })
-            .collect(),
-        components: sources
-            .components
-            .iter()
-            .map(|(instance, component)| {
-                (
-                    instance.clone(),
-                    SelectedComponent {
-                        instance: component.instance.clone(),
-                        dependency_key: component.dependency_key.clone(),
-                        package_id: source.logical_package_id(&component.package_id),
-                        package: component.package.clone(),
-                        source: logical_package_source(&component.source, source),
-                        mount_site: component.mount_site.clone(),
-                        definition: component.definition.clone(),
-                        driver: component.driver.as_ref().map(|driver| SelectedDriver {
-                            dependency_key: driver.dependency_key.clone(),
-                            package_id: source.logical_package_id(&driver.package_id),
-                            package: driver.package.clone(),
-                            source: logical_package_source(&driver.source, source),
-                            binary: logical_target(&driver.binary, source),
-                        }),
-                    },
-                )
-            })
-            .collect(),
-    }
-}
-
-fn logical_target(
-    target: &SelectedTarget,
-    source: &publication::LocalProjectSource,
-) -> SelectedTarget {
-    SelectedTarget {
-        package_id: source.logical_package_id(&target.package_id),
-        package: target.package.clone(),
-        target: target.target.clone(),
-        source_path: source.logical_path(&target.source_path),
-        required_features: target.required_features.clone(),
-        feature_dependency: target.feature_dependency.clone(),
-    }
-}
-
-fn logical_package_source(
-    package_source: &PackageSource,
-    source: &publication::LocalProjectSource,
-) -> PackageSource {
-    match package_source {
-        PackageSource::Local { manifest_path } => PackageSource::Local {
-            manifest_path: source.logical_path(manifest_path),
-        },
-        PackageSource::Git { source: value } => PackageSource::Git {
-            source: value.clone(),
-        },
-        PackageSource::Registry { source: value } => PackageSource::Registry {
-            source: value.clone(),
-        },
-        PackageSource::Other { source: value } => PackageSource::Other {
-            source: value.clone(),
-        },
-    }
-}
-
 /// A validated project and the Cargo graph used for its selected sources.
 #[derive(Debug, Clone)]
 pub struct PreparedProject {
@@ -440,15 +221,9 @@ pub struct PreparedProject {
     document: RobotDocument,
     metadata: cargo_metadata::Metadata,
     cargo_metadata: cargo_metadata::Metadata,
-    #[cfg(test)]
-    root_package: cargo_metadata::Package,
     cargo_root_package: cargo_metadata::Package,
-    #[cfg(test)]
-    sources: SourceSelection,
     cargo_sources: SourceSelection,
-    preparation_changes: Vec<PreparationChange>,
     local_source: Option<Arc<publication::LocalProjectSource>>,
-    logical_workspace_root: PathBuf,
 }
 
 impl PreparedProject {
@@ -464,52 +239,16 @@ impl PreparedProject {
         &self.document
     }
 
-    /// Returns Cargo's complete metadata graph to compiler integration tests.
-    #[cfg(test)]
-    pub fn metadata(&self) -> &cargo_metadata::Metadata {
-        &self.metadata
-    }
-
     pub(crate) fn cargo_metadata(&self) -> &cargo_metadata::Metadata {
         &self.cargo_metadata
-    }
-
-    /// Returns the workspace root owning the retained Cargo.lock.
-    #[must_use]
-    pub fn cargo_workspace_root(&self) -> &Path {
-        &self.logical_workspace_root
-    }
-
-    /// Returns the logical root Cargo.lock path.
-    #[must_use]
-    pub fn cargo_lock(&self) -> PathBuf {
-        self.layout.cargo_lock(self.cargo_workspace_root())
-    }
-
-    /// Returns the root package selected as the mandatory brain source.
-    #[cfg(test)]
-    pub fn root_package(&self) -> &cargo_metadata::Package {
-        &self.root_package
     }
 
     pub(crate) fn cargo_root_package(&self) -> &cargo_metadata::Package {
         &self.cargo_root_package
     }
 
-    /// Returns all explicit Cargo-backed source selections.
-    #[cfg(test)]
-    pub fn sources(&self) -> &SourceSelection {
-        &self.sources
-    }
-
     pub(crate) fn cargo_sources(&self) -> &SourceSelection {
         &self.cargo_sources
-    }
-
-    /// Returns the automatic dependency additions made during preparation.
-    #[must_use]
-    pub fn preparation_changes(&self) -> &[PreparationChange] {
-        &self.preparation_changes
     }
 
     pub(crate) fn cargo_manifest_path(&self) -> &Path {
@@ -570,22 +309,19 @@ impl PreparedProject {
     ///
     /// The output is a source-side compiled directory containing the selected
     /// brain, service, and component-driver binaries plus the exact supervisor
-    /// executable and inspectable manifest and provenance records.
+    /// executable and inspectable manifest records.
     pub fn build_bundle(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
-        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), None, None)
+        bundle::assemble_with_inputs(self, options, output, false, None, None)
     }
 
     /// Builds the exact supervisor binary selected through the root Cargo
     /// graph and returns Cargo's reported executable path.
     pub fn build_supervisor(&self, options: &CargoOptions) -> Result<PathBuf, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
         let output = cargo::build_target(self, &self.cargo_sources.supervisor, options)?;
-        bundle::verify_build_inputs(self, &build_inputs)?;
         let executable = cargo::artifact_path(&output.stdout, &self.cargo_sources.supervisor)?;
         let metadata =
             std::fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
@@ -649,15 +385,7 @@ impl PreparedProject {
         output: impl AsRef<Path>,
         facts: &SimulationModelFacts,
     ) -> Result<CompiledBundle, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
-        bundle::assemble_with_inputs(
-            self,
-            options,
-            output,
-            Some(&build_inputs),
-            Some(facts),
-            None,
-        )
+        bundle::assemble_with_inputs(self, options, output, true, Some(facts), None)
     }
 
     /// Builds the immutable controlled-simulation bundle while validating one
@@ -670,12 +398,11 @@ impl PreparedProject {
         facts: &SimulationModelFacts,
         program: &phoxal::scenario::__internal::Program,
     ) -> Result<CompiledBundle, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
         bundle::assemble_with_inputs(
             self,
             options,
             output,
-            Some(&build_inputs),
+            true,
             Some(facts),
             Some(bundle::SimulationRunInput {
                 program,
@@ -690,18 +417,25 @@ impl PreparedProject {
         output: impl AsRef<Path>,
         program: &phoxal::scenario::__internal::Program,
     ) -> Result<CompiledBundle, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
         bundle::assemble_with_inputs(
             self,
             options,
             output,
-            Some(&build_inputs),
+            true,
             None,
             Some(bundle::SimulationRunInput {
                 program,
                 fixture_instance_id: "scenario",
             }),
         )
+    }
+
+    pub(crate) fn build_probe_bundle(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+    ) -> Result<CompiledBundle, Error> {
+        bundle::assemble_with_inputs(self, options, output, true, None, None)
     }
 
     pub(crate) fn assembly_targets(&self) -> Vec<(String, &SelectedTarget)> {
@@ -722,23 +456,6 @@ impl PreparedProject {
                         .as_ref()
                         .map(|driver| (instance.clone(), &driver.binary))
                 }),
-        );
-        targets
-    }
-
-    pub(crate) fn execution_targets(&self) -> Vec<&SelectedTarget> {
-        let mut targets = vec![&self.cargo_sources.brain];
-        targets.extend(
-            self.cargo_sources
-                .services
-                .values()
-                .map(|service| &service.binary),
-        );
-        targets.extend(
-            self.cargo_sources
-                .components
-                .values()
-                .filter_map(|component| component.driver.as_ref().map(|driver| &driver.binary)),
         );
         targets
     }

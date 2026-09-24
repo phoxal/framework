@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package phoxal.motion.v1;
+
+enum ConstraintReason {
+  CONSTRAINT_REASON_UNSPECIFIED = 0;
+  CONSTRAINT_REASON_WORLD_UNAVAILABLE = 1;
+  CONSTRAINT_REASON_LOCALIZATION_UNCERTAIN = 2;
+  CONSTRAINT_REASON_MAP_UNAVAILABLE = 3;
+  CONSTRAINT_REASON_MAP_BLOCKED = 4;
+  CONSTRAINT_REASON_RANGE_UNAVAILABLE = 5;
+  CONSTRAINT_REASON_RANGE_FAULT = 6;
+  CONSTRAINT_REASON_OBSTACLE_PROXIMITY = 7;
+  CONSTRAINT_REASON_MOTION_UNAVAILABLE = 8;
+  CONSTRAINT_REASON_MOTION_FAULT = 9;
+}
+
+message Constraint {
+  ConstraintReason reason = 1;
+  optional double max_linear_speed_mps = 2;
+  optional double max_angular_speed_radps = 3;
+  optional double observed_value = 4;
+}
+
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  PERMISSION_CLEAR = 1;
+  PERMISSION_LIMITED = 2;
+  PERMISSION_STOPPED = 3;
+}
+
+message MotionConstraints {
+  uint64 sequence = 1;
+  Permission permission = 2;
+  repeated Constraint constraints = 3;
+  uint64 valid_from_nanos = 4;
+  uint64 expires_at_nanos = 5;
+  // Oldest source capture supporting this product, in the execution timeline.
+  // Republishing or deriving state must preserve this time.
+  optional uint64 oldest_capture_time_nanos = 6;
+}

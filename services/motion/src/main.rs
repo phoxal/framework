@@ -1,3 +1,5 @@
+phoxal::api!();
+
 mod config;
 mod drive;
 mod inputs;

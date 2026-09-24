@@ -10,13 +10,13 @@ use phoxal::runtime::{
 };
 
 use super::*;
+use crate::api::__contracts::phoxal::fixture::hardware::v1::{
+    FixtureObservation, FixtureSetpoint, hardware_fixture,
+};
 use phoxal::contract::{MethodDescriptor, MethodShape};
 use phoxal::runtime::{
     Sample,
     input::{Samples, Setpoint},
-};
-use phoxal_hardware_driver_fixture::{
-    FILE_DESCRIPTOR_SET, FixtureObservation, FixtureSetpoint, hardware_fixture,
 };
 
 const SETPOINT_VALID_FOR_MS: u64 = 50;
@@ -318,7 +318,12 @@ fn generated_contract_owns_the_fixture_methods() {
             .valid_for_ms(),
         100
     );
-    assert!(!FILE_DESCRIPTOR_SET.is_empty());
+    assert!(
+        !hardware_fixture::methods::OBSERVATIONS
+            .signature()
+            .descriptor_set()
+            .is_empty()
+    );
     assert!(
         !hardware_fixture::methods::OBSERVATIONS
             .signature()

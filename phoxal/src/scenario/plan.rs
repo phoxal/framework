@@ -388,11 +388,7 @@ impl Action {
                         actual: consumer_signature.kind,
                     });
                 }
-                if encoded_payload.is_empty() {
-                    return Err(PlanValidationError::EmptyPayload {
-                        step_label: step_label.to_owned(),
-                    });
-                }
+                // A message containing only default fields has a valid zero-byte encoding.
                 if encoded_payload.len() > MAX_PAYLOAD {
                     return Err(PlanValidationError::PayloadTooLarge {
                         step_label: step_label.to_owned(),
@@ -440,11 +436,7 @@ impl Action {
                         actual: service_signature.kind,
                     });
                 }
-                if request_encoded.is_empty() {
-                    return Err(PlanValidationError::EmptyPayload {
-                        step_label: step_label.to_owned(),
-                    });
-                }
+                // An empty Protobuf message has a valid zero-byte encoding.
                 if request_encoded.len() > MAX_PAYLOAD {
                     return Err(PlanValidationError::PayloadTooLarge {
                         step_label: step_label.to_owned(),
@@ -733,9 +725,6 @@ pub enum PlanValidationError {
         expected: crate::port::PortKind,
         actual: crate::port::PortKind,
     },
-    EmptyPayload {
-        step_label: String,
-    },
     PayloadTooLarge {
         step_label: String,
         bytes: usize,
@@ -815,9 +804,6 @@ impl std::fmt::Display for PlanValidationError {
                 f,
                 "step `{step_label}` has wrong port kind: expected {expected:?}, got {actual:?}"
             ),
-            Self::EmptyPayload { step_label } => {
-                write!(f, "step `{step_label}` has an empty encoded payload")
-            }
             Self::PayloadTooLarge { step_label, bytes } => write!(
                 f,
                 "step `{step_label}` payload is {bytes} bytes, exceeding the {MAX_PAYLOAD}-byte cap"
@@ -1035,21 +1021,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_payload() {
-        // Bypass the typed constructor to expose an empty payload
-        // to the plan validator.
-        let bad = Action::Setpoint {
+    fn accepts_empty_protobuf_payload() {
+        let action = Action::Setpoint {
             target_instance: "motion_target".to_owned(),
             consumer_signature: setpoint_sig(),
             encoded_payload: vec![],
             validity: Validity::Permanent,
         };
-        let steps = vec![Step::new("empty", 0, bad)];
+        let steps = vec![Step::new("empty", 0, action)];
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(1), steps, vec![]);
-        assert!(matches!(
-            plan.unwrap_err(),
-            PlanValidationError::EmptyPayload { .. }
-        ));
+        assert!(plan.is_ok());
     }
 
     #[test]

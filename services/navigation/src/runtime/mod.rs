@@ -1,3 +1,12 @@
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+#[cfg(test)]
+use crate::api::__contracts::phoxal::world::v1::WorldRevision;
+use crate::api::navigation::v1::{
+    ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
+    GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
+    UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
+    navigation,
+};
 use crate::config::{NavigationConfig, validate_navigation_config};
 use crate::inputs::NavigationInputs;
 use crate::outputs::NavigationOutputs;
@@ -7,15 +16,6 @@ use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::{Commands, Latest};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
-use phoxal_service_kinematics::OdometryState;
-use phoxal_service_navigation::{
-    ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
-    GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
-    UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
-    navigation,
-};
-#[cfg(test)]
-use phoxal_service_world::WorldRevision;
 use std::collections::VecDeque;
 
 const LOCALIZATION_MAX_AGE_MS: u64 = 100;
@@ -55,7 +55,7 @@ impl PlannerState {
         !self.unavailable_reasons.is_empty()
     }
 
-    fn set_active_goal(&mut self, goal: &phoxal_service_navigation::StartGoal, map_revision: u64) {
+    fn set_active_goal(&mut self, goal: &crate::api::navigation::v1::StartGoal, map_revision: u64) {
         self.phase = Phase::Searching;
         self.active_goal_id = Some(goal.goal_id.clone());
         self.target = goal.target.clone();
@@ -206,7 +206,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     if validation::status_request(request).is_err() {
         return GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-                phoxal_service_navigation::GoalUnknownOrNoLongerRetained {
+                crate::api::navigation::v1::GoalUnknownOrNoLongerRetained {
                     goal_id: request.goal_id.clone(),
                 },
             )),
@@ -215,7 +215,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     if state.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
         return GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::Running(
-                phoxal_service_navigation::GoalRunning {
+                crate::api::navigation::v1::GoalRunning {
                     goal_id: request.goal_id.clone(),
                 },
             )),
@@ -232,7 +232,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     }
     GetGoalStatusResponse {
         status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-            phoxal_service_navigation::GoalUnknownOrNoLongerRetained {
+            crate::api::navigation::v1::GoalUnknownOrNoLongerRetained {
                 goal_id: request.goal_id.clone(),
             },
         )),
@@ -306,7 +306,7 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
 fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            phoxal_service_navigation::Refused {
+            crate::api::navigation::v1::Refused {
                 reason: RefusalReason::Unavailable.into(),
                 unavailable_reasons: reasons.to_vec(),
             },
@@ -317,7 +317,7 @@ fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
 fn refused(reason: RefusalReason) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            phoxal_service_navigation::Refused {
+            crate::api::navigation::v1::Refused {
                 reason: reason.into(),
                 unavailable_reasons: Vec::new(),
             },
@@ -328,7 +328,7 @@ fn refused(reason: RefusalReason) -> ApplyCommandResponse {
 fn accepted() -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Accepted(
-            phoxal_service_navigation::Accepted {},
+            crate::api::navigation::v1::Accepted {},
         )),
     }
 }
@@ -461,7 +461,7 @@ mod tests {
     fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Start(
-                phoxal_service_navigation::StartGoal {
+                crate::api::navigation::v1::StartGoal {
                     goal_id: goal_id.to_owned(),
                     target: Some(GoalTarget {
                         frame_id: "map".to_owned(),
@@ -477,7 +477,7 @@ mod tests {
     fn cancel(goal_id: &str) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Cancel(
-                phoxal_service_navigation::CancelGoal {
+                crate::api::navigation::v1::CancelGoal {
                     goal_id: goal_id.to_owned(),
                 },
             )),

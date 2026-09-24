@@ -22,8 +22,8 @@ use crate::project::error::{ValidationError, ValidationErrors};
 // truth for every inert record; this tool module keeps the
 // tool's validation logic and reads YAML.
 pub use phoxal::artifact::document::{
-    BrainSelection, ComponentDocument, ComponentInstance, ConnectionSources, PortReference,
-    RobotDocument, ServiceSelection, ServiceSource,
+    BrainSelection, ComponentDocument, ConnectionSources, PortReference, RobotDocument,
+    ServiceSource,
 };
 
 /// Parses and validates a `robot.yaml` document with its authored path
@@ -133,15 +133,30 @@ fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
                 field: "robot.components".to_owned(),
             });
         }
-        if component.component.trim().is_empty() {
+        if component.package.trim().is_empty() {
             errors.push(ValidationError::EmptySourceKey {
-                field: format!("robot.components.{instance}.component"),
+                field: format!("robot.components.{instance}.package"),
             });
-        } else if !is_identifier(&component.component) {
+        } else if !is_identifier(&component.package) {
             errors.push(ValidationError::InvalidIdentifier {
-                field: format!("robot.components.{instance}.component"),
-                value: component.component.clone(),
+                field: format!("robot.components.{instance}.package"),
+                value: component.package.clone(),
             });
+        }
+        validate_exact_version(
+            &format!("robot.components.{instance}.version"),
+            &component.version,
+            errors,
+        );
+        if let Some(binary) = &component.binary {
+            push_identifier_error(
+                &format!("robot.components.{instance}.binary"),
+                binary,
+                errors,
+            );
+        }
+        if let Some(source) = &component.source {
+            validate_service_source(instance, source, errors);
         }
         if component.mount_site.trim().is_empty() {
             errors.push(ValidationError::EmptySourceKey {
@@ -191,6 +206,16 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
     let RobotDocument::V0 { services, .. } = document;
     for (service, selection) in services {
         push_identifier_error(&format!("services.{service}"), service, errors);
+        push_identifier_error(
+            &format!("services.{service}.package"),
+            &selection.package,
+            errors,
+        );
+        validate_exact_version(
+            &format!("services.{service}.version"),
+            &selection.version,
+            errors,
+        );
         if service == "brain" {
             errors.push(ValidationError::ReservedBrainId {
                 field: "services".to_owned(),
@@ -227,10 +252,10 @@ fn validate_service_source(
         ServiceSource::Git(source) => {
             if source.git.trim().is_empty() {
                 Some("git must not be empty")
-            } else if source.rev.trim().is_empty() {
-                Some("rev must select an immutable Git revision")
-            } else if source.package.trim().is_empty() {
-                Some("Git package must not be empty")
+            } else if source.rev.len() != 40
+                || !source.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                Some("rev must select a complete immutable Git commit")
             } else if source
                 .path
                 .as_ref()
@@ -244,8 +269,6 @@ fn validate_service_source(
         ServiceSource::Registry(source) => {
             if source.registry.trim().is_empty() {
                 Some("registry must not be empty")
-            } else if source.version.trim().is_empty() {
-                Some("version must not be empty")
             } else {
                 None
             }
@@ -257,6 +280,16 @@ fn validate_service_source(
             message: message.to_owned(),
         });
     }
+}
+
+fn validate_exact_version(field: &str, version: &str, errors: &mut Vec<ValidationError>) {
+    if semver::Version::parse(version).is_ok_and(|parsed| parsed.to_string() == version) {
+        return;
+    }
+    errors.push(ValidationError::InvalidIdentifier {
+        field: field.to_owned(),
+        value: version.to_owned(),
+    });
 }
 
 fn validate_connections(document: &RobotDocument, errors: &mut Vec<ValidationError>) {

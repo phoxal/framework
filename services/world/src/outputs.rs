@@ -1,4 +1,4 @@
-use phoxal_service_world::WindowResponse;
+use crate::api::world::v1::WindowResponse;
 
 /// Fresh correlated World call results.
 #[phoxal::runtime::outputs]

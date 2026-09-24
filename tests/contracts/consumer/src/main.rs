@@ -1,5 +1,6 @@
 use phoxal::contract::{CallMethod, Empty, MethodDescriptor, MethodShape, ObservationMethod};
-use phoxal_contract_owner_fixture::{
+phoxal::api!();
+use api::__contracts::example::inspection::v1::{
     InspectionCommandRequest, InspectionCommandResponse, InspectionEvent, InspectionReadRequest,
     InspectionReadResponse, InspectionSample, InspectionSetpoint, InspectionState,
     InspectionStream, inspection::methods,

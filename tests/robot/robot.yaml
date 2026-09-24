@@ -5,7 +5,10 @@ robot:
   model: model.xml
   components:
     front_left_drive:
-      component: ddsm115
+      package: phoxal-component-ddsm115
+      version: "0.0.0-dev.3"
+      source:
+        path: ../../components/ddsm115
       mount_site: front_left_wheel_mount
       driver:
         connection:
@@ -14,7 +17,10 @@ robot:
           baud: 115200
         config: { id: 1 }
     front_right_drive:
-      component: ddsm115
+      package: phoxal-component-ddsm115
+      version: "0.0.0-dev.3"
+      source:
+        path: ../../components/ddsm115
       mount_site: front_right_wheel_mount
       driver:
         connection:
@@ -23,7 +29,10 @@ robot:
           baud: 115200
         config: { id: 2 }
     rear_left_drive:
-      component: ddsm115
+      package: phoxal-component-ddsm115
+      version: "0.0.0-dev.3"
+      source:
+        path: ../../components/ddsm115
       mount_site: rear_left_wheel_mount
       driver:
         connection:
@@ -32,7 +41,10 @@ robot:
           baud: 115200
         config: { id: 3 }
     rear_right_drive:
-      component: ddsm115
+      package: phoxal-component-ddsm115
+      version: "0.0.0-dev.3"
+      source:
+        path: ../../components/ddsm115
       mount_site: rear_right_wheel_mount
       driver:
         connection:
@@ -44,6 +56,8 @@ brain: {}
 
 services:
   controller:
+    package: phoxal-test-controller
+    version: "0.1.0"
     source:
       path: controller
 

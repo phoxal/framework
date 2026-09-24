@@ -1,10 +1,10 @@
 //! Bounded wheel evidence with source-owned capture time and calibrated SI values.
+use crate::api::kinematics::v1::{JointState, UnavailableReason};
 use crate::config::KinematicsConfig;
 use crate::inputs::KinematicsInputs;
 use crate::validation;
 use phoxal::robotics::EncoderSample;
 use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
-use phoxal_service_kinematics::{JointState, UnavailableReason};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type RetainedEncoders = BTreeMap<String, (EncoderSample, ObservationStamp)>;

@@ -8,14 +8,14 @@ use fs4::{FileExt, TryLockError};
 pub(crate) struct ExclusiveFileLock(File);
 
 impl ExclusiveFileLock {
-    pub(crate) fn try_acquire(file: File) -> Result<Self, TryLockError> {
-        FileExt::try_lock(&file)?;
+    pub(crate) fn acquire(file: File) -> std::io::Result<Self> {
+        FileExt::lock(&file)?;
         Ok(Self(file))
     }
 
-    #[cfg(test)]
-    pub(crate) fn clone_descriptor(&self) -> std::io::Result<File> {
-        self.0.try_clone()
+    pub(crate) fn try_acquire(file: File) -> Result<Self, TryLockError> {
+        FileExt::try_lock(&file)?;
+        Ok(Self(file))
     }
 }
 

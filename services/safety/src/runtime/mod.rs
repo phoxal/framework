@@ -1,6 +1,15 @@
 mod assessment;
 use assessment::{assess_motion, assess_ranges, assess_world, is_stop_reason, observed_constraint};
 
+#[cfg(test)]
+#[cfg(test)]
+use crate::api::__contracts::phoxal::motion::v1::MotionStatus;
+use crate::api::__contracts::phoxal::motion::v1::{
+    Constraint, ConstraintReason, MotionConstraints, Permission,
+};
+#[cfg(test)]
+use crate::api::__contracts::phoxal::world::v1::{WorldBelief, WorldRevision};
+use crate::api::safety::v1::{SafetyStatus, safety};
 use crate::config::{SafetyConfig, validate_config};
 use crate::inputs::SafetyInputs;
 use crate::outputs::SafetyOutputs;
@@ -10,12 +19,6 @@ use phoxal::runtime::input::Latest;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{ExecutionTime, InitContext, ObservationStamp, Runtime, StepContext};
-#[cfg(test)]
-use phoxal_service_motion::MotionStatus;
-use phoxal_service_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
-use phoxal_service_safety::{SafetyStatus, safety};
-#[cfg(test)]
-use phoxal_service_world::{WorldBelief, WorldRevision};
 use std::collections::BTreeMap;
 
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;

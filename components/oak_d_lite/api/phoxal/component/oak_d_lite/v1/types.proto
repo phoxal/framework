@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package phoxal.component.oak_d_lite.v1;
+
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double w = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+}
+
+enum ImageEncoding {
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  IMAGE_ENCODING_MONO8 = 1;
+  IMAGE_ENCODING_RGB8 = 2;
+}
+
+message CameraFrame {
+  uint32 width_px = 1;
+  uint32 height_px = 2;
+  ImageEncoding encoding = 3;
+  bytes data = 4;
+}
+
+message DepthFrame {
+  uint32 width_px = 1;
+  uint32 height_px = 2;
+  repeated uint32 depth_mm = 3;
+}
+
+message AccelerometerSample {
+  Vector3 linear_acceleration_mps2 = 1;
+}
+
+message GyroscopeSample {
+  Vector3 angular_velocity_radps = 1;
+}
+
+message ImuSample {
+  optional Quaternion orientation = 1;
+  Vector3 angular_velocity_radps = 2;
+  Vector3 linear_acceleration_mps2 = 3;
+  string sensor_frame_id = 4;
+}

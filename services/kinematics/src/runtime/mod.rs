@@ -1,5 +1,9 @@
 mod measurements;
 
+use crate::api::kinematics::v1::{
+    FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
+    OdometryState, UnavailableReason, kinematics,
+};
 use crate::config::{KinematicsConfig, validate_config};
 use crate::inputs::KinematicsInputs;
 use crate::outputs::KinematicsOutputs;
@@ -11,10 +15,6 @@ use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-use phoxal_service_kinematics::{
-    FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
-    OdometryState, UnavailableReason, kinematics,
-};
 use std::collections::VecDeque;
 
 /// Private state retained by the serialized kinematics owner.

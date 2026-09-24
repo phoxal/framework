@@ -1,3 +1,6 @@
+#[cfg(test)]
+#[cfg(test)]
+use crate::api::bno085::v1::bno085;
 use crate::config::Bno085Config;
 use crate::outputs::Bno085Outputs;
 use anyhow::Result;
@@ -5,10 +8,6 @@ use anyhow::anyhow;
 use phoxal::runtime::InitContext;
 use phoxal::runtime::Runtime;
 use phoxal::runtime::StepContext;
-#[cfg(test)]
-use phoxal_component_bno085::FILE_DESCRIPTOR_SET;
-#[cfg(test)]
-use phoxal_component_bno085::bno085;
 
 const BACKEND_UNAVAILABLE: &str =
     "bno085 hardware backend unavailable: refusing to publish fabricated IMU measurements";
@@ -50,9 +49,7 @@ impl Runtime for Bno085 {
 /// transport, or simulator.
 #[cfg(test)]
 mod tests {
-    use super::{
-        BACKEND_UNAVAILABLE, Bno085, Bno085Config, Bno085Outputs, FILE_DESCRIPTOR_SET, bno085,
-    };
+    use super::{BACKEND_UNAVAILABLE, Bno085, Bno085Config, Bno085Outputs, bno085};
     use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
@@ -73,7 +70,6 @@ mod tests {
             bno085::methods::IMU.signature().shape,
             MethodShape::Observation
         );
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert!(!bno085::methods::IMU.signature().descriptor_set().is_empty());
         assert_eq!(
             Bno085Outputs::FIELDS

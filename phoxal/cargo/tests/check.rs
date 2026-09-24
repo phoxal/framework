@@ -69,7 +69,7 @@ fn check_rejects_the_removed_service_implementation_field() {
         "stderr must name the removed field, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("expected one of `source`, `binary`, `config`"),
+        stderr.contains("expected one of `package`, `version`, `source`, `binary`, `config`"),
         "stderr must surface the current service selection shape, got:\n{stderr}"
     );
 }
@@ -85,7 +85,7 @@ fn check_refuses_locked_mode_when_initialization_is_missing() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("phoxal-supervisor") && stderr.contains("--locked"),
-        "stderr must identify the missing dependency and the locked mode, got:\n{stderr}"
+        stderr.contains("Cargo.lock") && stderr.contains("--locked"),
+        "stderr must identify the missing lockfile and locked mode, got:\n{stderr}"
     );
 }

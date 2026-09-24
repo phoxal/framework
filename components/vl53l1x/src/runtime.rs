@@ -1,3 +1,6 @@
+#[cfg(test)]
+#[cfg(test)]
+use crate::api::vl53l1x::v1::vl53l1x;
 use crate::config::Vl53l1xConfig;
 use crate::outputs::Vl53l1xOutputs;
 use anyhow::Result;
@@ -5,10 +8,6 @@ use anyhow::anyhow;
 use phoxal::runtime::InitContext;
 use phoxal::runtime::Runtime;
 use phoxal::runtime::StepContext;
-#[cfg(test)]
-use phoxal_component_vl53l1x::FILE_DESCRIPTOR_SET;
-#[cfg(test)]
-use phoxal_component_vl53l1x::vl53l1x;
 
 const BACKEND_UNAVAILABLE: &str =
     "vl53l1x hardware backend unavailable: refusing to publish fabricated range measurements";
@@ -48,9 +47,7 @@ impl Runtime for Vl53l1x {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, Vl53l1x, Vl53l1xConfig, Vl53l1xOutputs, vl53l1x,
-    };
+    use super::{BACKEND_UNAVAILABLE, Vl53l1x, Vl53l1xConfig, Vl53l1xOutputs, vl53l1x};
     use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
@@ -66,7 +63,6 @@ mod tests {
             vl53l1x::methods::RANGE.signature().shape,
             MethodShape::Observation
         );
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert!(
             !vl53l1x::methods::RANGE
                 .signature()

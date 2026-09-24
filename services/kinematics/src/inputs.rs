@@ -1,6 +1,6 @@
+use crate::api::kinematics::v1::{LookupFrameRequest, LookupFrameResponse, kinematics};
 use phoxal::robotics::EncoderSample;
 use phoxal::runtime::input::{Commands, Samples};
-use phoxal_service_kinematics::{LookupFrameRequest, LookupFrameResponse, kinematics};
 
 /// One immutable encoder input cut.
 #[phoxal::runtime::inputs]

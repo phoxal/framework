@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use phoxal::communication::session::SupervisorState;
 use phoxal::session::{Connection, ConnectionConfig, Supervisor, connect};
-use sha2::{Digest, Sha256};
 
 const STARTUP: Duration = Duration::from_secs(20);
 
@@ -114,22 +113,16 @@ fn build_bundle() -> TestBundle {
     fs::copy(source, &executable).expect("copy compiled Runtime fixture");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
         .expect("make compiled Runtime fixture executable");
-    let bytes = fs::read(&executable).expect("read copied Runtime fixture");
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let document = serde_json::json!({
+        "schema": "phoxal/robot/v0",
+        "robot": {"id": "runtime-reference", "model": null, "components": {}},
+        "brain": null,
+        "services": {},
+        "connections": {}
+    });
     let manifest = serde_json::json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "runtime-reference",
-        "document": {
-            "schema": "phoxal/robot/v0",
-            "robot": {
-                "id": "runtime-reference",
-                "model": null,
-                "components": {}
-            },
-            "brain": null,
-            "services": {},
-            "connections": {}
-        },
         "root_package": {
             "id": "runtime-reference",
             "name": "runtime-reference",
@@ -145,8 +138,6 @@ fn build_bundle() -> TestBundle {
             "package": "runtime-reference",
             "target": "phoxal-runtime-reference",
             "path": "bin/brain",
-            "bytes": bytes.len(),
-            "sha256": sha256,
             "artifact": support::reference_runtime_artifact()
         }],
         "components": []
@@ -156,6 +147,11 @@ fn build_bundle() -> TestBundle {
         serde_json::to_vec_pretty(&manifest).expect("source manifest serializes"),
     )
     .expect("write source manifest");
+    fs::write(
+        root.join("robot.yaml"),
+        serde_yaml::to_string(&document).expect("compiled robot serializes"),
+    )
+    .expect("write compiled robot");
     TestBundle {
         _temporary_root: temporary_root,
         root,

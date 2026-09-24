@@ -132,6 +132,11 @@ fn serve(
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream
+                    .set_nonblocking(false)
+                    .map_err(|source| Error::SimulationInvalid {
+                        message: format!("cannot configure fixture client blocking mode: {source}"),
+                    })?;
+                stream
                     .set_read_timeout(Some(Duration::from_secs(180)))
                     .map_err(|source| Error::SimulationInvalid {
                         message: format!("cannot configure fixture client read timeout: {source}"),

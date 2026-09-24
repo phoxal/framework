@@ -1,3 +1,6 @@
+#[cfg(test)]
+#[cfg(test)]
+use crate::api::oak_d_lite::v1::oak_d_lite;
 use crate::config::OakDLiteConfig;
 use crate::outputs::OakDLiteOutputs;
 use anyhow::Result;
@@ -5,10 +8,6 @@ use anyhow::anyhow;
 use phoxal::runtime::InitContext;
 use phoxal::runtime::Runtime;
 use phoxal::runtime::StepContext;
-#[cfg(test)]
-use phoxal_component_oak_d_lite::FILE_DESCRIPTOR_SET;
-#[cfg(test)]
-use phoxal_component_oak_d_lite::oak_d_lite;
 
 const BACKEND_UNAVAILABLE: &str = "oak_d_lite hardware backend unavailable: refusing to publish fabricated camera, depth, or IMU measurements";
 
@@ -47,10 +46,7 @@ impl Runtime for OakDLite {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, OakDLite, OakDLiteConfig, OakDLiteOutputs,
-        oak_d_lite,
-    };
+    use super::{BACKEND_UNAVAILABLE, OakDLite, OakDLiteConfig, OakDLiteOutputs, oak_d_lite};
     use phoxal::contract::{MethodDescriptor, MethodShape};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
@@ -72,7 +68,6 @@ mod tests {
         assert_observation_method(oak_d_lite::methods::IMU);
         assert_observation_method(oak_d_lite::methods::ACCELEROMETER);
         assert_observation_method(oak_d_lite::methods::GYROSCOPE);
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
         assert_eq!(
             OakDLiteOutputs::FIELDS
                 .iter()

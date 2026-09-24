@@ -1,6 +1,6 @@
+use crate::api::zed_f9p::v1::GnssSample;
+use crate::api::zed_f9p::v1::zed_f9p;
 use phoxal::runtime::Sample;
-use phoxal_component_zed_f9p::GnssSample;
-use phoxal_component_zed_f9p::zed_f9p;
 
 /// ZED-F9P observations admitted at one Runtime boundary.
 #[phoxal::runtime::outputs]

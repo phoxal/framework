@@ -233,7 +233,7 @@ mod tests {
             },
             bindings: vec![SimulationBinding {
                 target_instance: "controller".to_owned(),
-                source_instance: "scenario".to_owned(),
+                source_instance: "supervisor".to_owned(),
                 signature: MethodSignature {
                     endpoint: "target".to_owned(),
                     service: "phoxal.test.Controller".to_owned(),

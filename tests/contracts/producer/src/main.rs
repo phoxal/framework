@@ -1,7 +1,8 @@
-use prost::Name;
+use phoxal::__generated::prost::Name;
 
 use phoxal::contract::MethodDescriptor;
-use phoxal_contract_owner_fixture::{InspectionState, inspection::methods};
+phoxal::api!();
+use api::__contracts::example::inspection::v1::{InspectionState, inspection::methods};
 
 fn main() {
     assert_eq!(InspectionState::NAME, "InspectionState");

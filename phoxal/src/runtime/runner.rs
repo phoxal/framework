@@ -216,11 +216,29 @@ impl RuntimeLaunchManifest {
             })?;
         let SourceBundleManifest::V0 {
             robot_id: bundle_robot_id,
-            document: bundle_document,
             executables: bundle_executables,
             simulation: bundle_simulation,
             ..
         } = manifest;
+        let document_path = root.join("robot.yaml");
+        let document_metadata = fs::symlink_metadata(&document_path).map_err(|source| {
+            anyhow::anyhow!(RunnerError::BundleIo {
+                path: document_path.clone(),
+                source,
+            })
+        })?;
+        if !document_metadata.is_file() || document_metadata.file_type().is_symlink() {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: "robot.yaml is not a regular file".to_owned(),
+            }));
+        }
+        let document_bytes = read_bounded(&document_path, 16 * 1024 * 1024)?;
+        let bundle_document: SourceDocument =
+            serde_yaml::from_slice(&document_bytes).map_err(|error| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!("cannot decode compiled robot.yaml: {error}"),
+                })
+            })?;
         parse_identifier(instance_id)
             .map_err(|message| anyhow::anyhow!(RunnerError::BundleInvalid { message }))?;
         let executable = bundle_executables
@@ -231,7 +249,6 @@ impl RuntimeLaunchManifest {
                     instance: instance_id.to_owned(),
                 })
             })?;
-        let executable_sha256 = executable.sha256.clone();
         let relative = safe_relative_path(&executable.path)?;
         let executable_path = root.join(relative);
         let path_metadata = fs::symlink_metadata(&executable_path).map_err(|source| {
@@ -267,7 +284,7 @@ impl RuntimeLaunchManifest {
                 message: format!("executable for `{instance_id}` is not a regular file"),
             }));
         }
-        verify_executable(&canonical_executable, executable)?;
+        let executable_sha256 = executable_digest(&canonical_executable)?;
 
         let config = if instance_id == "brain" {
             Value::Object(serde_json::Map::new())
@@ -472,14 +489,17 @@ impl RuntimeLaunchManifest {
         &self,
         field: &super::transport::InputTransportField,
     ) -> crate::Result<Vec<ResolvedInputRoute>> {
-        let Some(signature) = field.signature else {
+        let consumer = format!("{}.{}", self.instance_id, field.name);
+        if field.signature.is_none()
+            || (field.kind == super::input::InputKind::Setpoint
+                && self.connections.contains_key(&consumer))
+        {
             if matches!(
                 field.kind,
                 super::input::InputKind::Operation | super::input::InputKind::Completions
             ) {
                 return Ok(Vec::new());
             }
-            let consumer = format!("{}.{}", self.instance_id, field.name);
             let sources = self.connections.get(&consumer).ok_or_else(|| {
                 anyhow::anyhow!(RunnerError::BundleInvalid {
                     message: format!(
@@ -633,6 +653,15 @@ impl RuntimeLaunchManifest {
                         ),
                     }));
                 }
+                if let Some(signature) = field.signature
+                    && binding != super::transport::PortBinding::from_signature(signature)
+                {
+                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer} <- {source}` does not match the input's generated descriptor"
+                        ),
+                    }));
+                }
                 if let Some(previous) = &first_binding
                     && previous != &binding
                 {
@@ -692,7 +721,12 @@ impl RuntimeLaunchManifest {
                 });
             }
             return Ok(routes);
-        };
+        }
+        let signature = field.signature.ok_or_else(|| {
+            anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!("non-graph input `{}` has no descriptor", field.name),
+            })
+        })?;
         if !matches!(
             field.kind,
             super::input::InputKind::Commands | super::input::InputKind::Setpoint
@@ -2162,12 +2196,6 @@ pub enum RunnerError {
         /// Requested instance.
         instance: String,
     },
-    /// A selected executable digest or size did not match the bundle record.
-    #[error("runtime executable `{instance}` does not match its bundle digest")]
-    ExecutableMismatch {
-        /// Selected instance.
-        instance: String,
-    },
     /// A schedule candidate failed before acceptance.
     #[error("runtime schedule failed: {0}")]
     Schedule(#[from] ScheduleError),
@@ -2244,7 +2272,6 @@ enum SourceBundleManifest {
     #[serde(rename = "phoxal/bundle/v0")]
     V0 {
         robot_id: String,
-        document: SourceDocument,
         executables: Vec<SourceExecutable>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
@@ -2420,8 +2447,6 @@ struct SourceService {
 struct SourceExecutable {
     instance: String,
     path: String,
-    bytes: u64,
-    sha256: String,
     #[serde(default)]
     artifact: Option<SourceArtifact>,
 }
@@ -2714,7 +2739,7 @@ fn decode_config<C: Config>(value: Value) -> crate::Result<C> {
     }
 }
 
-fn verify_executable(path: &Path, expected: &SourceExecutable) -> crate::Result<()> {
+fn executable_digest(path: &Path) -> crate::Result<String> {
     let mut file = fs::File::open(path).map_err(|source| {
         anyhow::anyhow!(RunnerError::BundleIo {
             path: path.to_owned(),
@@ -2722,7 +2747,6 @@ fn verify_executable(path: &Path, expected: &SourceExecutable) -> crate::Result<
         })
     })?;
     let mut hasher = Sha256::new();
-    let mut bytes = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(|source| {
@@ -2734,16 +2758,9 @@ fn verify_executable(path: &Path, expected: &SourceExecutable) -> crate::Result<
         if read == 0 {
             break;
         }
-        bytes = bytes.saturating_add(read as u64);
         hasher.update(&buffer[..read]);
     }
-    let digest = format!("{:x}", hasher.finalize());
-    if bytes != expected.bytes || digest != expected.sha256 {
-        return Err(anyhow::anyhow!(RunnerError::ExecutableMismatch {
-            instance: expected.instance.clone(),
-        }));
-    }
-    Ok(())
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> crate::Result<Vec<u8>> {
@@ -2764,7 +2781,10 @@ fn read_bounded(path: &Path, maximum: usize) -> crate::Result<Vec<u8>> {
         })?;
     if bytes.len() > maximum {
         return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-            message: format!("manifest.json exceeds the {maximum} byte startup bound"),
+            message: format!(
+                "{} exceeds the {maximum} byte startup bound",
+                path.display()
+            ),
         }));
     }
     Ok(bytes)

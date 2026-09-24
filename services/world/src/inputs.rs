@@ -1,6 +1,6 @@
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+use crate::api::world::v1::{WindowRequest, WindowResponse, world};
 use phoxal::runtime::input::{Commands, Latest};
-use phoxal_service_kinematics::OdometryState;
-use phoxal_service_world::{WindowRequest, WindowResponse, world};
 
 /// One immutable pose cut for World.
 #[phoxal::runtime::inputs]

@@ -1,8 +1,8 @@
-//! Reading the supervisor's sole persisted input, and locating the run
-//! directory that owns it.
+//! Reading the supervisor's compiled manifest and robot document, and locating
+//! the run directory that owns them.
 //!
-//! Opening a source bundle admits `manifest.json`, validates its exact
-//! executable records, and stops before launching anything. The supervisor
+//! Opening a source bundle admits `manifest.json` and `robot.yaml`, validates
+//! executable paths, and stops before launching anything. The supervisor
 //! later launches only that admitted graph.
 
 use std::collections::BTreeMap;
@@ -112,7 +112,7 @@ impl SourceBundle {
     ) -> Result<()> {
         let mut seen = std::collections::BTreeSet::new();
         for binding in bindings {
-            if binding.source_instance != "scenario" {
+            if binding.source_instance != "supervisor" {
                 bail!(
                     "simulation binding for {}.{} has unsupported source instance `{}`",
                     binding.target_instance,
@@ -171,8 +171,19 @@ pub(crate) fn open(root: &Path) -> Result<Bundle> {
     }
     let manifest_path = root.join(MANIFEST_FILE);
     let bytes = bounded_file(&manifest_path, MAX_MANIFEST_BYTES)?;
-    let manifest = serde_json::from_slice::<SourceManifest>(&bytes)
+    let mut manifest = serde_json::from_slice::<SourceManifest>(&bytes)
         .with_context(|| format!("{} is not a supported compiled bundle", root.display()))?;
+    let document_path = root.join("robot.yaml");
+    let document_bytes = bounded_file(&document_path, MAX_MANIFEST_BYTES)?;
+    let document =
+        serde_yaml::from_slice::<SourceDocument>(&document_bytes).with_context(|| {
+            format!(
+                "cannot decode compiled robot.yaml {}",
+                document_path.display()
+            )
+        })?;
+    let SourceManifest::V0 { document: slot, .. } = &mut manifest;
+    *slot = document;
     Ok(Bundle::Source(admit_source(root, manifest)?))
 }
 
@@ -185,6 +196,7 @@ pub(crate) enum SourceManifest {
     #[serde(rename = "phoxal/bundle/v0")]
     V0 {
         robot_id: String,
+        #[serde(skip, default = "empty_source_document")]
         document: SourceDocument,
         root_package: SourcePackage,
         target: String,
@@ -193,8 +205,25 @@ pub(crate) enum SourceManifest {
         executables: Vec<SourceExecutable>,
         components: Vec<SourceComponentRecord>,
         #[serde(default)]
+        component_sources: BTreeMap<String, String>,
+        #[serde(default)]
+        model: Option<serde_json::Value>,
+        #[serde(default)]
         simulation: Option<SourceSimulation>,
     },
+}
+
+fn empty_source_document() -> SourceDocument {
+    SourceDocument::V0 {
+        robot: SourceRobot {
+            id: String::new(),
+            model: None,
+            components: BTreeMap::new(),
+        },
+        brain: None,
+        services: BTreeMap::new(),
+        connections: BTreeMap::new(),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -252,8 +281,12 @@ pub(crate) enum SourceDocument {
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SourceService {
+    package: String,
+    version: String,
     #[serde(default)]
     binary: Option<String>,
+    #[serde(default)]
+    source: Option<serde_json::Value>,
     #[serde(default)]
     config: Option<serde_json::Value>,
 }
@@ -271,8 +304,13 @@ pub(crate) struct SourceRobot {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceComponent {
-    component: String,
+    package: String,
+    version: String,
     mount_site: String,
+    #[serde(default)]
+    binary: Option<String>,
+    #[serde(default)]
+    source: Option<serde_json::Value>,
     #[serde(default)]
     driver: Option<serde_json::Value>,
     #[serde(default)]
@@ -308,7 +346,9 @@ pub(crate) struct SourceExecutable {
     package: String,
     target: String,
     pub(crate) path: String,
+    #[serde(skip)]
     pub(crate) bytes: u64,
+    #[serde(skip)]
     pub(crate) sha256: String,
     artifact: Option<serde_json::Value>,
 }
@@ -432,12 +472,14 @@ impl SourceManifest {
             features: Vec::new(),
             executables,
             components: Vec::new(),
+            component_sources: BTreeMap::new(),
+            model: None,
             simulation: None,
         }
     }
 }
 
-fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle> {
+fn admit_source(root: PathBuf, mut manifest: SourceManifest) -> Result<SourceBundle> {
     let SourceManifest::V0 {
         robot_id,
         document,
@@ -459,14 +501,15 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
     if executables.is_empty() {
         bail!("source bundle contains no executable records");
     }
+    let SourceManifest::V0 { executables, .. } = &mut manifest;
     let mut seen = std::collections::BTreeSet::new();
     let mut has_brain = false;
-    for executable in executables {
+    for executable in executables.iter_mut() {
         if !matches!(executable.role.as_str(), "brain" | "service" | "driver") {
             bail!("unsupported executable role `{}`", executable.role);
         }
         validate_segment(&executable.instance, "executable instance")?;
-        if !seen.insert(executable.instance.as_str()) {
+        if !seen.insert(executable.instance.clone()) {
             bail!(
                 "source bundle contains duplicate executable instance `{}`",
                 executable.instance
@@ -495,17 +538,6 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         if executable.target.is_empty() {
             bail!(
                 "executable `{}` has an empty Cargo target name",
-                executable.instance
-            );
-        }
-        if executable.sha256.len() != 64
-            || !executable
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            bail!(
-                "executable `{}` has an invalid lowercase SHA-256 digest",
                 executable.instance
             );
         }
@@ -541,7 +573,9 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
                 path.display()
             );
         }
-        verify_digest(&canonical, executable)?;
+        let (bytes, digest) = digest_file(&canonical)?;
+        executable.bytes = bytes;
+        executable.sha256 = digest;
     }
     if !has_brain {
         bail!("source bundle is missing executable instance `brain`");
@@ -800,19 +834,28 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
     let _ = (&document_robot.model, document_brain, document_connections);
     for (instance, component) in &document_robot.components {
         validate_segment(instance, "component instance")?;
-        if component.component.is_empty() {
-            bail!("component `{instance}` has an empty dependency key");
+        if component.package.is_empty() || component.version.is_empty() {
+            bail!("component `{instance}` has an incomplete exact package selection");
         }
         if component.mount_site.is_empty() {
             bail!("component `{instance}` has an empty mount link");
         }
-        let _ = (&component.driver, &component.config);
+        let _ = (
+            &component.binary,
+            &component.source,
+            &component.driver,
+            &component.config,
+        );
     }
     for (service, definition) in document_services {
         validate_segment(service, "service instance")?;
+        if definition.package.is_empty() || definition.version.is_empty() {
+            bail!("service `{service}` has an incomplete exact package selection");
+        }
         if definition.binary.as_deref().is_some_and(str::is_empty) {
             bail!("service `{service}` has an empty binary target");
         }
+        let _ = &definition.source;
     }
     Ok(())
 }
@@ -910,7 +953,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf> {
     Ok(path.to_owned())
 }
 
-fn verify_digest(path: &Path, expected: &SourceExecutable) -> Result<()> {
+fn digest_file(path: &Path) -> Result<(u64, String)> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
@@ -925,14 +968,7 @@ fn verify_digest(path: &Path, expected: &SourceExecutable) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("executable size overflows u64"))?;
         hasher.update(&buffer[..read]);
     }
-    let digest = format!("{:x}", hasher.finalize());
-    if bytes != expected.bytes || digest != expected.sha256 {
-        bail!(
-            "executable `{}` does not match its recorded size or SHA-256",
-            expected.instance
-        );
-    }
-    Ok(())
+    Ok((bytes, format!("{:x}", hasher.finalize())))
 }
 
 /// The root whose volatile run directory owns this bundle.
@@ -1004,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_bundle_admits_the_exact_manifest_and_executable_digest() {
+    fn a_source_bundle_admits_the_manifest_and_present_executable() {
         let directory = tempfile::tempdir().expect("temporary source bundle");
         let bin = directory.path().join("bin");
         fs::create_dir(&bin).expect("bundle bin directory");
@@ -1013,22 +1049,10 @@ mod tests {
         fs::write(&executable, executable_bytes).expect("bundle executable");
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
             .expect("make bundle executable runnable");
-        let digest = format!("{:x}", Sha256::digest(executable_bytes));
         let manifest = format!(
             r#"{{
                 "schema": "phoxal/bundle/v0",
                 "robot_id": "fixture",
-                "document": {{
-                    "schema": "phoxal/robot/v0",
-                    "robot": {{
-                        "id": "fixture",
-                        "model": null,
-                        "components": {{}}
-                    }},
-                    "brain": null,
-                    "services": {{}},
-                    "connections": {{}}
-                }},
                 "root_package": {{
                     "id": "path+file:///fixture#fixture@0.1.0",
                     "name": "fixture",
@@ -1044,17 +1068,18 @@ mod tests {
                     "package": "fixture",
                     "target": "fixture",
                     "path": "bin/brain",
-                    "bytes": {},
-                    "sha256": "{}",
                     "artifact": null
                 }}],
                 "components": []
-            }}"#,
-            executable_bytes.len(),
-            digest
+            }}"#
         );
         fs::write(directory.path().join("manifest.json"), manifest)
             .expect("source bundle manifest");
+        fs::write(
+            directory.path().join("robot.yaml"),
+            "schema: phoxal/robot/v0\nrobot:\n  id: fixture\n  components: {}\nservices: {}\nconnections: {}\n",
+        )
+        .expect("compiled robot document");
 
         let bundle = open(directory.path()).expect("source bundle admission");
         let Bundle::Source(bundle) = bundle;
@@ -1075,13 +1100,6 @@ mod tests {
         let value = serde_json::json!({
             "schema": "phoxal/bundle/v0",
             "robot_id": "fixture",
-            "document": {
-                "schema": "phoxal/robot/v0",
-                "robot": {"id": "fixture", "components": {}},
-                "brain": null,
-                "services": {},
-                "connections": {}
-            },
             "root_package": {"id": "fixture", "name": "fixture", "source": "local"},
             "target": "host",
             "profile": "dev",
@@ -1101,7 +1119,7 @@ mod tests {
         let mut bundle = SourceBundle::for_test(Path::new("."), manifest);
         let binding = phoxal::artifact::simulation_run::SimulationBinding {
             target_instance: "controller".to_owned(),
-            source_instance: "scenario".to_owned(),
+            source_instance: "supervisor".to_owned(),
             signature: phoxal::artifact::MethodSignature {
                 endpoint: "manual".to_owned(),
                 service: "phoxal.motion.v1.Motion".to_owned(),
@@ -1154,8 +1172,11 @@ mod tests {
         BTreeMap::from([(
             "imu".to_owned(),
             SourceComponent {
-                component: "bno085".to_owned(),
+                package: "phoxal-component-bno085".to_owned(),
+                version: "0.0.0-dev.2".to_owned(),
                 mount_site: "base".to_owned(),
+                binary: None,
+                source: None,
                 driver: Some(serde_json::json!({})),
                 config: None,
             },
@@ -1225,6 +1246,8 @@ mod tests {
                 "0".repeat(64),
             )],
             components: Vec::new(),
+            component_sources: BTreeMap::new(),
+            model: None,
             simulation: Some(simulation_fixture()),
         };
         {

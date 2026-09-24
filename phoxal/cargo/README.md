@@ -30,25 +30,36 @@ For framework development before those packages are released, run the workspace 
 cargo run --locked -p cargo-phoxal -- phoxal --help
 ```
 
-The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
+The tooling supports `cargo phoxal prepare`, `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
 
-Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
+`cargo phoxal prepare` installs runnable packages declared with exact `package` and `version` values in `robot.yaml` into the managed Phoxal home.
+It copies registry and Git package Protobuf sources into the project's ignored `.phoxal/` tree, while local path sources remain at their authored paths.
+It uses Cargo for acquisition and installation, preserves the authored selection, and leaves the robot's Cargo manifest unchanged.
+The check, build, run, test, bundle, and simulation entry points prepare these exact selections automatically.
 
-`cargo phoxal build` assembles the selected brain, service, and component-driver executables and the mandatory supervisor through the root Cargo graph into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
-The bundle includes inspectable manifest and provenance records and is published atomically.
+Each command discovers the nearest robot project, validates explicit composition, and applies the requested Cargo lock and offline policy.
+Runnable participant packages install through Cargo into the managed Phoxal home outside the robot's dependency graph.
+Only the robot application, supervisor, and passive data packages remain in its root Cargo graph.
+
+`cargo phoxal build` assembles the selected brain, independently installed service and component-driver executables, and mandatory supervisor into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
+The bundle contains the selected executables, the full compiled `robot.yaml`, and a manifest that maps service instances to executable paths and retains the runtime contracts needed for admission.
+Simulation bundles also contain the model assets needed by the simulator.
+Bundle files carry no checksum or provenance records.
 
 `cargo phoxal run` independently prepares and validates the hardware bundle, then launches the selected supervisor with the isolated `local` scope and `local` supervisor identity.
 It does not launch simulation or claim domain readiness or physical safety.
 
-`cargo phoxal update` runs the requested Cargo update against the owning workspace lock and then performs a fresh Phoxal preparation, exact contract extraction, configuration validation, and connection validation before reporting success.
-Update-only Cargo arguments are not replayed into the validation builds.
+`cargo phoxal update --dry-run` reports eligible newer registry versions for participants already selected in `robot.yaml` without writing files.
+`cargo phoxal update` prepares candidate binaries and APIs, validates their complete composition, and atomically updates the exact versions in `robot.yaml`.
+Use `cargo phoxal update service <instance>` or `cargo phoxal update component <instance>` to limit the selection.
+Local path and Git revisions remain manually selected.
 
 All source-development commands accept `--cargo <path>` and preserve the selected executable across Cargo metadata and operation invocations.
 Cargo package, workspace, target, and test selectors are forwarded using Cargo's native option names.
 In JSON compiler-message mode, compiler JSON remains on stdout and Phoxal progress and structured project diagnostics remain on stderr.
 
-Ordinary preparation adds the known `phoxal-supervisor` dependency with an unconstrained first-resolution requirement when it is missing, preserving existing manifest content and letting Cargo select the newest compatible package.
-`--locked` and `--frozen` report an actionable initialization error before changing `Cargo.toml` or `Cargo.lock`.
+The root project declares its ordinary `phoxal` SDK and supervisor dependencies.
+Preparation never adds per-participant Cargo dependencies or rewrites `Cargo.toml`.
 Every selected runtime executable must expose its exact compiled contract metadata, and authored configuration is checked against that metadata before a bundle is published.
 
 ## Simulation installation
@@ -72,9 +83,9 @@ An explicit `--simulator <path>` remains available for simulator source developm
 `cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
 Supported roles are `component`, `service`, `preset`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
 
-The developer selects the publication role in the command instead of repeating it in `[package.metadata.phoxal]`.
+The developer selects the publication role in the command instead of repeating it in package metadata.
 `cargo-phoxal` verifies that selection from standard project structure: `component.yaml` identifies a component, `service.yaml` identifies a service preset, and Cargo target shape distinguishes ordinary libraries, procedural macros, applications, simulators, and tools.
-Runtime composition similarly derives service and component roles from `robot.yaml` dependency selection.
+Runtime composition derives service and component roles from exact `robot.yaml` package selections.
 No Phoxal-specific package metadata table is required.
 
 The optional `--path <source-directory>` selects a package explicitly, while omitting it selects the matching current package or a uniquely named member of the current Cargo workspace.

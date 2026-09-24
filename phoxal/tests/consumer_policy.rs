@@ -43,53 +43,6 @@ fn direct_tree(features: &str) -> String {
     }
 }
 
-fn package_tree(package: &str) -> String {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
-    let manifest = match manifest.to_str() {
-        Some(manifest) => manifest,
-        None => panic!("workspace manifest path is valid UTF-8"),
-    };
-    let output = match Command::new(cargo)
-        .args([
-            "tree",
-            "--manifest-path",
-            manifest,
-            "-p",
-            package,
-            "--no-default-features",
-            "--edges",
-            "normal",
-            "--prefix",
-            "none",
-        ])
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => panic!("cargo tree starts: {error}"),
-    };
-    assert!(
-        output.status.success(),
-        "cargo tree for {package:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    match String::from_utf8(output.stdout) {
-        Ok(output) => output,
-        Err(error) => panic!("cargo tree output is UTF-8: {error}"),
-    }
-}
-
-fn assert_contract_only_tree(tree: &str) {
-    for package in ["clap", "phoxal-macros", "tokio", "tokio-util", "zenoh"] {
-        assert!(
-            !has_direct_package(tree, package),
-            "implementation dependency {package} unexpectedly present:\n{tree}"
-        );
-    }
-    // `prost-derive` currently uses `anyhow` in its proc-macro implementation.
-    // That host-side code-generation dependency is not a provider/runtime edge.
-}
-
 fn has_direct_package(tree: &str, package: &str) -> bool {
     tree.lines().any(|line| {
         line.split_whitespace()
@@ -121,26 +74,6 @@ fn contract_profile_is_transport_free() {
         &["phoxal"],
         &["tokio", "tokio-util", "zenoh", "phoxal-macros", "clap"],
     );
-}
-
-#[test]
-fn standalone_service_contract_does_not_compile_the_provider_runtime() {
-    let tree = package_tree("phoxal-service-motion");
-    assert_contract_only_tree(&tree);
-}
-
-#[test]
-fn transitive_contract_owner_does_not_activate_dependency_providers() {
-    let tree = package_tree("phoxal-service-safety");
-    assert!(has_direct_package(&tree, "phoxal-service-motion"));
-    assert_contract_only_tree(&tree);
-}
-
-#[test]
-fn workspace_local_contract_consumer_keeps_provider_features_disabled() {
-    let tree = package_tree("phoxal-test-controller");
-    assert!(has_direct_package(&tree, "phoxal-service-motion"));
-    assert_contract_only_tree(&tree);
 }
 
 #[test]

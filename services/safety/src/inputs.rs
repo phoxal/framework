@@ -1,7 +1,7 @@
+use crate::api::__contracts::phoxal::motion::v1::MotionStatus;
+use crate::api::__contracts::phoxal::world::v1::{WorldBelief, WorldRevision};
 use phoxal::robotics::RangeSample;
 use phoxal::runtime::input::{Latest, Samples};
-use phoxal_service_motion::MotionStatus;
-use phoxal_service_world::{WorldBelief, WorldRevision};
 
 /// One immutable input cut for Safety.
 #[phoxal::runtime::inputs]

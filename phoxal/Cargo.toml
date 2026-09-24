@@ -1,6 +1,6 @@
 [package]
 name = "phoxal"
-version = "0.0.0-dev.2"
+version = "0.0.0-dev.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -78,6 +78,7 @@ runtime = [
     "dep:phoxal-macros",
     "dep:getrandom",
     "dep:serde_json",
+    "dep:serde_yaml",
     "dep:sha2",
     "dep:tokio",
     "dep:tokio-util",
@@ -137,6 +138,7 @@ getrandom = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
 thiserror = { workspace = true, optional = true }
@@ -153,11 +155,6 @@ prost = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal-build.workspace = true
-
-[package.metadata.phoxal.contract]
-protos = ["proto/phoxal/robotics/v1/robotics.proto"]
-includes = ["proto"]
-generated = "generated/robotics"
 
 # `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
 # cannot see dependencies named only inside attributes.

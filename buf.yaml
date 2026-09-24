@@ -10,7 +10,7 @@ modules:
         - PACKAGE_DIRECTORY_MATCH
         - PACKAGE_VERSION_SUFFIX
   - path: phoxal/proto
-  - path: services/motion/proto
+  - path: services/motion/api
     lint:
       use:
         - STANDARD
@@ -19,7 +19,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: services/navigation/proto
+  - path: services/navigation/api
     lint:
       use:
         - STANDARD
@@ -28,7 +28,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: services/kinematics/proto
+  - path: services/kinematics/api
     lint:
       use:
         - STANDARD
@@ -37,7 +37,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: services/world/proto
+  - path: services/world/api
     lint:
       use:
         - STANDARD
@@ -46,7 +46,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: services/safety/proto
+  - path: services/safety/api
     lint:
       use:
         - STANDARD
@@ -55,7 +55,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: components/bno085/proto
+  - path: components/bno085/api
     lint:
       use:
         - STANDARD
@@ -64,7 +64,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: components/ddsm115/proto
+  - path: components/ddsm115/api
     lint:
       use:
         - STANDARD
@@ -73,7 +73,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: components/oak_d_lite/proto
+  - path: components/oak_d_lite/api
     lint:
       use:
         - STANDARD
@@ -82,7 +82,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: components/vl53l1x/proto
+  - path: components/vl53l1x/api
     lint:
       use:
         - STANDARD
@@ -91,7 +91,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: components/zed_f9p/proto
+  - path: components/zed_f9p/api
     lint:
       use:
         - STANDARD

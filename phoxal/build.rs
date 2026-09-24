@@ -8,5 +8,12 @@ fn main() -> Result<(), phoxal_build::Error> {
         ],
         &["proto"],
     )?;
+    if std::env::var_os("CARGO_FEATURE_ROBOTICS").is_some() {
+        phoxal_build::compile_protos_with_output(
+            &["proto/phoxal/robotics/v1/robotics.proto"],
+            &["proto"],
+            "robotics-descriptors.bin",
+        )?;
+    }
     Ok(())
 }

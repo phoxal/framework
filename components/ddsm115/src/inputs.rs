@@ -4,5 +4,5 @@ use phoxal::runtime::input::Setpoint;
 #[phoxal::runtime::inputs]
 pub struct Ddsm115Inputs {
     /// The final motion authority's expiring intent for this actuator.
-    pub actuator: Setpoint<phoxal_service_motion::ActuatorSetpoint>,
+    pub actuator: Setpoint<crate::api::__contracts::phoxal::motion::v1::ActuatorSetpoint>,
 }

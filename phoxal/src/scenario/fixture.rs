@@ -376,15 +376,10 @@ where
             },
         );
         let name = format!("{}/{}", self.instance(), port.name);
-        match policy {
-            CapturePolicy::Latest if signature.retained_latest => {
-                super::Capture::state_with_policy(name, port, policy)
-            }
-            CapturePolicy::Latest
-            | CapturePolicy::BestEffortHistory { .. }
-            | CapturePolicy::RequiredHistory { .. } => {
-                super::Capture::sample_with_policy(name, port, policy)
-            }
+        if signature.retained_latest {
+            super::Capture::state_with_policy(name, port, policy)
+        } else {
+            super::Capture::sample_with_policy(name, port, policy)
         }
         .map_err(|error| crate::anyhow!("observation operation: {error}"))
     }
@@ -394,15 +389,7 @@ fn contract_port_signature(
     signature: crate::contract::MethodSignature,
     kind: PortKind,
 ) -> PortSignature {
-    PortSignature::with_descriptor(
-        signature.endpoint,
-        signature.service,
-        signature.method,
-        kind,
-        signature.request,
-        signature.response,
-        signature.descriptor_set(),
-    )
+    PortSignature::from_method(signature, kind)
 }
 
 /// Value that can be decoded from completed simulation evidence.

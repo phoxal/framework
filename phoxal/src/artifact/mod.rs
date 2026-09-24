@@ -16,11 +16,10 @@
 //!   `MethodShape`, `InputRole`, `OutputRole`, `MethodSignature`,
 //!   `ArtifactSummary`, `DescriptorSummary`.
 //! - [`bundle`](crate::artifact::bundle) owns `BundleManifest`, package/executable/component/artifact
-//!   records and `BundleSimulation`,
-//!   `BundleProvenance` family, `digest_source_files`.
+//!   records, model asset paths, and `BundleSimulation`.
 //! - [`document`](crate::artifact::document) owns `RobotDocument`, `ComponentDocument`, capability
 //!   declarations, native target records, and the inert DTO closure
-//!   referenced by `BundleManifest.document`. Authored-file *parsing*
+//!   written as the compiled bundle's `robot.yaml`. Authored-file *parsing*
 //!   stays in `cargo-phoxal`.
 //! - [`simulation`](crate::artifact::simulation) owns `SimulatorTerminalEvidence`, `NativeBodySample`,
 //!   `ScenarioExecutionReport`, `ScenarioStepEvidence`,

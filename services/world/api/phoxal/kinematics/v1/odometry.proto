@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package phoxal.kinematics.v1;
+
+message OdometryState {
+  double x_m = 1;
+  double y_m = 2;
+  double yaw_rad = 3;
+  double linear_x_mps = 4;
+  double angular_z_radps = 5;
+  uint64 revision = 6;
+  bool available = 7;
+  optional uint64 oldest_capture_time_nanos = 8;
+}

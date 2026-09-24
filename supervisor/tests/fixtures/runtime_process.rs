@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use phoxal::runtime::input::Commands;
 use phoxal::runtime::{InitContext, Runtime, RuntimeLaunch, StepContext};
-use phoxal_contract_owner_fixture::{
+phoxal::api!();
+use crate::api::__contracts::example::inspection::v1::{
     InspectionReadRequest, InspectionReadResponse, InspectionState, inspection,
 };
 

@@ -2,6 +2,3 @@
 //!
 //! These tests live inside the `project` module so they share the same
 //! dependency closure as the implementation they exercise.
-
-mod project;
-mod source_digest;

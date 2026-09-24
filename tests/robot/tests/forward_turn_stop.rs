@@ -1,8 +1,10 @@
 //! Finite native movement proof for the internal four-wheel robot.
 
 use phoxal::scenario::{CapturePolicy, Simulation};
-use robot_api::contracts::phoxal::motion::v1::MotionIntent;
-use robot_api::services::controller;
+phoxal::api!();
+
+use api::__contracts::phoxal::motion::v1::MotionIntent;
+use api::controller;
 
 const WHEELS: [&str; 4] = [
     "front_left_drive",
@@ -19,7 +21,8 @@ fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
         .iter()
         .map(|wheel| {
             plan.record(
-                ddsm115::ddsm115::methods::ENCODER.bind(wheel),
+                api::__contracts::phoxal::component::ddsm115::v1::ddsm115::methods::ENCODER
+                    .bind(wheel),
                 CapturePolicy::best_effort_history(1_024)?,
             )
         })

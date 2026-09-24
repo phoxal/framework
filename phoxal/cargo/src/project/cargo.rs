@@ -14,8 +14,43 @@ pub(crate) fn is_registry_source(source: &str) -> bool {
     source.starts_with("registry+") || source.starts_with("sparse+")
 }
 
-fn registry_config() -> String {
-    format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\"")
+/// Supply the public default only when Cargo has no authored Phoxal source.
+/// A command-line `--config` would override a project mirror or test registry.
+pub(crate) fn registry_config(root: &Path) -> Option<String> {
+    if std::env::var_os("CARGO_REGISTRIES_PHOXAL_INDEX").is_some() {
+        return None;
+    }
+    let mut files = Vec::new();
+    for directory in root.ancestors() {
+        files.push(directory.join(".cargo/config.toml"));
+        files.push(directory.join(".cargo/config"));
+    }
+    if let Some(home) = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cargo"))
+        })
+    {
+        files.push(home.join("config.toml"));
+        files.push(home.join("config"));
+    }
+    let configured = files.into_iter().any(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
+            .is_some_and(|config| {
+                config
+                    .get("registries")
+                    .and_then(|value| value.get("phoxal"))
+                    .and_then(|value| value.get("index"))
+                    .is_some()
+                    || config
+                        .get("source")
+                        .and_then(|value| value.get("phoxal"))
+                        .is_some()
+            })
+    });
+    (!configured).then(|| format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""))
 }
 
 /// Cargo's lockfile policy for project preparation and commands.
@@ -193,28 +228,6 @@ impl CargoSelection {
             && !self.benches
             && self.benches_named.is_empty()
     }
-
-    fn has_update_unsupported_targets(&self) -> bool {
-        self.has_target_selectors()
-    }
-
-    /// Returns `true` when the selection specifies any non-package
-    /// selector (target, example, test, bench, lib, bins). The
-    /// case-host validator shares this predicate because every
-    /// such selector conflicts with the owned `--package <root-id>`
-    /// selection the harness build emits.
-    pub(crate) fn has_target_selectors(&self) -> bool {
-        self.all_targets
-            || self.lib
-            || self.bins
-            || !self.binaries.is_empty()
-            || self.examples
-            || !self.examples_named.is_empty()
-            || self.tests
-            || !self.tests_named.is_empty()
-            || self.benches
-            || !self.benches_named.is_empty()
-    }
 }
 
 impl CargoOptions {
@@ -293,8 +306,6 @@ pub enum CargoOperation {
     Build,
     /// Run tests selected by Cargo for the root robot package.
     Test,
-    /// Resolve permitted package updates in the root Cargo graph.
-    Update,
 }
 
 impl CargoOperation {
@@ -305,7 +316,6 @@ impl CargoOperation {
             Self::Check => "check",
             Self::Build => "build",
             Self::Test => "test",
-            Self::Update => "update",
         }
     }
 }
@@ -313,8 +323,6 @@ impl CargoOperation {
 /// Captured output from one successful Cargo invocation.
 #[derive(Debug)]
 pub struct CargoOutput {
-    /// Exact argv passed to Cargo, excluding the executable path.
-    pub arguments: Vec<OsString>,
     /// Captured standard output.
     pub stdout: Vec<u8>,
     /// Captured standard error.
@@ -350,7 +358,9 @@ pub(crate) fn load_metadata_at(
         .iter()
         .map(|flag| (*flag).to_owned())
         .collect::<Vec<_>>();
-    extra.extend(["--config".to_owned(), registry_config()]);
+    if let Some(config) = registry_config(current_dir) {
+        extra.extend(["--config".to_owned(), config]);
+    }
     if options.offline {
         extra.push("--offline".to_owned());
     }
@@ -409,21 +419,14 @@ pub(crate) fn run_with_env(
                 outputs.push(run_command(command, operation)?);
                 return Ok(outputs);
             }
-            for target in prepared.execution_targets() {
-                let mut command = command_for(prepared, operation, options, true, false);
-                command.envs(environment.iter().cloned());
-                command.args([
-                    "--manifest-path",
-                    &prepared.cargo_manifest_path().display().to_string(),
-                ]);
-                append_target_selection(&mut command, prepared, target);
-                outputs.push(run_command(command, operation)?);
-            }
-        }
-        CargoOperation::Update => {
-            return Err(Error::InvalidOptions {
-                message: "cargo update must be invoked through Project::update so the resulting graph is validated".to_owned(),
-            });
+            let mut command = command_for(prepared, operation, options, true, false);
+            command.envs(environment.iter().cloned());
+            command.args([
+                "--manifest-path",
+                &prepared.cargo_manifest_path().display().to_string(),
+            ]);
+            append_target_selection(&mut command, prepared, &prepared.cargo_sources().brain);
+            outputs.push(run_command(command, operation)?);
         }
     }
     Ok(outputs)
@@ -442,111 +445,11 @@ fn command_for(
         command.env("CARGO_TARGET_DIR", target_dir);
     }
     command.arg(operation.as_str());
-    command.args(["--config", &registry_config()]);
+    if let Some(config) = registry_config(prepared.cargo_workdir()) {
+        command.args(["--config", &config]);
+    }
     options.append_common(&mut command, include_message_format, include_selection);
     command
-}
-
-/// Runs one explicit Cargo update from the owning project root.
-pub(crate) fn update(
-    manifest: &Path,
-    current_dir: &Path,
-    target_dir: Option<&Path>,
-    options: &CargoOptions,
-) -> Result<CargoOutput, Error> {
-    validate_update_options(options)?;
-    let mut command = Command::new(options.cargo_program());
-    command.current_dir(current_dir);
-    if let Some(target_dir) = target_dir {
-        command.env("CARGO_TARGET_DIR", target_dir);
-    }
-    command.args(["update", "--config", &registry_config()]);
-    for flag in options.lock.flags() {
-        command.arg(flag);
-    }
-    if options.offline {
-        command.arg("--offline");
-    }
-    command.args(["--manifest-path", &manifest.display().to_string()]);
-    if options.selection.workspace {
-        command.arg("--workspace");
-    }
-    command.args(&options.selection.packages);
-    command.args(&options.cargo_args);
-    run_command(command, CargoOperation::Update)
-}
-
-/// Validates the subset of Cargo options that `cargo update` accepts before
-/// project preparation can mutate the authored manifest or lockfile.
-pub(crate) fn validate_update_options(options: &CargoOptions) -> Result<(), Error> {
-    options.validate()?;
-    if !options.selection.excludes.is_empty()
-        || options.selection.has_update_unsupported_targets()
-        || options.cargo_args.iter().any(is_update_target_argument)
-    {
-        return Err(Error::InvalidOptions {
-            message: "cargo phoxal update accepts only Cargo package specifications and --workspace; exclude and target selectors such as --lib, --bin, --test, and --all-targets are not cargo update options".to_owned(),
-        });
-    }
-    if options.target.is_some()
-        || options.profile.is_some()
-        || !options.features.is_empty()
-        || options.all_features
-        || options.no_default_features
-        || options.release
-        || options.message_format.is_some()
-        || options
-            .cargo_args
-            .iter()
-            .any(is_update_unsupported_argument)
-    {
-        return Err(Error::InvalidOptions {
-            message: "cargo phoxal update accepts Cargo update options only; target, profile, feature, release, and compiler-message options belong to check/build/test".to_owned(),
-        });
-    }
-    Ok(())
-}
-
-fn is_update_unsupported_argument(argument: &OsString) -> bool {
-    is_update_target_argument(argument) || is_update_compiler_argument(argument)
-}
-
-fn is_update_compiler_argument(argument: &OsString) -> bool {
-    let argument = argument.to_string_lossy();
-    matches!(
-        argument.as_ref(),
-        "--target"
-            | "--profile"
-            | "--features"
-            | "--all-features"
-            | "--no-default-features"
-            | "--message-format"
-            | "--release"
-            | "-r"
-    ) || argument.starts_with("--target=")
-        || argument.starts_with("--profile=")
-        || argument.starts_with("--features=")
-        || argument.starts_with("--message-format=")
-}
-
-fn is_update_target_argument(argument: &OsString) -> bool {
-    let argument = argument.to_string_lossy();
-    matches!(
-        argument.as_ref(),
-        "--all-targets"
-            | "--lib"
-            | "--bins"
-            | "--bin"
-            | "--examples"
-            | "--example"
-            | "--tests"
-            | "--test"
-            | "--benches"
-            | "--bench"
-    ) || argument.starts_with("--bin=")
-        || argument.starts_with("--example=")
-        || argument.starts_with("--test=")
-        || argument.starts_with("--bench=")
 }
 
 /// Builds one selected executable while retaining Cargo's machine-readable
@@ -557,6 +460,24 @@ pub(crate) fn build_target(
     options: &CargoOptions,
 ) -> Result<CargoOutput, Error> {
     options.validate()?;
+    if target
+        .source_path
+        .parent()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| name == "bin")
+    {
+        if !target.source_path.is_file() {
+            return Err(Error::ArtifactCapture {
+                package: target.package.clone(),
+                target: target.target.clone(),
+                message: "prepared binary is missing; run `cargo phoxal prepare`".to_owned(),
+            });
+        }
+        return Ok(CargoOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+    }
     let mut command = command_for(prepared, CargoOperation::Build, options, false, false);
     command.args([
         "--manifest-path",
@@ -659,6 +580,14 @@ pub(crate) fn artifact_path(
     stdout: &[u8],
     target: &crate::SelectedTarget,
 ) -> Result<std::path::PathBuf, Error> {
+    if target
+        .source_path
+        .parent()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| name == "bin")
+    {
+        return Ok(target.source_path.clone());
+    }
     let mut executable = None;
     for line in stdout.split(|byte| *byte == b'\n') {
         if line.is_empty() {
@@ -686,7 +615,6 @@ pub(crate) fn artifact_path(
 }
 
 fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoOutput, Error> {
-    let arguments = command.get_args().map(OsString::from).collect::<Vec<_>>();
     let output = command.output().map_err(|source| Error::CargoSpawn {
         operation: operation.as_str().to_owned(),
         source,
@@ -700,7 +628,6 @@ fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoO
         });
     }
     Ok(CargoOutput {
-        arguments,
         stdout: output.stdout,
         stderr: output.stderr,
     })

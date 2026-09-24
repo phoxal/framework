@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use phoxal_service_kinematics::{
+use crate::api::kinematics::v1::{
     FrameTransform, FrameTree, JointState, KinematicsStatus, LookupFrameRequest,
     LookupFrameResponse, OdometryState, UnavailableReason,
 };

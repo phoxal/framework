@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package phoxal.component.zed_f9p.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/api.proto";
+import "phoxal/component/zed_f9p/v1/types.proto";
+
+service ZedF9p {
+  rpc Gnss(google.protobuf.Empty) returns (stream GnssSample) {
+  }
+}

@@ -6,33 +6,20 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 description = "Independent service-owned Protobuf contract fixture."
-include = ["generated/**", "proto/**", "src/**", "Cargo.toml"]
-
-[package.metadata.phoxal.contract]
-protos = [
-    "proto/example/inspection/v1/messages.proto",
-    "proto/example/inspection/v1/inspection.proto",
-]
-includes = ["proto"]
-generated = "generated"
-
-[lib]
-name = "phoxal_contract_owner_fixture"
-path = "generated/lib.rs"
+include = ["api/**", "build.rs", "src/**", "Cargo.toml"]
 
 [[bin]]
 name = "phoxal-contract-owner-fixture"
 path = "src/main.rs"
-required-features = ["runtime"]
 
 [features]
 default = []
-runtime = []
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["contract"] }
-prost = { workspace = true }
-prost-types = { workspace = true }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

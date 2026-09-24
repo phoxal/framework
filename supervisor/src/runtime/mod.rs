@@ -325,7 +325,7 @@ fn validate_program_contract(
             .map_err(|_| anyhow::anyhow!("simulation program payload exceeds u32"))?;
         let candidate = SimulationBinding {
             target_instance: target_instance.clone(),
-            source_instance: "scenario".to_owned(),
+            source_instance: "supervisor".to_owned(),
             signature: artifact_signature(*signature),
             max_message_bytes,
             replaces_authored_source: false,

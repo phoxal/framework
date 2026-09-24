@@ -1,3 +1,10 @@
+#[cfg(test)]
+use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+use crate::api::world::v1::{
+    Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
+    WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
+    window_response, world,
+};
 use crate::config::{WorldConfig, validate_config};
 use crate::inputs::WorldInputs;
 use crate::outputs::WorldOutputs;
@@ -5,13 +12,6 @@ use crate::validation;
 #[cfg(test)]
 use phoxal::runtime::input::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-#[cfg(test)]
-use phoxal_service_kinematics::OdometryState;
-use phoxal_service_world::{
-    Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
-    WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
-    window_response, world,
-};
 use std::collections::VecDeque;
 
 struct WorldSnapshot {

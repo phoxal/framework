@@ -1,8 +1,12 @@
-use motion::{ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target};
+phoxal::api!();
+
+use crate::api::__contracts::phoxal::motion::v1::{
+    ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target,
+};
+use crate::api::controller::v1::controller;
 use phoxal::robotics::EncoderSample;
 use phoxal::runtime::input::{Samples, Setpoint};
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-use phoxal_test_controller::controller;
 
 const WHEEL_RADIUS_M: f64 = 0.11;
 const WHEEL_BASE_M: f64 = 0.52;
@@ -20,7 +24,7 @@ struct Controller;
 
 #[phoxal::runtime::inputs]
 struct Inputs {
-    #[phoxal::runtime::input(port = controller::methods::MANUAL.__setpoint_port())]
+    #[phoxal::runtime::input(port = controller::methods::MANUAL.__setpoint_port(), max_bytes = 4096)]
     manual: Setpoint<MotionIntent>,
     #[phoxal::runtime::input(max_items = 32, max_bytes = 262_144)]
     encoders: Samples<EncoderSample>,

@@ -35,7 +35,7 @@ pub use phoxal::artifact::{InputRecord, MethodSignature};
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
 const ARTIFACT_MAGIC: &[u8; 8] = b"PHXART0\n";
-const DESCRIPTOR_MAGIC: &[u8; 8] = b"PHXDESC0";
+const DESCRIPTOR_MAGIC: &[u8; 8] = &phoxal::contract::DESCRIPTOR_FRAME_MAGIC;
 const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 65_536;
 const MAX_RECORDS: usize = 64;
@@ -468,69 +468,50 @@ pub use connections::validate_connected_endpoints_with_virtual_producers;
 /// closures admitted into one bundle.
 ///
 /// Source locations and comments are excluded from the definition identity.
-/// File contents and qualified symbols must otherwise have one owner and one
-/// definition across consumer and provider Cargo roots.
+/// Qualified symbols must have one definition across consumer and provider
+/// packages even when packages reuse an import filename independently.
 pub fn validate_descriptor_closure_consistency<'a>(
     contracts: impl IntoIterator<Item = (&'a str, &'a ArtifactContract)>,
 ) -> Result<(), Error> {
-    let mut files = BTreeMap::<String, (String, Vec<u8>)>::new();
-    let mut symbols = BTreeMap::<String, (String, String)>::new();
+    let mut symbols = BTreeMap::<String, (String, Vec<u8>)>::new();
     for (instance, contract) in contracts {
         for descriptor in &contract.descriptors {
             let pool = DescriptorPool::decode(descriptor.raw.as_slice())?;
-            for file in pool.files() {
-                let name = file.name().to_owned();
-                let mut definition = file.file_descriptor_proto().clone();
-                definition.source_code_info = None;
-                let encoded = definition.encode_to_vec();
-                if let Some((owner, accepted)) = files.get(&name) {
+            let definitions = pool
+                .all_messages()
+                .map(|item| {
+                    (
+                        item.full_name().to_owned(),
+                        item.descriptor_proto().encode_to_vec(),
+                    )
+                })
+                .chain(pool.all_enums().map(|item| {
+                    (
+                        item.full_name().to_owned(),
+                        item.enum_descriptor_proto().encode_to_vec(),
+                    )
+                }))
+                .chain(pool.services().map(|item| {
+                    (
+                        item.full_name().to_owned(),
+                        item.service_descriptor_proto().encode_to_vec(),
+                    )
+                }))
+                .chain(pool.all_extensions().map(|item| {
+                    (
+                        item.full_name().to_owned(),
+                        item.field_descriptor_proto().encode_to_vec(),
+                    )
+                }));
+            for (name, encoded) in definitions {
+                if let Some((owner, accepted)) = symbols.get(&name) {
                     if accepted != &encoded {
                         return Err(Error::InvalidContract(format!(
-                            "descriptor file `{name}` differs between `{owner}` and `{instance}`"
+                            "qualified Protobuf definition `{name}` differs between `{owner}` and `{instance}`"
                         )));
                     }
                 } else {
-                    files.insert(name.clone(), (instance.to_owned(), encoded));
-                }
-                let identities = pool
-                    .all_messages()
-                    .map(|item| {
-                        (
-                            item.parent_file().name().to_owned(),
-                            item.full_name().to_owned(),
-                        )
-                    })
-                    .chain(pool.all_enums().map(|item| {
-                        (
-                            item.parent_file().name().to_owned(),
-                            item.full_name().to_owned(),
-                        )
-                    }))
-                    .chain(pool.services().map(|item| {
-                        (
-                            item.parent_file().name().to_owned(),
-                            item.full_name().to_owned(),
-                        )
-                    }))
-                    .chain(pool.all_extensions().map(|item| {
-                        (
-                            item.parent_file().name().to_owned(),
-                            item.full_name().to_owned(),
-                        )
-                    }))
-                    .filter(|(owner_file, _)| owner_file == &name)
-                    .map(|(_, identity)| identity)
-                    .collect::<Vec<_>>();
-                for identity in identities {
-                    if let Some((owner, owner_file)) = symbols.get(&identity) {
-                        if owner_file != &name {
-                            return Err(Error::InvalidContract(format!(
-                                "qualified Protobuf definition `{identity}` is owned by both `{owner_file}` from `{owner}` and `{name}` from `{instance}`"
-                            )));
-                        }
-                    } else {
-                        symbols.insert(identity, (instance.to_owned(), name.clone()));
-                    }
+                    symbols.insert(name, (instance.to_owned(), encoded));
                 }
             }
         }
@@ -619,6 +600,16 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_descriptor_frame_emitted_by_the_sdk() {
+        let descriptor = descriptor("shared.proto", field_descriptor_proto::Type::String);
+        let mut section = phoxal::contract::DESCRIPTOR_FRAME_MAGIC.to_vec();
+        section.extend_from_slice(&(descriptor.raw.len() as u64).to_le_bytes());
+        section.extend_from_slice(&descriptor.raw);
+        let parsed = parse_descriptor_frames(&section).expect("SDK descriptor frame parses");
+        assert_eq!(parsed, vec![descriptor.raw]);
+    }
+
+    #[test]
     fn rejects_an_oversized_record_before_json_parsing() {
         let mut section = ARTIFACT_MAGIC.to_vec();
         section.extend_from_slice(&((MAX_RECORD_BYTES + 1) as u32).to_le_bytes());
@@ -652,8 +643,12 @@ robot:
   id: rover
   components: {}
 services:
-  consumer: {}
-  producer: {}
+  consumer:
+    package: phoxal-service-consumer
+    version: 0.1.0
+  producer:
+    package: phoxal-service-producer
+    version: 0.1.0
 connections:
   consumer.input: producer.output
 "#,

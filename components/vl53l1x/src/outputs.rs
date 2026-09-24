@@ -1,6 +1,6 @@
-use phoxal::robotics::RangeSample;
+use crate::api::__contracts::phoxal::robotics::v1::RangeSample;
+use crate::api::vl53l1x::v1::vl53l1x;
 use phoxal::runtime::Sample;
-use phoxal_component_vl53l1x::vl53l1x;
 
 /// VL53L1X observations admitted at one Runtime boundary.
 #[phoxal::runtime::outputs]

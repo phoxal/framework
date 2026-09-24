@@ -1,5 +1,5 @@
+use crate::api::__contracts::phoxal::fixture::hardware::v1::{FixtureObservation, FixtureSetpoint};
 use phoxal::runtime::input::{Samples, Setpoint};
-use phoxal_hardware_driver_fixture::{FixtureObservation, FixtureSetpoint};
 
 /// Inputs acquired by the fixture driver at one Runtime boundary.
 #[phoxal::runtime::inputs]

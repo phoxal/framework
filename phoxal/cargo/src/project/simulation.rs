@@ -473,7 +473,7 @@ pub(crate) fn run(
         Some(program) => {
             prepared.build_probe_bundle_for_run(cargo_options, &probe_output, program)?
         }
-        None => prepared.build_bundle(cargo_options, &probe_output)?,
+        None => prepared.build_probe_bundle(cargo_options, &probe_output)?,
     };
     let facts = probe(&simulator, &scene, probe_bundle.root(), request)?;
     request.bound.validate_for_quantum(facts.quantum_ns)?;
@@ -508,7 +508,7 @@ pub fn probe_simulation_scene(
     let simulator = provision(request, cargo_options)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
-    let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
+    let probe_bundle = prepared.build_probe_bundle(cargo_options, &probe_output)?;
     probe(&simulator, &scene, probe_bundle.root(), request)
 }
 
@@ -1538,10 +1538,19 @@ fn build_run_specification(
             manifest_path.display()
         ))
     })?;
-    let BundleManifest::V0 {
-        robot_id, document, ..
-    } = &manifest;
-    let RobotDocument::V0 { connections, .. } = document;
+    let BundleManifest::V0 { robot_id, .. } = &manifest;
+    let document_path = bundle.root().join("robot.yaml");
+    let document_bytes = fs::read(&document_path).map_err(|source| Error::ArtifactFile {
+        path: document_path.clone(),
+        source,
+    })?;
+    let document: RobotDocument = serde_yaml::from_slice(&document_bytes).map_err(|source| {
+        simulation_error(format!(
+            "cannot decode compiled robot.yaml {}: {source}",
+            document_path.display()
+        ))
+    })?;
+    let RobotDocument::V0 { connections, .. } = &document;
 
     program
         .verify_identity()
@@ -1572,7 +1581,7 @@ fn build_run_specification(
         let target = format!("{}.{}", target_instance, signature.name);
         let binding = SimulationBinding {
             target_instance: target_instance.clone(),
-            source_instance: "scenario".to_owned(),
+            source_instance: "supervisor".to_owned(),
             signature: method_signature(*signature),
             max_message_bytes,
             replaces_authored_source: connections.contains_key(&target),

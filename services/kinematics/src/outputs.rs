@@ -1,5 +1,5 @@
+use crate::api::kinematics::v1::{JointState, LookupFrameResponse, kinematics};
 use phoxal::runtime::Sample;
-use phoxal_service_kinematics::{JointState, LookupFrameResponse, kinematics};
 
 /// Fresh measured joint products.
 #[phoxal::runtime::outputs]

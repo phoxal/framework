@@ -144,6 +144,7 @@ struct ScenarioCaptureSubscription {
 
 struct ScenarioDeliveryExpectation<'a> {
     label: &'a str,
+    kind: &'static str,
     timeline_id: &'a str,
     target: String,
     port: &'a str,
@@ -179,7 +180,7 @@ impl std::fmt::Debug for RuntimeExecutionProtocol {
 
 impl ScenarioDriver {
     async fn open(bus: &Connection, program: Program) -> Result<Self> {
-        let delivery_ack = declare(bus, "scenario", "delivery-ack").await?;
+        let delivery_ack = declare(bus, "supervisor", "delivery-ack").await?;
         let mut captures = BTreeMap::new();
         for capture in program.captures() {
             let (name, signature, kind, policy) = match capture {
@@ -309,7 +310,11 @@ impl RuntimeExecutionProtocol {
                 .transient_outputs
                 .iter()
                 .chain(&artifact.runtime.service_outputs)
-                .filter(|output| output.role == "reply" || is_observation_method(output))
+                .filter(|output| {
+                    output.role == "reply"
+                        || is_observation_method(output)
+                        || is_leased_method(output)
+                })
                 .map(|output| {
                     let port = if output.role == "reply" {
                         artifact
@@ -650,7 +655,7 @@ impl RuntimeExecutionProtocol {
                     validity,
                 } => {
                     let mut metadata = RuntimeWireMetadata::data(
-                        "scenario",
+                        "supervisor",
                         ExecutionTime::from_nanos(logical_time_ns),
                         sequence,
                     )
@@ -673,7 +678,7 @@ impl RuntimeExecutionProtocol {
                     });
                     publish_scenario_sample(
                         &self.inner.bus,
-                        "scenario",
+                        "supervisor",
                         consumer_signature.name,
                         "publish",
                         encoded_payload,
@@ -683,6 +688,7 @@ impl RuntimeExecutionProtocol {
                     .await?;
                     self.wait_scenario_delivery(ScenarioDeliveryExpectation {
                         label: &step.label,
+                        kind: "setpoint",
                         timeline_id,
                         target: format!("{target_instance}.{}", consumer_signature.name),
                         port: consumer_signature.name,
@@ -698,7 +704,7 @@ impl RuntimeExecutionProtocol {
                     producer_signature,
                 } => {
                     let metadata = RuntimeWireMetadata::data(
-                        "scenario",
+                        "supervisor",
                         ExecutionTime::from_nanos(logical_time_ns),
                         sequence,
                     )
@@ -711,7 +717,7 @@ impl RuntimeExecutionProtocol {
                     .with_eligible_boundary(eligible_boundary);
                     publish_scenario_sample(
                         &self.inner.bus,
-                        "scenario",
+                        "supervisor",
                         producer_signature.name,
                         "publish",
                         &[],
@@ -721,6 +727,7 @@ impl RuntimeExecutionProtocol {
                     .await?;
                     self.wait_scenario_delivery(ScenarioDeliveryExpectation {
                         label: &step.label,
+                        kind: "withdraw",
                         timeline_id,
                         target: format!("{target_instance}.{}", producer_signature.name),
                         port: producer_signature.name,
@@ -814,11 +821,7 @@ impl RuntimeExecutionProtocol {
             .steps
             .push(ScenarioStepEvidence {
                 label: expectation.label.to_owned(),
-                kind: if expectation.bytes == 0 {
-                    "withdraw".to_owned()
-                } else {
-                    "setpoint".to_owned()
-                },
+                kind: expectation.kind.to_owned(),
                 production_boundary: expectation.production_boundary,
                 eligible_boundary: expectation.eligible_boundary,
             });
@@ -1127,6 +1130,13 @@ impl RuntimeExecutionProtocol {
                     return self.fail_boundary(&mut boundary, key.boundary, error);
                 }
             };
+            tracing::debug!(
+                target: "phoxal::boundary",
+                runtime = %runtime.instance,
+                boundary = key.boundary,
+                expected_deliveries = ?deliveries,
+                "waiting for runtime delivery admission"
+            );
             if let Err(error) = wait_delivery_acknowledgements(DeliveryAckWait {
                 acknowledgements: &runtime.delivery_ack,
                 failures: &runtime.failures,
@@ -1351,7 +1361,7 @@ fn scenario_delivery_ack_matches(
     acknowledgement.execution_id == execution_id
         && acknowledgement.timeline_id == timeline_id
         && acknowledgement.boundary == production_boundary
-        && acknowledgement.source == "scenario"
+        && acknowledgement.source == "supervisor"
         && acknowledgement.target == target
         && acknowledgement.port == port
         && acknowledgement.direction == "publish"
@@ -1907,6 +1917,11 @@ async fn recv_delivery_ack(
                     boundary,
                     pending,
                 ) else {
+                    tracing::debug!(
+                        target: "phoxal::boundary",
+                        acknowledgement = ?acknowledgement,
+                        "ignoring unmatched runtime delivery acknowledgement"
+                    );
                     // This is a duplicate acknowledgement for a delivery
                     // already removed from the pending set, or a stale
                     // identity from another accepted cut.
@@ -2470,7 +2485,7 @@ mod tests {
             execution_id: "execution".to_owned(),
             timeline_id: "timeline".to_owned(),
             boundary: 7,
-            source: "scenario".to_owned(),
+            source: "supervisor".to_owned(),
             target: "motion.manual".to_owned(),
             port: "manual".to_owned(),
             direction: "publish".to_owned(),

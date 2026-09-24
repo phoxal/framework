@@ -1,18 +1,15 @@
 [package]
 name = "phoxal-service-motion"
-version = "0.0.0-dev.2"
+version = "0.0.0-dev.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Public motion contract and private motion service executable for Phoxal."
+description = "Motion service executable for Phoxal."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["generated/**", "src/**", "proto/**", "Cargo.toml", "Cargo.lock", "README.md"]
-
-[lib]
-path = "generated/lib.rs"
+include = ["api/**", "build.rs", "src/**", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-service-motion"
@@ -20,24 +17,17 @@ path = "src/main.rs"
 required-features = ["runtime"]
 
 [features]
-default = []
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror", "dep:phoxal-service-kinematics"]
+default = ["runtime"]
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror"]
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["contract"] }
-phoxal-service-kinematics = { workspace = true, optional = true }
-prost = { workspace = true }
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
-[package.metadata.phoxal.contract]
-protos = [
-    "proto/phoxal/motion/v1/constraints.proto",
-    "proto/phoxal/motion/v1/motion.proto",
-]
-includes = ["proto"]
-generated = "generated"
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

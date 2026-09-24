@@ -55,7 +55,7 @@ pub(super) fn validate_controlled_capacity(
             let (source_instance, source_port) = source
                 .split_once('.')
                 .with_context(|| format!("connection source `{source}` has no port separator"))?;
-            if source_instance == "scenario"
+            if source_instance == "supervisor"
                 && let Some(program) = scenario_program
             {
                 let maximum = program

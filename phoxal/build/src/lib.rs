@@ -29,6 +29,15 @@ use prost_reflect::{DescriptorPool, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod api;
+
+pub use api::{BuildApiConfig, api};
+#[doc(hidden)]
+pub use api::{validate_participant_api, validate_project_api};
+
+/// Framework version whose generated API contract this helper implements.
+pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The replacement call/observation option definition packaged with this crate.
 pub const API_PROTO: &str = include_str!("../proto/phoxal/api.proto");
 
@@ -149,6 +158,15 @@ pub enum Error {
     /// Checked-in contract evidence does not match its authored or generated files.
     #[error("contract metadata mismatch at {path}: {message}")]
     ContractMetadataMismatch { path: PathBuf, message: String },
+    /// An authored API selection or prepared source tree is invalid.
+    #[error("API input {path}: {message}")]
+    ApiInput { path: PathBuf, message: String },
+    /// A robot document cannot be decoded for build-script generation.
+    #[error("cannot parse robot document {path}: {source}")]
+    ApiDocument {
+        path: PathBuf,
+        source: serde_yaml::Error,
+    },
 }
 
 /// Compiles owned Protobuf files and their imported descriptor closure.
@@ -709,6 +727,8 @@ fn compile_contracts_to_with_dependencies(
         dependencies,
         extern_paths,
         descriptor_file,
+        None,
+        true,
     )
 }
 
@@ -720,6 +740,8 @@ fn compile_contracts_impl(
     dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
     descriptor_file: &str,
+    prost_path: Option<&str>,
+    emit_rerun: bool,
 ) -> Result<(), Error> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let google_include = protoc_bin_vendored::include_path()?;
@@ -819,6 +841,9 @@ fn compile_contracts_impl(
         .enable_type_names()
         .service_generator(service_generator);
     config.compile_well_known_types();
+    if let Some(path) = prost_path {
+        config.prost_path(path);
+    }
     config.extern_path(".google.protobuf.Empty", "::phoxal::contract::Empty");
     for (proto_package, rust_path) in extern_paths {
         config.extern_path(*proto_package, *rust_path);
@@ -838,13 +863,15 @@ fn compile_contracts_impl(
         )?;
     }
 
-    for path in owned_paths {
-        println!("cargo:rerun-if-changed={}", path.display());
+    if emit_rerun {
+        for path in owned_paths {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        println!(
+            "cargo:rerun-if-changed={}",
+            include_dir().join("phoxal/api.proto").display()
+        );
     }
-    println!(
-        "cargo:rerun-if-changed={}",
-        include_dir().join("phoxal/api.proto").display()
-    );
     Ok(())
 }
 
