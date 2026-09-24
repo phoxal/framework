@@ -88,19 +88,11 @@ pub struct RobotSection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
-    /// Obsolete dependency key retained only for internal legacy readers.
-    #[serde(default, skip_deserializing, skip_serializing)]
-    pub component: String,
-    /// Exact package selected for this mounted component.
-    pub package: String,
-    /// Exact published or local package version.
-    pub version: String,
+    /// Source of this mounted component.
+    pub source: Source,
     /// Binary target if it differs from the package name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
-    /// Source override for this component.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<ServiceSource>,
     /// Persistent native site in the parent robot model receiving the component root.
     pub mount_site: String,
     /// Component-owned driver connection and configuration.
@@ -181,16 +173,11 @@ pub struct CapabilityDeclaration {
 }
 
 /// One explicit behavioral service instance.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSelection {
-    /// Exact package selected for this service instance.
-    pub package: String,
-    /// Exact published or local package version.
-    pub version: String,
-    /// Optional source override. Absence selects the Phoxal registry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<ServiceSource>,
+    /// Source of this service package.
+    pub source: Source,
     /// Binary target when the package exposes more than one executable.
     #[serde(default)]
     pub binary: Option<String>,
@@ -199,51 +186,90 @@ pub struct ServiceSelection {
     pub config: Option<serde_json::Value>,
 }
 
-/// Cargo source override for one selected service package.
+/// One authored participant source. Each variant carries its own selection identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ServiceSource {
+#[serde(from = "SourceWire", into = "SourceWire")]
+pub enum Source {
     /// Mutable local development source relative to the robot root.
-    Path(ServicePathSource),
-    /// Immutable Git revision, optionally selecting a package below the checkout.
-    Git(ServiceGitSource),
-    /// Cargo registry package requirement.
-    Registry(ServiceRegistrySource),
+    Path(String),
+    /// Exact Cargo registry package.
+    Package(PackageSourceSelection),
+    /// Immutable Git revision selecting one package.
+    Git(GitSourceSelection),
 }
 
-/// A local service package source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServicePathSource {
-    /// Package or workspace path.
-    pub path: String,
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum SourceWire {
+    Path(PathSourceWire),
+    Package(PackageSourceWire),
+    Git(GitSourceWire),
 }
 
-/// An immutable Git service package source.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathSourceWire {
+    path: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageSourceWire {
+    package: PackageSourceSelection,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitSourceWire {
+    git: GitSourceSelection,
+}
+
+impl From<SourceWire> for Source {
+    fn from(source: SourceWire) -> Self {
+        match source {
+            SourceWire::Path(source) => Self::Path(source.path),
+            SourceWire::Package(source) => Self::Package(source.package),
+            SourceWire::Git(source) => Self::Git(source.git),
+        }
+    }
+}
+
+impl From<Source> for SourceWire {
+    fn from(source: Source) -> Self {
+        match source {
+            Source::Path(path) => Self::Path(PathSourceWire { path }),
+            Source::Package(package) => Self::Package(PackageSourceWire { package }),
+            Source::Git(git) => Self::Git(GitSourceWire { git }),
+        }
+    }
+}
+
+/// An exact Cargo registry package selection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ServiceGitSource {
+pub struct PackageSourceSelection {
+    /// Cargo package name.
+    pub name: String,
+    /// Exact semantic version.
+    pub version: String,
+    /// Cargo registry name; omitted for the Phoxal registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+}
+
+/// An immutable Git package selection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitSourceSelection {
+    /// Cargo package name within the selected checkout.
+    pub name: String,
     /// Repository URL.
-    pub git: String,
+    pub url: String,
     /// Immutable commit revision.
     pub rev: String,
-    /// Legacy internal field, never authored in new selections.
-    #[serde(default, skip_deserializing, skip_serializing)]
-    pub package: String,
     /// Package path below the repository root.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-}
-
-/// A registry service package source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceRegistrySource {
-    /// Registry name.
-    pub registry: String,
-    /// Legacy internal field, never authored in new selections.
-    #[serde(default, skip_deserializing, skip_serializing)]
-    pub version: String,
 }
 
 /// One or more ordered producer endpoints for a local consuming input.
@@ -339,15 +365,13 @@ robot:
   model: model.xml
   components:
     imu:
-      package: imu-package
-      version: 1.0.0
+      source: { package: { name: imu-package, version: 1.0.0 } }
       mount_site: imu_mount
       config:
         rate_hz: 100
 services:
   navigation:
-    package: navigation-package
-    version: 1.0.0
+    source: { package: { name: navigation-package, version: 1.0.0 } }
     config:
       gain: 1.5
 connections:
@@ -367,19 +391,46 @@ robot:
   id: rover
   components:
     imu:
-      package: imu-package
-      version: 1.0.0
+      source: { path: ../imu }
       mount_site: imu_mount
 services:
   navigation:
-    package: navigation-package
-    version: 1.0.0
+    source: { path: ../navigation }
 "#;
         let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let ids = document.instance_ids();
         assert!(ids.contains("brain"));
         assert!(ids.contains("navigation"));
         assert!(ids.contains("imu"));
+    }
+
+    #[test]
+    fn participant_source_is_the_only_package_selection() {
+        let git = "source:\n  git:\n    name: motion\n    url: https://example.test/motion.git\n    rev: 0123456789abcdef0123456789abcdef01234567\n";
+        let selected: ServiceSelection = serde_yaml::from_str(git).expect("Git source parses");
+        assert!(matches!(selected.source, Source::Git(_)));
+
+        let package = "source: { package: { name: motion, version: 1.2.3 } }\n";
+        let selected: ServiceSelection =
+            serde_yaml::from_str(package).expect("package source parses");
+        assert!(matches!(selected.source, Source::Package(_)));
+
+        let path = "source: { path: ../motion }\n";
+        let selected: ServiceSelection = serde_yaml::from_str(path).expect("path source parses");
+        assert_eq!(selected.source, Source::Path("../motion".to_owned()));
+
+        assert!(
+            serde_yaml::from_str::<ServiceSelection>(
+                "package: motion\nsource: { path: ../motion }\n"
+            )
+            .is_err()
+        );
+        assert!(
+            serde_yaml::from_str::<ServiceSelection>(
+                "source: { path: ../motion, package: { name: motion, version: 1.2.3 } }\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! GitHub API submission of one prepared package to the reviewed registry.
+//! GitHub API submission of one Cargo package to the registry.
 //!
 //! This module never invokes Git or GitHub CLI.
 //! It authenticates through an explicitly supplied environment token, a
@@ -98,12 +98,6 @@ fn submit(
     let base = repository.default_branch;
     let index_path = index_path(publication.package())?;
     let archive_path = archive_path(publication.package(), publication.version())?;
-    let provenance_path = format!(
-        "provenance/{}/{}.json",
-        publication.package(),
-        publication.version()
-    );
-    let ownership_path = format!("ownership/{}.json", publication.package());
 
     let mut index = github
         .raw_optional(OWNER, REPOSITORY, &base, &index_path)?
@@ -151,12 +145,6 @@ fn submit(
     );
     index.push(b'\n');
 
-    let ownership = github.raw_optional(OWNER, REPOSITORY, &base, &ownership_path)?;
-    if let Some(bytes) = &ownership {
-        validate_owner(bytes, login, publication.package())?;
-    }
-    let provenance = provenance(publication, login, &archive_path)?;
-
     ensure_fork(github, login)?;
     let branch = publication_branch(publication);
     let existing_ref = github.get_optional::<GitRef>(&format!(
@@ -170,16 +158,6 @@ fn submit(
             })?;
         verify_checksum(&pending_archive, publication.checksum(), "pending archive")?;
         verify_pending_file(github, login, &branch, &index_path, &index)?;
-        verify_pending_file(github, login, &branch, &provenance_path, &provenance)?;
-        if ownership.is_none() {
-            verify_pending_file(
-                github,
-                login,
-                &branch,
-                &ownership_path,
-                &ownership_record(publication, login)?,
-            )?;
-        }
         if let Some(pull) = existing_pull_request(github, login, &branch)? {
             return Ok(SubmissionResult::PendingReview {
                 pull_request_url: pull.html_url,
@@ -193,15 +171,10 @@ fn submit(
             "/repos/{OWNER}/{REPOSITORY}/git/commits/{}",
             base_ref.object.sha
         ))?;
-        let mut entries = vec![
+        let entries = vec![
             tree_entry(github, login, &archive_path, &archive, true)?,
             tree_entry(github, login, &index_path, &index, false)?,
-            tree_entry(github, login, &provenance_path, &provenance, false)?,
         ];
-        if ownership.is_none() {
-            let bytes = ownership_record(publication, login)?;
-            entries.push(tree_entry(github, login, &ownership_path, &bytes, false)?);
-        }
         let tree = github.post::<GitTree>(
             &format!("/repos/{login}/{REPOSITORY}/git/trees"),
             &json!({"base_tree": commit.tree.sha, "tree": entries}),
@@ -227,7 +200,7 @@ fn submit(
             "head": format!("{login}:{branch}"),
             "base": base,
             "body": format!(
-                "Publishes `{}` `{}` for reviewed registry admission.\n\nArchive SHA-256: `{}`\nContent role: `{}`\n",
+                "Publishes `{}` `{}` to the registry.\n\nArchive SHA-256: `{}`\nContent role: `{}`\n",
                 publication.package(),
                 publication.version(),
                 publication.checksum(),
@@ -441,59 +414,6 @@ fn dependency_tables(
         }
     }
     Ok(())
-}
-
-fn provenance(
-    publication: &PublicationResult,
-    login: &str,
-    archive_path: &str,
-) -> Result<Vec<u8>, Error> {
-    let assets = publication
-        .files()
-        .iter()
-        .map(|file| json!({"path": file.path, "size": file.bytes, "sha256": file.sha256}))
-        .collect::<Vec<_>>();
-    let source = serde_json::to_value(publication.source_provenance()).map_err(submission_json)?;
-    pretty_json(&json!({
-        "name": publication.package(),
-        "version": publication.version(),
-        "kind": publication.registry_kind(),
-        "archive": archive_path,
-        "archive_sha256": publication.checksum(),
-        "source": source,
-        "publisher": login,
-        "assets": assets,
-    }))
-}
-
-fn ownership_record(publication: &PublicationResult, login: &str) -> Result<Vec<u8>, Error> {
-    pretty_json(&json!({
-        "name": publication.package(),
-        "owners": [login],
-        "reserved": true,
-        "kind": publication.registry_kind(),
-    }))
-}
-
-fn validate_owner(bytes: &[u8], login: &str, package: &str) -> Result<(), Error> {
-    let value: Value = serde_json::from_slice(bytes).map_err(submission_json)?;
-    let owns = value
-        .get("owners")
-        .and_then(Value::as_array)
-        .is_some_and(|owners| owners.iter().any(|owner| owner.as_str() == Some(login)));
-    if value.get("name").and_then(Value::as_str) != Some(package) || !owns {
-        return Err(PublicationError::SubmissionConflict {
-            message: format!("GitHub user {login} is not an owner of package {package}"),
-        }
-        .into());
-    }
-    Ok(())
-}
-
-fn pretty_json(value: &Value) -> Result<Vec<u8>, Error> {
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(submission_json)?;
-    bytes.push(b'\n');
-    Ok(bytes)
 }
 
 fn find_index_record(index: &[u8], version: &str) -> Result<Option<Value>, Error> {

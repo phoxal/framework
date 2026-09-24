@@ -30,18 +30,41 @@ For framework development before those packages are released, run the workspace 
 cargo run --locked -p cargo-phoxal -- phoxal --help
 ```
 
-The tooling supports `cargo phoxal prepare`, `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
+The tooling supports `cargo phoxal prepare`, `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, managed simulation installation and execution, and reviewed package publication.
 
-`cargo phoxal prepare` installs runnable packages declared with exact `package` and `version` values in `robot.yaml` into the managed Phoxal home.
+`cargo phoxal prepare` resolves each service and component from its required `source` selection in `robot.yaml`.
+Choose exactly one source form:
+
+```yaml
+source: { path: ../../components/ddsm115 }
+source: { package: { name: phoxal-component-ddsm115, version: "1.2.3" } }
+source: { package: { name: phoxal-component-ddsm115, version: "1.2.3", registry: other } }
+source:
+  git:
+    name: phoxal-component-ddsm115
+    url: https://example.com/components.git
+    rev: 0123456789abcdef0123456789abcdef01234567
+    path: ddsm115
+```
+
+Local paths are relative to the robot root and use the selected Cargo package's own version.
+Registry selections require an exact package name and semantic version; omitting `registry` selects the Phoxal registry.
+Git selections require a package name and full commit revision, with an optional package path below the checkout; Cargo reads that package's version from the pinned checkout.
+Registry and Git runnable packages are installed into the managed Phoxal home.
 It copies registry and Git package Protobuf sources into the project's ignored `.phoxal/` tree, while local path sources remain at their authored paths.
-It uses Cargo for acquisition and installation, preserves the authored selection, and leaves the robot's Cargo manifest unchanged.
+Managed installations retain the required API and component model resources, not another copy of the package source tree.
+Local path participants are built by Cargo in their own workspace when a runtime bundle is needed.
+Preparation preserves the authored selection and leaves the robot's Cargo manifest unchanged.
 The check, build, run, test, bundle, and simulation entry points prepare these exact selections automatically.
 
 Each command discovers the nearest robot project, validates explicit composition, and applies the requested Cargo lock and offline policy.
-Runnable participant packages install through Cargo into the managed Phoxal home outside the robot's dependency graph.
+Registry and Git runnable participant packages install through Cargo into the managed Phoxal home outside the robot's dependency graph.
 Only the robot application, supervisor, and passive data packages remain in its root Cargo graph.
 
-`cargo phoxal build` assembles the selected brain, independently installed service and component-driver executables, and mandatory supervisor into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
+`cargo phoxal check` validates the authored document, prepares selected APIs, and runs Cargo check for the requested robot code.
+It does not build runtime executables or inspect their compiled contracts.
+
+`cargo phoxal build` assembles the selected brain, service and component-driver executables, and mandatory supervisor into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
 The bundle contains the selected executables, the full compiled `robot.yaml`, and a manifest that maps service instances to executable paths and retains the runtime contracts needed for admission.
 Simulation bundles also contain the model assets needed by the simulator.
 Bundle files carry no checksum or provenance records.
@@ -49,10 +72,8 @@ Bundle files carry no checksum or provenance records.
 `cargo phoxal run` independently prepares and validates the hardware bundle, then launches the selected supervisor with the isolated `local` scope and `local` supervisor identity.
 It does not launch simulation or claim domain readiness or physical safety.
 
-`cargo phoxal update --dry-run` reports eligible newer registry versions for participants already selected in `robot.yaml` without writing files.
-`cargo phoxal update` prepares candidate binaries and APIs, validates their complete composition, and atomically updates the exact versions in `robot.yaml`.
-Use `cargo phoxal update service <instance>` or `cargo phoxal update component <instance>` to limit the selection.
-Local path and Git revisions remain manually selected.
+Change a registry participant's version or a Git participant's revision in `robot.yaml`, then run preparation or build to acquire it.
+Local path packages use their current checked-out content.
 
 All source-development commands accept `--cargo <path>` and preserve the selected executable across Cargo metadata and operation invocations.
 Cargo package, workspace, target, and test selectors are forwarded using Cargo's native option names.
@@ -80,12 +101,13 @@ Use `cargo phoxal simulation upgrade` to replace the managed installation and `c
 Use `--mujoco-distribution <path>` when an official MuJoCo distribution is already available, or together with `--offline` for an installation that performs no download.
 An explicit `--simulator <path>` remains available for simulator source development and deterministic test fixtures.
 
-`cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
+`cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a `.crate` archive in isolated temporary staging.
+The command prints the archive checksum and size without creating a review inventory, source provenance record, or checksum sidecar.
 Supported roles are `component`, `service`, `preset`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
 
 The developer selects the publication role in the command instead of repeating it in package metadata.
 `cargo-phoxal` verifies that selection from standard project structure: `component.yaml` identifies a component, `service.yaml` identifies a service preset, and Cargo target shape distinguishes ordinary libraries, procedural macros, applications, simulators, and tools.
-Runtime composition derives service and component roles from exact `robot.yaml` package selections.
+Runtime composition derives service and component roles from `robot.yaml` source selections.
 No Phoxal-specific package metadata table is required.
 
 The optional `--path <source-directory>` selects a package explicitly, while omitting it selects the matching current package or a uniquely named member of the current Cargo workspace.
@@ -99,5 +121,5 @@ Set `PHOXAL_GITHUB_TOKEN` for an explicit noninteractive credential, keeping it 
 Otherwise the released tool uses its embedded public OAuth client ID, obtains the `public_repo` scope through GitHub's bounded device flow, validates the authenticated account, and stores renewable credentials in the operating-system credential store.
 Development builds may provide the public client ID through `PHOXAL_GITHUB_CLIENT_ID`.
 The `public_repo` scope covers every public repository accessible to the account, not only the registry fork.
-The command creates or reuses a contributor fork and immutable publication branch, uploads the archive/index/provenance/ownership bytes through Git objects, opens or reuses the upstream pull request, and returns `pending-review` without waiting for merge.
+The command creates or reuses a contributor fork and immutable publication branch, uploads the archive and Cargo index bytes through Git objects, opens or reuses the upstream pull request, and returns `pending-review` without waiting for merge.
 An already deployed version is reported as `available` only after its public archive checksum is verified.

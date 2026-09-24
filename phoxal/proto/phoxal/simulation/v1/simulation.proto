@@ -11,7 +11,6 @@ message AcquireAuthorityRequest {
   bytes correlation_id = 6;
   uint64 max_product_bytes = 7;
   uint64 max_cut_bytes = 8;
-  uint64 receipt_byte_cap = 9;
 }
 
 message ProviderRequirement {
@@ -37,7 +36,6 @@ message AcquireAuthorityResponse {
   bytes correlation_id = 9;
   uint64 max_product_bytes = 10;
   uint64 max_cut_bytes = 11;
-  uint64 receipt_byte_cap = 12;
 }
 
 message TransitionKey {
@@ -89,15 +87,11 @@ enum PhaseStatus {
   PHASE_STATUS_INITIAL_ADMITTED = 1;
   PHASE_STATUS_PREPARED = 2;
   PHASE_STATUS_OBSERVATIONS_ADMITTED = 3;
-  PHASE_STATUS_UNKNOWN = 4;
-  PHASE_STATUS_STALE = 5;
-  PHASE_STATUS_FAILED = 6;
 }
 
 message CutReceipt {
   TransitionKey transition_key = 1;
   bytes correlation_id = 2;
-  bytes request_digest = 3;
   bytes membership_digest = 4;
   repeated ProductMembership products = 5;
   uint64 prepared_boundary = 6;
@@ -176,8 +170,6 @@ message ProgressRequest {
   bytes authority_grant = 1;
   bytes session_id = 2;
   bytes correlation_id = 3;
-  TransitionKey transition_key = 4;
-  PhaseStatus phase = 5;
 }
 
 message ProgressResponse {
@@ -189,10 +181,4 @@ message ProgressResponse {
   bytes session_id = 6;
   bytes authority_grant = 7;
   bytes correlation_id = 8;
-  PhaseStatus phase_status = 9;
-  uint64 prepared_boundary = 10;
-  uint64 admitted_observation_boundary = 11;
-  uint64 accepted_sequence_watermark = 12;
-  bytes request_digest = 13;
-  bytes membership_digest = 14;
 }

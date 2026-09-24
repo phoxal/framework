@@ -1,4 +1,4 @@
-//! Receipt retention and admission of complete simulation transitions.
+//! Admission of complete simulation transitions.
 
 use super::authority::{
     authorize_live_simulation_grant, authorize_simulation_grant, release_backend_authority,
@@ -13,7 +13,6 @@ pub(crate) async fn begin_simulation_phase(
     transition_key: &TransitionKey,
     correlation_id: &[u8],
     operation: PublicOperation,
-    request_digest: [u8; 32],
     context: PhaseAdmissionContext<'_>,
     now_ms: u64,
 ) -> Result<SimulationPhaseAdmission, PublicTransportError> {
@@ -64,26 +63,9 @@ pub(crate) async fn begin_simulation_phase(
             "simulation transition identity does not match authority",
         ));
     }
-    if let Some(retained) = current
-        .phase_receipts
-        .iter()
-        .find(|retained| retained.correlation_id == correlation_id)
-    {
-        if retained.operation != operation
-            || retained.transition_key != *transition_key
-            || retained.request_digest != request_digest
-        {
-            return Err(simulation_rejected(
-                "simulation correlation_id or transition was reused with different inputs",
-            ));
-        }
-        return Err(simulation_rejected(
-            "simulation phase duplicate must be served from its retained receipt",
-        ));
-    }
     if transition_key.operation_sequence <= current.accepted_sequence_watermark {
         return Err(simulation_rejected(
-            "simulation operation is stale because its receipt was evicted",
+            "simulation operation sequence is stale",
         ));
     }
     if transition_key.operation_sequence
@@ -130,10 +112,6 @@ pub(crate) async fn begin_simulation_phase(
         PublicOperation::AdmitObservations => {
             if transition_key.boundary != current.boundary
                 || current.in_flight.as_ref() != Some(transition_key)
-                || !current.phase_receipts.iter().any(|phase| {
-                    phase.transition_key == *transition_key
-                        && phase.operation == PublicOperation::PrepareBoundary
-                })
             {
                 return Err(simulation_rejected(
                     "observation admission does not match the prepared transition",
@@ -182,7 +160,6 @@ pub(crate) async fn begin_simulation_phase(
     Ok(SimulationPhaseAdmission {
         context,
         transition_key: transition_key.clone(),
-        request_digest,
         definition,
         operation,
         adapter: adapter.clone(),
@@ -190,35 +167,6 @@ pub(crate) async fn begin_simulation_phase(
         authorized_at_ms: now_ms,
         started: Instant::now(),
     })
-}
-
-pub(crate) fn retained_phase_response<Response: Message + Default>(
-    current: &SimulationAuthority,
-    operation: PublicOperation,
-    transition_key: &TransitionKey,
-    correlation_id: &[u8],
-    request_digest: [u8; 32],
-) -> Result<Option<Response>, PublicTransportError> {
-    let Some(retained) = current
-        .phase_receipts
-        .iter()
-        .find(|retained| retained.correlation_id == correlation_id)
-    else {
-        return Ok(None);
-    };
-    if retained.operation != operation
-        || retained.transition_key != *transition_key
-        || retained.request_digest != request_digest
-    {
-        return Err(simulation_rejected(
-            "simulation correlation_id or transition was reused with different inputs",
-        ));
-    }
-    Response::decode(retained.response.as_slice())
-        .map(Some)
-        .map_err(|error| {
-            simulation_rejected(&format!("retained simulation receipt is invalid: {error}"))
-        })
 }
 
 pub(crate) async fn admit_initial_observations(
@@ -233,23 +181,11 @@ pub(crate) async fn admit_initial_observations(
         .transition_key
         .clone()
         .ok_or_else(|| simulation_rejected("initial observation request has no transition key"))?;
-    let digest: [u8; 32] = Sha256::digest(request.encode_to_vec()).into();
     {
         let guard = authority.lock().await;
         if let Some(current) = guard.as_ref() {
             authorize_live_simulation_grant(route, &key.authority_grant, current, adapter, now_ms)
                 .await?;
-        }
-        if let Some(current) = guard.as_ref()
-            && let Some(response) = retained_phase_response::<AdmitInitialObservationsResponse>(
-                current,
-                PublicOperation::AdmitInitialObservations,
-                &key,
-                &request.correlation_id,
-                digest,
-            )?
-        {
-            return Ok(response);
         }
     }
     let (max_product_bytes, max_cut_bytes) = {
@@ -264,7 +200,6 @@ pub(crate) async fn admit_initial_observations(
         &key,
         &request.correlation_id,
         PublicOperation::AdmitInitialObservations,
-        digest,
         PhaseAdmissionContext {
             adapter,
             authority,
@@ -307,15 +242,7 @@ pub(crate) async fn admit_initial_observations(
         &admission,
     )
     .await?;
-    retain_phase_response(
-        authority,
-        &admission,
-        &request.correlation_id,
-        response.clone(),
-        phoxal::communication::simulation::PhaseStatus::InitialAdmitted,
-        false,
-    )
-    .await
+    complete_phase(authority, &admission, response, false).await
 }
 
 pub(crate) async fn prepare_boundary(
@@ -330,23 +257,11 @@ pub(crate) async fn prepare_boundary(
         .transition_key
         .clone()
         .ok_or_else(|| simulation_rejected("prepare request has no transition key"))?;
-    let digest: [u8; 32] = Sha256::digest(request.encode_to_vec()).into();
     {
         let guard = authority.lock().await;
         if let Some(current) = guard.as_ref() {
             authorize_live_simulation_grant(route, &key.authority_grant, current, adapter, now_ms)
                 .await?;
-        }
-        if let Some(current) = guard.as_ref()
-            && let Some(response) = retained_phase_response::<PrepareBoundaryResponse>(
-                current,
-                PublicOperation::PrepareBoundary,
-                &key,
-                &request.correlation_id,
-                digest,
-            )?
-        {
-            return Ok(response);
         }
     }
     let admission = begin_simulation_phase(
@@ -354,7 +269,6 @@ pub(crate) async fn prepare_boundary(
         &key,
         &request.correlation_id,
         PublicOperation::PrepareBoundary,
-        digest,
         PhaseAdmissionContext {
             adapter,
             authority,
@@ -388,15 +302,7 @@ pub(crate) async fn prepare_boundary(
         &admission,
     )
     .await?;
-    retain_phase_response(
-        authority,
-        &admission,
-        &request.correlation_id,
-        response.clone(),
-        phoxal::communication::simulation::PhaseStatus::Prepared,
-        false,
-    )
-    .await
+    complete_phase(authority, &admission, response, false).await
 }
 
 pub(crate) async fn admit_observations(
@@ -411,23 +317,11 @@ pub(crate) async fn admit_observations(
         .transition_key
         .clone()
         .ok_or_else(|| simulation_rejected("observation admission has no transition key"))?;
-    let digest: [u8; 32] = Sha256::digest(request.encode_to_vec()).into();
     {
         let guard = authority.lock().await;
         if let Some(current) = guard.as_ref() {
             authorize_live_simulation_grant(route, &key.authority_grant, current, adapter, now_ms)
                 .await?;
-        }
-        if let Some(current) = guard.as_ref()
-            && let Some(response) = retained_phase_response::<AdmitObservationsResponse>(
-                current,
-                PublicOperation::AdmitObservations,
-                &key,
-                &request.correlation_id,
-                digest,
-            )?
-        {
-            return Ok(response);
         }
     }
     let (max_product_bytes, max_cut_bytes) = {
@@ -442,7 +336,6 @@ pub(crate) async fn admit_observations(
         &key,
         &request.correlation_id,
         PublicOperation::AdmitObservations,
-        digest,
         PhaseAdmissionContext {
             adapter,
             authority,
@@ -489,15 +382,7 @@ pub(crate) async fn admit_observations(
         &admission,
     )
     .await?;
-    retain_phase_response(
-        authority,
-        &admission,
-        &request.correlation_id,
-        response.clone(),
-        phoxal::communication::simulation::PhaseStatus::ObservationsAdmitted,
-        true,
-    )
-    .await
+    complete_phase(authority, &admission, response, true).await
 }
 
 pub(crate) async fn clear_phase_admission(
@@ -545,8 +430,8 @@ pub(crate) async fn phase_backend_result<T>(
     Err(error)
 }
 
-/// A malformed reply after backend mutation is terminal, even if no receipt
-/// can be retained. Repeating the request must never repeat that mutation.
+/// A malformed reply after backend mutation is terminal.
+/// Repeating the request must never repeat that mutation.
 async fn phase_validation_result<T>(
     result: Result<T, PublicTransportError>,
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
@@ -563,15 +448,12 @@ async fn phase_validation_result<T>(
     result
 }
 
-pub(crate) async fn retain_phase_response<Response: Message>(
+pub(crate) async fn complete_phase<Response>(
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
     admission: &SimulationPhaseAdmission,
-    correlation_id: &[u8],
     response: Response,
-    status: phoxal::communication::simulation::PhaseStatus,
     completes_transition: bool,
 ) -> Result<Response, PublicTransportError> {
-    let encoded = response.encode_to_vec();
     let mut guard = authority.lock().await;
     let current = guard
         .as_mut()
@@ -603,38 +485,7 @@ pub(crate) async fn retain_phase_response<Response: Message>(
         ),
     )
     .await?;
-    if encoded.len() > current.receipt_byte_cap {
-        let detail = "simulation phase receipt exceeds its negotiated retention byte cap";
-        current.failure = Some(detail.into());
-        current.active_phase = None;
-        return Err(simulation_rejected(detail));
-    }
     current.active_phase = None;
-    current.phase_receipts.push_back(RetainedSimulationPhase {
-        operation: admission.operation,
-        transition_key: admission.transition_key.clone(),
-        correlation_id: correlation_id.to_vec(),
-        request_digest: admission.request_digest,
-        response: encoded,
-        status,
-        bytes: response.encoded_len(),
-    });
-    while current.phase_receipts.len() > MAX_RETAINED_SIMULATION_PHASES
-        || current
-            .phase_receipts
-            .iter()
-            .map(|receipt| receipt.bytes)
-            .sum::<usize>()
-            > current.receipt_byte_cap
-    {
-        let Some(evicted) = current.phase_receipts.pop_front() else {
-            break;
-        };
-        if evicted.transition_key == admission.transition_key && !completes_transition {
-            current.phase_receipts.push_front(evicted);
-            break;
-        }
-    }
     current.lease_deadline = Instant::now()
         .checked_add(SIMULATION_AUTHORITY_LEASE)
         .ok_or_else(|| simulation_rejected("simulation authority lease overflows the clock"))?;
@@ -651,91 +502,4 @@ pub(crate) async fn retain_phase_response<Response: Message>(
         current.in_flight = None;
     }
     Ok(response)
-}
-
-pub(crate) fn retained_phase_progress(
-    current: &SimulationAuthority,
-    request: &ProgressRequest,
-) -> Result<ProgressResponse, PublicTransportError> {
-    let key = request
-        .transition_key
-        .as_ref()
-        .ok_or_else(|| simulation_rejected("progress transition query has no transition key"))?;
-    let requested_phase = phoxal::communication::simulation::PhaseStatus::try_from(request.phase)
-        .unwrap_or(phoxal::communication::simulation::PhaseStatus::Unspecified);
-    let retained = current.phase_receipts.iter().find(|phase| {
-        phase.transition_key == *key
-            && (requested_phase == phoxal::communication::simulation::PhaseStatus::Unspecified
-                || phase.status == requested_phase)
-    });
-    let mut response = ProgressResponse {
-        execution_id: current.execution_id.clone(),
-        timeline_id: current.timeline_id.clone(),
-        completed_boundary: current.boundary,
-        failed: false,
-        detail: None,
-        session_id: current.session_id.clone(),
-        authority_grant: current.grant.clone(),
-        correlation_id: request.correlation_id.clone(),
-        phase_status: phoxal::communication::simulation::PhaseStatus::Unknown as i32,
-        prepared_boundary: current.boundary,
-        admitted_observation_boundary: current.boundary,
-        accepted_sequence_watermark: current.accepted_sequence_watermark,
-        request_digest: Vec::new(),
-        membership_digest: Vec::new(),
-    };
-    let Some(retained) = retained else {
-        response.phase_status = if key.operation_sequence <= current.accepted_sequence_watermark {
-            phoxal::communication::simulation::PhaseStatus::Stale as i32
-        } else {
-            phoxal::communication::simulation::PhaseStatus::Unknown as i32
-        };
-        response.detail = Some(
-            if response.phase_status == phoxal::communication::simulation::PhaseStatus::Stale as i32
-            {
-                "simulation phase receipt was evicted; its sequence watermark is retained"
-                    .to_owned()
-            } else {
-                "simulation phase outcome is not retained".to_owned()
-            },
-        );
-        return Ok(response);
-    };
-    let receipt = retained_receipt(retained)?;
-    response.phase_status = retained.status as i32;
-    response.prepared_boundary = receipt.prepared_boundary;
-    response.admitted_observation_boundary = receipt.admitted_observation_boundary;
-    response.request_digest = receipt.request_digest;
-    response.membership_digest = receipt.membership_digest;
-    Ok(response)
-}
-
-pub(crate) fn retained_receipt(
-    retained: &RetainedSimulationPhase,
-) -> Result<phoxal::communication::simulation::CutReceipt, PublicTransportError> {
-    let receipt = match retained.operation {
-        PublicOperation::AdmitInitialObservations => {
-            AdmitInitialObservationsResponse::decode(retained.response.as_slice())
-                .map_err(|error| {
-                    simulation_rejected(&format!("retained receipt is invalid: {error}"))
-                })?
-                .receipt
-        }
-        PublicOperation::PrepareBoundary => {
-            PrepareBoundaryResponse::decode(retained.response.as_slice())
-                .map_err(|error| {
-                    simulation_rejected(&format!("retained receipt is invalid: {error}"))
-                })?
-                .receipt
-        }
-        PublicOperation::AdmitObservations => {
-            AdmitObservationsResponse::decode(retained.response.as_slice())
-                .map_err(|error| {
-                    simulation_rejected(&format!("retained receipt is invalid: {error}"))
-                })?
-                .receipt
-        }
-        _ => None,
-    };
-    receipt.ok_or_else(|| simulation_rejected("retained simulation receipt is incomplete"))
 }

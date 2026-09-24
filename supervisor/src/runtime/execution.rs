@@ -1660,23 +1660,6 @@ impl RuntimeBoundaryHook for RuntimeExecutionProtocol {
                 session_id: context.session_id,
                 authority_grant: context.authority_grant,
                 correlation_id: context.correlation_id,
-                phase_status: if boundary.fault.is_some() {
-                    phoxal::communication::simulation::PhaseStatus::Failed as i32
-                } else if boundary.prepared_transition.is_some() {
-                    phoxal::communication::simulation::PhaseStatus::Prepared as i32
-                } else {
-                    phoxal::communication::simulation::PhaseStatus::ObservationsAdmitted as i32
-                },
-                prepared_boundary: boundary
-                    .prepared_transition
-                    .as_ref()
-                    .map_or(boundary.committed_boundary, |transition| {
-                        transition.boundary
-                    }),
-                admitted_observation_boundary: boundary.admitted_observation_boundary,
-                accepted_sequence_watermark: 0,
-                request_digest: Vec::new(),
-                membership_digest: Vec::new(),
             })
         })
     }
@@ -2070,7 +2053,7 @@ fn membership_digest(
 fn make_cut_receipt<Request: Message>(
     transition: &TransitionKey,
     correlation_id: &[u8],
-    request: &Request,
+    _request: &Request,
     memberships: &[phoxal::communication::simulation::ProductMembership],
     status: phoxal::communication::simulation::PhaseStatus,
     admitted_observation_boundary: u64,
@@ -2078,7 +2061,6 @@ fn make_cut_receipt<Request: Message>(
     CutReceipt {
         transition_key: Some(transition.clone()),
         correlation_id: correlation_id.to_vec(),
-        request_digest: Sha256::digest(request.encode_to_vec()).to_vec(),
         membership_digest: membership_digest(memberships),
         products: memberships.to_vec(),
         prepared_boundary: transition.boundary,

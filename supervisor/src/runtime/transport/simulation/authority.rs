@@ -1,6 +1,5 @@
 //! Exclusive grant lifecycle, reset, progress, and revocation.
 
-use super::phases::retained_phase_progress;
 use super::*;
 
 pub(crate) async fn acquire_simulation_authority(
@@ -28,8 +27,6 @@ pub(crate) async fn acquire_simulation_authority(
         .map_err(|_| simulation_rejected("simulation product byte cap is not representable"))?;
     let max_cut_bytes = usize::try_from(request.max_cut_bytes)
         .map_err(|_| simulation_rejected("simulation cut byte cap is not representable"))?;
-    let receipt_byte_cap = usize::try_from(request.receipt_byte_cap)
-        .map_err(|_| simulation_rejected("simulation receipt byte cap is not representable"))?;
     let max_product_bytes = if max_product_bytes == 0 {
         MAX_SIMULATION_PRODUCT_BYTES
     } else {
@@ -40,16 +37,9 @@ pub(crate) async fn acquire_simulation_authority(
     } else {
         max_cut_bytes
     };
-    let receipt_byte_cap = if receipt_byte_cap == 0 {
-        DEFAULT_SIMULATION_RECEIPT_BYTE_CAP
-    } else {
-        receipt_byte_cap
-    };
     if max_product_bytes > MAX_SIMULATION_PRODUCT_BYTES
         || max_cut_bytes > MAX_SIMULATION_CUT_BYTES
         || max_product_bytes > max_cut_bytes
-        || receipt_byte_cap == 0
-        || receipt_byte_cap > MAX_SIMULATION_CUT_BYTES
     {
         return Err(simulation_rejected(
             "simulation byte caps exceed the supported bounded lane",
@@ -202,16 +192,13 @@ pub(crate) async fn acquire_simulation_authority(
         quantum_ns: definition_quantum_ns,
         boundary: 0,
         lease_deadline,
-        phase_receipts: VecDeque::new(),
         in_flight: None,
         accepted_sequence_watermark: 0,
         max_product_bytes,
         max_cut_bytes,
-        receipt_byte_cap,
         active_phase: None,
         failure: None,
         resetting: false,
-        retained_reset: None,
     });
     Ok(AcquireAuthorityResponse {
         authority_grant: grant,
@@ -225,7 +212,6 @@ pub(crate) async fn acquire_simulation_authority(
         correlation_id: request.correlation_id,
         max_product_bytes: max_product_bytes as u64,
         max_cut_bytes: max_cut_bytes as u64,
-        receipt_byte_cap: receipt_byte_cap as u64,
     })
 }
 
@@ -303,13 +289,6 @@ pub(crate) async fn reset_simulation(
     let current = guard
         .as_mut()
         .ok_or_else(|| simulation_rejected("simulation authority is not active"))?;
-    if let Some((previous, response)) = &current.retained_reset
-        && previous == &request
-        && current.principal == route.principal()
-        && Instant::now() < current.lease_deadline
-    {
-        return Ok(response.clone());
-    }
     authorize_simulation_grant(route, &request.authority_grant, current)?;
     if current.failure.is_some() || current.resetting || current.in_flight.is_some() {
         return Err(simulation_rejected(
@@ -427,7 +406,6 @@ pub(crate) async fn reset_simulation(
     current.resetting = false;
     current.timeline_id = next_timeline_id.clone();
     current.boundary = 0;
-    current.phase_receipts.clear();
     current.in_flight = None;
     current.accepted_sequence_watermark = 0;
     current.lease_deadline = Instant::now()
@@ -443,7 +421,6 @@ pub(crate) async fn reset_simulation(
         previous_timeline_id: request.timeline_id.clone(),
         requested_boundary: request.completed_boundary,
     };
-    current.retained_reset = Some((request.clone(), response.clone()));
     drop(guard);
     cancel_session_subscriptions(route, &request.session_id, subscriptions).await;
     Ok(response)
@@ -592,16 +569,7 @@ pub(crate) async fn progress_simulation(
             session_id: current.session_id.clone(),
             authority_grant: current.grant.clone(),
             correlation_id: request.correlation_id.clone(),
-            phase_status: phoxal::communication::simulation::PhaseStatus::Failed as i32,
-            accepted_sequence_watermark: current.accepted_sequence_watermark,
-            ..Default::default()
         });
-    }
-    if request.transition_key.is_some() {
-        current.lease_deadline = Instant::now()
-            .checked_add(SIMULATION_AUTHORITY_LEASE)
-            .ok_or_else(|| simulation_rejected("authority lease overflows"))?;
-        return retained_phase_progress(current, &request);
     }
     let context = PublicSimulationContext {
         principal: current.principal.clone(),
@@ -651,13 +619,6 @@ pub(crate) async fn progress_simulation(
     response.authority_grant = current.grant.clone();
     response.correlation_id = request.correlation_id;
     response.completed_boundary = current.boundary;
-    if response.phase_status == phoxal::communication::simulation::PhaseStatus::Unspecified as i32 {
-        response.phase_status = current.phase_receipts.back().map_or(
-            phoxal::communication::simulation::PhaseStatus::Unknown as i32,
-            |phase| phase.status as i32,
-        );
-    }
-    response.accepted_sequence_watermark = current.accepted_sequence_watermark;
     if response.failed {
         drop(guard);
         revoke_simulation_authority(authority, simulation_backend).await;
@@ -669,7 +630,7 @@ pub(crate) async fn progress_simulation(
     Ok(response)
 }
 
-/// Cached receipts carry the same session and generation authority as new work.
+/// Check the live session and timeline before completing a phase.
 pub(crate) async fn authorize_live_simulation_grant(
     route: &PublicRoute,
     grant: &[u8],
@@ -684,10 +645,10 @@ pub(crate) async fn authorize_live_simulation_grant(
     let mut adapter = adapter.lock().await;
     adapter
         .authorize_simulation_session(route, &current.session_id, now_ms)
-        .map_err(|error| simulation_adapter_error("simulation receipt", error))?;
+        .map_err(|error| simulation_adapter_error("simulation phase", error))?;
     let execution = adapter
         .simulation_execution(&current.execution_id)
-        .map_err(|error| simulation_adapter_error("simulation receipt", error))?;
+        .map_err(|error| simulation_adapter_error("simulation phase", error))?;
     if execution.timeline_id != current.timeline_id {
         return Err(simulation_rejected(
             "simulation timeline was invalidated by the supervisor",

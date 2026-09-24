@@ -40,7 +40,6 @@ use crate::session::error::SessionError;
 
 const MAX_SIMULATION_PRODUCT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SIMULATION_CUT_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_SIMULATION_RECEIPT_BYTE_CAP: u64 = 512 * 1024;
 
 /// Configuration for one shared client connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -494,8 +493,6 @@ impl Simulation {
             || response.max_product_bytes > MAX_SIMULATION_PRODUCT_BYTES
             || response.max_cut_bytes < response.max_product_bytes
             || response.max_cut_bytes > MAX_SIMULATION_CUT_BYTES
-            || response.receipt_byte_cap == 0
-            || response.receipt_byte_cap > MAX_SIMULATION_CUT_BYTES
             || response.max_product_bytes
                 != if request.max_product_bytes == 0 {
                     MAX_SIMULATION_PRODUCT_BYTES
@@ -507,12 +504,6 @@ impl Simulation {
                     MAX_SIMULATION_CUT_BYTES
                 } else {
                     request.max_cut_bytes
-                }
-            || response.receipt_byte_cap
-                != if request.receipt_byte_cap == 0 {
-                    DEFAULT_SIMULATION_RECEIPT_BYTE_CAP
-                } else {
-                    request.receipt_byte_cap
                 }
         {
             return Err(SessionError::InvalidPublicRequest {
@@ -1303,7 +1294,6 @@ fn validate_simulation_receipt(
         || receipt.status != expected_status as i32
         || receipt.transition_key.as_ref() != transition
         || receipt.correlation_id != correlation_id
-        || receipt.request_digest.len() != 32
         || receipt.membership_digest.len() != 32
     {
         return Err(SessionError::InvalidPublicRequest {

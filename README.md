@@ -16,7 +16,7 @@ This repository and its source are the authority for current framework implement
 - `tests/` - internal compile-contract fixtures and one four-wheel native qualification robot
 
 Each runnable service and driver package owns one Protobuf service in its `api/` tree and builds one executable with an ordinary Cargo build script.
-Robot projects declare exact participant packages in `robot.yaml` and use `cargo phoxal prepare` to install their binaries and prepare registry or Git API sources.
+Robot projects select each participant with a local path, exact registry package version, or pinned Git revision in `robot.yaml` and use `cargo phoxal prepare` to install remote binaries and prepare registry or Git API sources.
 The robot's `build.rs` calls `phoxal::build::api`, and `phoxal::api!();` attaches the generated instance-first API to its crate root.
 No selected service or component library is added to the robot's Cargo dependencies for communication.
 

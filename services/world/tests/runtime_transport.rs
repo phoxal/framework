@@ -60,10 +60,6 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
     let manifest = json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "world-read-transport-proof",
-        "document": {
-            "services": { "world": { "config": {} } },
-            "connections": { "world.pose": "kinematics.odometry" }
-        },
         "executables": [{
             "instance": "world",
             "path": "phoxal-service-world",
@@ -90,6 +86,14 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
         serde_json::to_vec_pretty(&manifest).expect("manifest encodes"),
     )
     .expect("manifest writes");
+    std::fs::write(
+        root.path().join("robot.yaml"),
+        format!(
+            "schema: phoxal/robot/v0\nrobot: {{ id: world-read-transport-proof }}\nservices:\n  world:\n    source: {{ package: {{ name: phoxal-service-world, version: {} }} }}\n    config: {{}}\nconnections:\n  world.pose: kinematics.odometry\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .expect("compiled robot document writes");
     (root, installed, digest.to_vec())
 }
 

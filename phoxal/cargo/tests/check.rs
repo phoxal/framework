@@ -39,9 +39,15 @@ fn check_passes_a_valid_robot_and_writes_a_lockfile() {
 }
 
 #[test]
-fn check_reports_a_missing_runtime_artifact_contract() {
+fn check_defers_runtime_artifact_inspection_to_build() {
     let (_guard, root) = stage("check-missing-artifact");
-    let output = support::invoke(&root, &["check", "--offline"]);
+    let checked = support::invoke(&root, &["check", "--offline"]);
+    assert!(
+        checked.status.success(),
+        "Cargo check must succeed without a compiled Runtime contract: {}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let output = support::invoke(&root, &["build", "--offline"]);
     assert!(
         !output.status.success(),
         "missing artifact must yield a non-zero exit, got {}",
@@ -69,7 +75,7 @@ fn check_rejects_the_removed_service_implementation_field() {
         "stderr must name the removed field, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("expected one of `package`, `version`, `source`, `binary`, `config`"),
+        stderr.contains("expected one of `source`, `binary`, `config`"),
         "stderr must surface the current service selection shape, got:\n{stderr}"
     );
 }

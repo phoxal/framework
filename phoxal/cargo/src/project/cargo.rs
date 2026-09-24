@@ -460,13 +460,8 @@ pub(crate) fn build_target(
     options: &CargoOptions,
 ) -> Result<CargoOutput, Error> {
     options.validate()?;
-    if target
-        .source_path
-        .parent()
-        .and_then(|path| path.file_name())
-        .is_some_and(|name| name == "bin")
-    {
-        if !target.source_path.is_file() {
+    if let Some(executable) = &target.executable {
+        if !executable.is_file() {
             return Err(Error::ArtifactCapture {
                 package: target.package.clone(),
                 target: target.target.clone(),
@@ -477,6 +472,30 @@ pub(crate) fn build_target(
             stdout: Vec::new(),
             stderr: Vec::new(),
         });
+    }
+    if let Some(manifest) = &target.manifest_path {
+        let workdir = manifest.parent().ok_or_else(|| Error::ArtifactCapture {
+            package: target.package.clone(),
+            target: target.target.clone(),
+            message: "local participant manifest has no parent".to_owned(),
+        })?;
+        let mut command = Command::new(options.cargo_program());
+        command
+            .current_dir(workdir)
+            .args(["build", "--manifest-path"]);
+        command.arg(manifest);
+        if let Some(config) = registry_config(workdir) {
+            command.args(["--config", &config]);
+        }
+        let mut local_options = options.clone();
+        local_options.features.clear();
+        local_options.all_features = false;
+        local_options.no_default_features = false;
+        local_options.cargo_args.clear();
+        local_options.append_common(&mut command, false, false);
+        command.args(["--package", &target.package, "--bin", &target.target]);
+        command.args(["--message-format", "json-render-diagnostics"]);
+        return run_command(command, CargoOperation::Build);
     }
     let mut command = command_for(prepared, CargoOperation::Build, options, false, false);
     command.args([
@@ -580,13 +599,8 @@ pub(crate) fn artifact_path(
     stdout: &[u8],
     target: &crate::SelectedTarget,
 ) -> Result<std::path::PathBuf, Error> {
-    if target
-        .source_path
-        .parent()
-        .and_then(|path| path.file_name())
-        .is_some_and(|name| name == "bin")
-    {
-        return Ok(target.source_path.clone());
+    if let Some(executable) = &target.executable {
+        return Ok(executable.clone());
     }
     let mut executable = None;
     for line in stdout.split(|byte| *byte == b'\n') {

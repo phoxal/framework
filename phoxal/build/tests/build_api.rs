@@ -31,7 +31,7 @@ fn separate_robot_binary_and_integration_test_use_prepared_local_api()
     )?;
     fs::write(
         robot.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot: { id: proof-robot }\nservices:\n  motion:\n    package: proof-motion\n    version: '1.0.0'\n    source: { path: ../provider }\n  second:\n    package: proof-second\n    version: '1.0.0'\n    source: { path: ../second-provider }\n",
+        "schema: phoxal/robot/v0\nrobot: { id: proof-robot }\nservices:\n  motion:\n    source: { path: ../provider }\n  second:\n    source: { path: ../second-provider }\n",
     )?;
     let framework = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     fs::write(
@@ -48,11 +48,11 @@ fn separate_robot_binary_and_integration_test_use_prepared_local_api()
     )?;
     fs::write(
         robot.join("src/main.rs"),
-        "phoxal::api!();\nfn main() { let _call = api::motion::manual(api::motion::v1::ManualRequest { linear_x_mps: 0.5 }); let _other = api::second::read(api::__contracts::proof::shared::v1::Shared { value: String::new() }); }\n",
+        "phoxal::api!();\nfn main() { let _call = api::motion::manual(api::motion::ManualRequest { linear_x_mps: 0.5 }); let _other = api::second::read(api::second::Shared { value: String::new() }); }\n",
     )?;
     fs::write(
         robot.join("tests/consumer.rs"),
-        "phoxal::api!();\n#[test] fn request_is_inert() { let _call = api::motion::manual(api::motion::v1::ManualRequest { linear_x_mps: 0.5 }); }\n",
+        "phoxal::api!();\n#[test] fn request_is_inert() { let _call = api::motion::manual(api::motion::ManualRequest { linear_x_mps: 0.5 }); }\n",
     )?;
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());

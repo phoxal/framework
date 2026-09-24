@@ -84,19 +84,17 @@ struct Component {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Selection {
-    package: String,
-    version: String,
-    #[serde(default)]
-    source: Option<Source>,
+    source: Source,
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Source {
     Path(PathSource),
-    Git(GitSource),
-    Registry(RegistrySource),
+    Package(PackageSourceWrapper),
+    Git(GitSourceWrapper),
 }
 
 #[derive(Deserialize)]
@@ -107,16 +105,31 @@ struct PathSource {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GitSource {
-    git: String,
-    rev: String,
-    path: Option<PathBuf>,
+struct PackageSourceWrapper {
+    package: PackageSource,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RegistrySource {
-    registry: String,
+struct GitSourceWrapper {
+    git: GitSource,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageSource {
+    name: String,
+    version: String,
+    registry: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitSource {
+    name: String,
+    url: String,
+    rev: String,
+    path: Option<PathBuf>,
 }
 
 struct Unit {
@@ -280,49 +293,41 @@ fn add_selection(
     units: &mut Vec<Unit>,
     bindings: &mut Vec<(String, usize)>,
 ) -> Result<(), Error> {
-    if !identifier(&instance) || !identifier(&selection.package) {
+    if !identifier(&instance) {
         return Err(input(
             robot_path,
-            format!(
-                "invalid participant `{instance}` or package `{}`",
-                selection.package
-            ),
+            format!("invalid participant `{instance}`"),
         ));
     }
-    let version = semver::Version::parse(&selection.version).map_err(|error| {
-        input(
-            robot_path,
-            format!("{instance} needs an exact semantic version: {error}"),
-        )
-    })?;
-    if version.to_string() != selection.version {
-        return Err(input(
-            robot_path,
-            format!("{instance} version must be canonical and exact"),
-        ));
-    }
-    let root = match selection.source {
-        None => package_root
-            .join(".phoxal/registry/phoxal")
-            .join(&selection.package)
-            .join(&selection.version)
-            .join("api"),
-        Some(Source::Registry(source)) => {
-            if !identifier(&source.registry) {
+    let (root, label) = match selection.source {
+        Source::Package(PackageSourceWrapper { package: source }) => {
+            if !identifier(&source.name)
+                || !semver::Version::parse(&source.version)
+                    .is_ok_and(|parsed| parsed.to_string() == source.version)
+                || source
+                    .registry
+                    .as_ref()
+                    .is_some_and(|registry| !identifier(registry))
+            {
                 return Err(input(
                     robot_path,
-                    format!("{instance} has an invalid registry"),
+                    format!("{instance} has an invalid package source"),
                 ));
             }
-            package_root
-                .join(".phoxal/registry")
-                .join(source.registry)
-                .join(&selection.package)
-                .join(&selection.version)
-                .join("api")
+            let registry = source.registry.as_deref().unwrap_or("phoxal");
+            (
+                package_root
+                    .join(".phoxal/registry")
+                    .join(registry)
+                    .join(&source.name)
+                    .join(&source.version)
+                    .join("api"),
+                format!("{} {}", source.name, source.version),
+            )
         }
-        Some(Source::Git(source)) => {
-            if source.git.trim().is_empty()
+        Source::Git(GitSourceWrapper { git: source }) => {
+            if !identifier(&source.name)
+                || source.url.trim().is_empty()
                 || source.rev.len() != 40
                 || !source.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || source
@@ -335,29 +340,30 @@ fn add_selection(
                     format!("{instance} needs a Git URL and complete commit"),
                 ));
             }
-            package_root
-                .join(".phoxal/git")
-                .join(&selection.package)
-                .join(source.rev)
-                .join(&selection.version)
-                .join("api")
+            (
+                package_root
+                    .join(".phoxal/git")
+                    .join(&source.name)
+                    .join(&source.rev)
+                    .join("api"),
+                format!("{} @ {}", source.name, source.rev),
+            )
         }
-        Some(Source::Path(source)) => {
-            if source.path.as_os_str().is_empty() || !source.path.is_relative() {
+        Source::Path(PathSource { path }) => {
+            if path.as_os_str().is_empty() || !path.is_relative() {
                 return Err(input(
                     robot_path,
                     format!("{instance} local source must be a nonempty relative path"),
                 ));
             }
-            package_root.join(source.path).join("api")
+            (package_root.join(path).join("api"), "local path".to_owned())
         }
     };
     println!("cargo:rerun-if-changed={}", root.display());
     if !root.is_dir() {
         let message = if root.starts_with(package_root.join(".phoxal")) {
             format!(
-                "Phoxal contracts are not prepared for {instance} {} {}. Run `cargo phoxal prepare` from the robot project root.",
-                selection.package, selection.version
+                "Phoxal contracts are not prepared for {instance} {label}. Run `cargo phoxal prepare` from the robot project root."
             )
         } else {
             format!(
@@ -374,7 +380,7 @@ fn add_selection(
             let index = units.len();
             units.push(Unit {
                 root,
-                label: format!("{instance} {} {}", selection.package, selection.version),
+                label: format!("{instance} {label}"),
             });
             index
         });
@@ -717,6 +723,22 @@ fn emit_binding(
     output.push_str(&format!(
         "pub mod {module} {{\n    pub use crate::api::__contracts::{path} as {version};\n"
     ));
+    let mut message_types: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for method in service.methods() {
+        for message in [method.input(), method.output()] {
+            if message.full_name() != "google.protobuf.Empty" {
+                message_types
+                    .entry(message.name().to_owned())
+                    .or_default()
+                    .insert(message_path(&message));
+            }
+        }
+    }
+    for paths in message_types.values() {
+        if let Some(path) = (paths.len() == 1).then(|| paths.iter().next()).flatten() {
+            output.push_str(&format!("    pub use {path};\n"));
+        }
+    }
     let lease = pool.get_extension_by_name("phoxal.api.lease");
     for method in service.methods() {
         let function = method.name().to_snake_case();
@@ -878,12 +900,12 @@ mod tests {
     #[test]
     fn git_package_path_is_not_mistaken_for_a_local_source() {
         let selected: Selection = serde_yaml::from_str(
-            "package: acme-motion\nversion: '1.2.3'\nsource:\n  git: https://example.test/motion.git\n  rev: 0123456789abcdef0123456789abcdef01234567\n  path: services/motion\n",
+            "source:\n  git:\n    name: acme-motion\n    url: https://example.test/motion.git\n    rev: 0123456789abcdef0123456789abcdef01234567\n    path: services/motion\n",
         )
         .expect("Git selection");
-        assert!(matches!(selected.source, Some(Source::Git(_))));
+        assert!(matches!(selected.source, Source::Git(_)));
         let invalid = serde_yaml::from_str::<Selection>(
-            "package: acme-motion\nversion: '1.2.3'\nsource:\n  path: ../motion\n  registry: phoxal\n",
+            "source:\n  path: ../motion\n  package: { name: acme-motion, version: '1.2.3' }\n",
         );
         assert!(invalid.is_err());
     }
@@ -904,7 +926,7 @@ mod tests {
         fs::write(
             robot.join("robot.yaml"),
             format!(
-                "schema: phoxal/robot/v0\nrobot: {{ id: rover }}\nservices:\n  left_motion:\n    package: proof-motion\n    version: '1.2.3'\n    source: {{ path: {} }}\n  right_motion:\n    package: proof-motion\n    version: '1.2.3'\n    source: {{ path: {} }}\n",
+                "schema: phoxal/robot/v0\nrobot: {{ id: rover }}\nservices:\n  left_motion:\n    source: {{ path: {} }}\n  right_motion:\n    source: {{ path: {} }}\n",
                 "../provider", "../provider"
             ),
         )?;
@@ -950,7 +972,7 @@ mod tests {
         }
         fs::write(
             robot.join("robot.yaml"),
-            "schema: phoxal/robot/v0\nrobot: { id: rover }\nservices:\n  alpha:\n    package: proof-alpha\n    version: '1.2.3'\n    source: { path: ../alpha }\n  beta:\n    package: proof-beta\n    version: '1.2.3'\n    source: { path: ../beta }\n",
+            "schema: phoxal/robot/v0\nrobot: { id: rover }\nservices:\n  alpha:\n    source: { path: ../alpha }\n  beta:\n    source: { path: ../beta }\n",
         )?;
         generate(&robot, &out, None)?;
         let merged = fs::read_to_string(out.join("phoxal-api/merged/proof.shared.v1.rs"))?;

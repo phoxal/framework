@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::project::document::{
-    BrainSelection, ComponentDocument, RobotDocument, ValidateComponentDocument,
+    BrainSelection, ComponentDocument, RobotDocument, Source, ValidateComponentDocument,
 };
 use crate::project::error::SourceError;
 use crate::project::participant;
@@ -60,8 +60,12 @@ pub struct SelectedTarget {
     pub package: String,
     /// Target name passed to Cargo's `--bin` selector.
     pub target: String,
-    /// Main source file reported by Cargo.
+    /// Main source file reported by Cargo, when this target is built from source.
     pub source_path: PathBuf,
+    /// A participant built in its own Cargo workspace, outside the robot graph.
+    pub manifest_path: Option<PathBuf>,
+    /// A prepared registry or Git executable supplied without a Cargo build.
+    pub executable: Option<PathBuf>,
     /// Features required by the target.
     pub required_features: Vec<String>,
     /// Root dependency key used to activate required features for a selected
@@ -81,6 +85,8 @@ pub struct SelectedService {
     pub package_id: String,
     /// Cargo package name.
     pub package: String,
+    /// Version reported by Cargo for the selected package.
+    pub version: String,
     /// Package source and provenance class.
     pub source: PackageSource,
     /// Service executable selected for assembly.
@@ -99,12 +105,16 @@ pub struct SelectedComponent {
     pub package_id: String,
     /// Cargo package name.
     pub package: String,
+    /// Version reported by Cargo for the selected package.
+    pub version: String,
     /// Package source and provenance class.
     pub source: PackageSource,
     /// Persistent site in the parent robot model receiving this instance.
     pub mount_site: String,
     /// Parsed component-owned semantic and native binding declaration.
     pub definition: ComponentDocument,
+    /// Authored or prepared files used to stage the component's model.
+    pub source_root: PathBuf,
     /// The component-owned driver selected by this instance, when its
     /// authored `driver` block requests a real process.
     pub driver: Option<SelectedDriver>,
@@ -171,6 +181,7 @@ pub(crate) fn resolve_prepared_sources(
                 dependency_key: selected.package.clone(),
                 package_id: binary.package_id.clone(),
                 package: selected.package.clone(),
+                version: selected.version.clone(),
                 source: selected.source.clone(),
                 binary,
             },
@@ -179,20 +190,80 @@ pub(crate) fn resolve_prepared_sources(
     let mut components = BTreeMap::new();
     for (instance, component) in &robot.components {
         if component.driver.is_none() {
+            let expected_name = match &component.source {
+                Source::Path(path) => {
+                    let manifest = layout
+                        .root()
+                        .join(path)
+                        .join("Cargo.toml")
+                        .canonicalize()
+                        .map_err(|source| Error::ArtifactFile {
+                            path: layout.root().join(path).join("Cargo.toml"),
+                            source,
+                        })?;
+                    metadata
+                        .packages
+                        .iter()
+                        .find(|package| package.manifest_path.as_std_path() == manifest)
+                        .ok_or_else(|| Error::ArtifactInvalid {
+                            path: manifest.clone(),
+                            message: "local component package is not in the robot Cargo graph"
+                                .to_owned(),
+                        })?
+                        .name
+                        .to_string()
+                }
+                Source::Package(package) => package.name.clone(),
+                Source::Git(git) => git.name.clone(),
+            };
             let package = resolve_dependency(
                 TargetRole::Component,
                 instance,
-                &component.package,
+                &expected_name,
                 root,
                 metadata,
             )?;
-            if package.name != component.package || package.version.to_string() != component.version
+            if package.name != expected_name
+                || matches!(&component.source, Source::Package(source) if package.version.to_string() != source.version)
             {
                 return Err(Error::ArtifactInvalid {
                     path: layout.robot_manifest().to_owned(),
                     message: format!(
-                        "passive component {instance} resolves to {} {}, expected {} {}",
-                        package.name, package.version, component.package, component.version
+                        "passive component {instance} resolves to {} {}, expected {}",
+                        package.name, package.version, expected_name
+                    ),
+                });
+            }
+            let source_matches = match &component.source {
+                Source::Path(path) => package
+                    .manifest_path
+                    .as_std_path()
+                    .canonicalize()
+                    .is_ok_and(|manifest| {
+                        layout
+                            .root()
+                            .join(path)
+                            .join("Cargo.toml")
+                            .canonicalize()
+                            .ok()
+                            == Some(manifest)
+                    }),
+                Source::Package(_) => {
+                    matches!(package_source(package), PackageSource::Registry { .. })
+                }
+                Source::Git(git) => match package_source(package) {
+                    PackageSource::Git { source } => {
+                        source.starts_with(&format!("git+{}?", git.url))
+                            && source.ends_with(&format!("#{}", git.rev))
+                    }
+                    _ => false,
+                },
+            };
+            if !source_matches {
+                return Err(Error::ArtifactInvalid {
+                    path: layout.robot_manifest().to_owned(),
+                    message: format!(
+                        "passive component {instance} resolves from a different source than robot.yaml"
                     ),
                 });
             }
@@ -209,12 +280,14 @@ pub(crate) fn resolve_prepared_sources(
                 instance.clone(),
                 SelectedComponent {
                     instance: instance.clone(),
-                    dependency_key: component.package.clone(),
+                    dependency_key: expected_name.clone(),
                     package_id: package.id.to_string(),
-                    package: component.package.clone(),
+                    package: expected_name,
+                    version: package.version.to_string(),
                     source: package_source(package),
                     mount_site: component.mount_site.clone(),
                     definition,
+                    source_root: source_root.to_owned(),
                     driver: None,
                 },
             );
@@ -223,8 +296,8 @@ pub(crate) fn resolve_prepared_sources(
         let selected = installed
             .get(instance)
             .ok_or_else(|| Error::ArtifactCapture {
-                package: component.package.clone(),
-                target: component.package.clone(),
+                package: instance.clone(),
+                target: instance.clone(),
                 message: "component installation missing".to_owned(),
             })?;
         let definition = load_installed_component_definition(instance, selected)?;
@@ -233,16 +306,18 @@ pub(crate) fn resolve_prepared_sources(
             instance.clone(),
             SelectedComponent {
                 instance: instance.clone(),
-                dependency_key: component.package.clone(),
+                dependency_key: selected.package.clone(),
                 package_id: binary.package_id.clone(),
-                package: component.package.clone(),
+                package: selected.package.clone(),
+                version: selected.version.clone(),
                 source: selected.source.clone(),
                 mount_site: component.mount_site.clone(),
                 definition,
+                source_root: selected.source_root.clone(),
                 driver: component.driver.as_ref().map(|_| SelectedDriver {
-                    dependency_key: component.package.clone(),
+                    dependency_key: selected.package.clone(),
                     package_id: binary.package_id.clone(),
-                    package: component.package.clone(),
+                    package: selected.package.clone(),
                     source: selected.source.clone(),
                     binary,
                 }),
@@ -258,16 +333,13 @@ pub(crate) fn resolve_prepared_sources(
 }
 
 fn installed_target(selected: &participant::InstalledSelection) -> SelectedTarget {
-    use sha2::{Digest, Sha256};
-    let identity = Sha256::digest(selected.executable.to_string_lossy().as_bytes());
     SelectedTarget {
-        package_id: format!(
-            "{} {} (prepared:{:x})",
-            selected.package, selected.version, identity
-        ),
+        package_id: selected.package_id.clone(),
         package: selected.package.clone(),
         target: selected.binary.clone(),
-        source_path: selected.executable.clone(),
+        source_path: selected.source_path.clone().unwrap_or_default(),
+        manifest_path: selected.manifest_path.clone(),
+        executable: selected.executable.clone(),
         required_features: Vec::new(),
         feature_dependency: None,
     }
@@ -489,6 +561,8 @@ fn selected_target(package: &Package, target: &Target) -> SelectedTarget {
         package: package.name.to_string(),
         target: target.name.clone(),
         source_path: PathBuf::from(target.src_path.as_std_path()),
+        manifest_path: None,
+        executable: None,
         required_features: target.required_features.clone(),
         feature_dependency: None,
     }

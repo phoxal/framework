@@ -223,7 +223,7 @@ pub(crate) fn assemble_with_inputs(
         .iter()
         .map(|(key, (_, _, contract))| (key.clone(), contract.clone()))
         .collect::<BTreeMap<_, _>>();
-    let document = bundle_document(prepared.document());
+    let document = prepared.document().clone();
     let mut execution_document = document.clone();
     if let Some(scenario) = simulation_run.as_ref() {
         apply_scenario_substitutions(
@@ -305,15 +305,6 @@ pub(crate) fn assemble_with_inputs(
     Ok(CompiledBundle {
         root: output.to_owned(),
     })
-}
-
-fn bundle_document(document: &RobotDocument) -> RobotDocument {
-    let mut document = document.clone();
-    let RobotDocument::V0 { services, .. } = &mut document;
-    for service in services.values_mut() {
-        service.source = None;
-    }
-    document
 }
 
 fn apply_scenario_substitutions(
@@ -954,21 +945,6 @@ fn cargo_arg_value(arguments: &[std::ffi::OsString], name: &str) -> Option<Strin
     value
 }
 
-fn package_root(package: &cargo_metadata::Package) -> Result<PathBuf, Error> {
-    PathBuf::from(package.manifest_path.as_std_path())
-        .parent()
-        .ok_or_else(|| Error::ArtifactInvalid {
-            path: PathBuf::from(package.manifest_path.as_std_path()),
-            message: "Cargo package manifest has no parent directory".to_owned(),
-        })
-        .and_then(|path| {
-            path.canonicalize().map_err(|source| Error::ArtifactFile {
-                path: path.to_owned(),
-                source,
-            })
-        })
-}
-
 fn sanitize_git_source(source: &str, path: &Path) -> Result<String, Error> {
     let value = source
         .strip_prefix("git+")
@@ -1030,6 +1006,8 @@ fn public_package_id(prepared: &PreparedProject, package_id: &str) -> String {
     }
     if package_id.starts_with("path+") {
         "local".to_owned()
+    } else if package_id.starts_with("git+file:") {
+        "local-git".to_owned()
     } else {
         package_id.to_owned()
     }
@@ -1068,29 +1046,7 @@ fn stage_component_models(
 ) -> Result<BTreeMap<String, String>, Error> {
     let mut paths = BTreeMap::new();
     for component in prepared.cargo_sources().components.values() {
-        let source_root = if let Some(driver) = &component.driver {
-            driver
-                .binary
-                .source_path
-                .parent()
-                .and_then(Path::parent)
-                .map(|path| path.join("source"))
-                .ok_or_else(|| Error::ArtifactInvalid {
-                    path: driver.binary.source_path.clone(),
-                    message: "installed component has no source root".to_owned(),
-                })?
-        } else {
-            let package = prepared
-                .cargo_metadata()
-                .packages
-                .iter()
-                .find(|package| package.id.to_string() == component.package_id)
-                .ok_or_else(|| Error::ArtifactInvalid {
-                    path: prepared.cargo_manifest_path().to_owned(),
-                    message: format!("component {} has no resolved package", component.instance),
-                })?;
-            package_root(package)?
-        };
+        let source_root = component.source_root.clone();
         let phoxal::artifact::document::ComponentDocument::V0 { model, .. } = &component.definition;
         let entry = safe_input_path(&model.file)?;
         let full = safe_source_file(&source_root, &entry)?;
@@ -1105,6 +1061,30 @@ fn stage_component_models(
         paths.insert(component.instance.clone(), relative);
     }
     Ok(paths)
+}
+
+pub(crate) fn retain_component_resources(source: &Path, destination: &Path) -> Result<(), Error> {
+    let definition_path = source.join("component.yaml");
+    let text = fs::read_to_string(&definition_path).map_err(|source| Error::ArtifactFile {
+        path: definition_path.clone(),
+        source,
+    })?;
+    let definition: phoxal::artifact::document::ComponentDocument = serde_yaml::from_str(&text)
+        .map_err(|error| Error::ArtifactInvalid {
+            path: definition_path.clone(),
+            message: error.to_string(),
+        })?;
+    let phoxal::artifact::document::ComponentDocument::V0 { model, .. } = definition;
+    let relative = safe_input_path(&model.file)?;
+    let full = safe_source_file(source, &relative)?;
+    let closure = closed_robot_model(source, &relative, &full)?;
+    let model_root = relative
+        .parent()
+        .map_or(destination.to_owned(), |parent| destination.join(parent));
+    for resource in &closure.resources {
+        write_model_resource(&model_root.join(&resource.name), resource)?;
+    }
+    Ok(())
 }
 
 fn closed_robot_model(root: &Path, relative: &Path, full: &Path) -> Result<ModelClosure, Error> {

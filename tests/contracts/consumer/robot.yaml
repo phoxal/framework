@@ -3,7 +3,5 @@ robot:
   id: contract-consumer
 services:
   inspection:
-    package: phoxal-contract-owner-fixture
-    version: 0.1.0
     source:
       path: ../producer

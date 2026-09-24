@@ -2,22 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod update_index;
-use update_index::newest_eligible;
-
-use fs4::TryLockError;
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
-
 use super::cargo::CargoOptions;
-use super::document::{RobotDocument, ServiceSource};
+use super::document::{RobotDocument, Source};
 use super::file_lock::ExclusiveFileLock;
 use super::selection::PackageSource;
 use super::{Error, ProjectLayout};
+use fs4::TryLockError;
 
 const PHOXAL_INDEX: &str = "sparse+https://phoxal.github.io/registry/";
 
@@ -26,7 +19,10 @@ pub(crate) struct InstalledSelection {
     pub(crate) package: String,
     pub(crate) version: String,
     pub(crate) binary: String,
-    pub(crate) executable: PathBuf,
+    pub(crate) executable: Option<PathBuf>,
+    pub(crate) package_id: String,
+    pub(crate) source_path: Option<PathBuf>,
+    pub(crate) manifest_path: Option<PathBuf>,
     pub(crate) source_root: PathBuf,
     pub(crate) source: PackageSource,
 }
@@ -49,10 +45,11 @@ pub(crate) fn selected_installations(
                 layout,
                 &home,
                 &target,
-                &selection.package,
-                &selection.version,
-                selection.binary.as_deref(),
-                selection.source.as_ref(),
+                SelectionRequest {
+                    binary: selection.binary.as_deref(),
+                    source: &selection.source,
+                },
+                options,
             )?,
         );
     }
@@ -64,10 +61,11 @@ pub(crate) fn selected_installations(
                     layout,
                     &home,
                     &target,
-                    &component.package,
-                    &component.version,
-                    component.binary.as_deref(),
-                    component.source.as_ref(),
+                    SelectionRequest {
+                        binary: component.binary.as_deref(),
+                        source: &component.source,
+                    },
+                    options,
                 )?,
             );
         }
@@ -75,170 +73,170 @@ pub(crate) fn selected_installations(
     Ok(selected)
 }
 
+struct SelectionRequest<'a> {
+    binary: Option<&'a str>,
+    source: &'a Source,
+}
+
 fn selected_installation(
     layout: &ProjectLayout,
     home: &Path,
     target: &str,
-    package: &str,
-    version: &str,
-    binary: Option<&str>,
-    source: Option<&ServiceSource>,
+    request: SelectionRequest<'_>,
+    options: &CargoOptions,
 ) -> Result<InstalledSelection, Error> {
-    let binary = binary.unwrap_or(package);
-    let (store, source) = match source {
-        None => (
-            home.join("packages/registry/phoxal")
-                .join(package)
-                .join(version)
-                .join(target),
-            PackageSource::Registry {
-                source: PHOXAL_INDEX.to_owned(),
-            },
-        ),
-        Some(ServiceSource::Registry(registry)) => (
-            home.join("packages/registry")
-                .join(&registry.registry)
-                .join(package)
-                .join(version)
-                .join(target),
-            PackageSource::Registry {
-                source: registry.registry.clone(),
-            },
-        ),
-        Some(ServiceSource::Git(git)) => (
-            home.join("packages/git")
-                .join(package)
-                .join(&git.rev)
-                .join(version)
-                .join(target),
-            PackageSource::Git {
-                source: format!("git+{}#{}", git.git, git.rev),
-            },
-        ),
-        Some(ServiceSource::Path(path)) => {
-            let authored = layout
-                .root()
-                .join(&path.path)
-                .canonicalize()
-                .map_err(|source| Error::ArtifactFile {
-                    path: layout.root().join(&path.path),
-                    source,
-                })?;
-            let digest = Sha256::digest(authored.to_string_lossy().as_bytes());
-            let identity = digest[..8]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+    let SelectionRequest { binary, source } = request;
+    if let Source::Path(path) = source {
+        return local_selection(layout, Path::new(path), binary, options);
+    }
+    let (package, authored_version, store, source) = match source {
+        Source::Package(package) => {
+            let registry = package.registry.as_deref().unwrap_or("phoxal");
             (
-                home.join("packages/local")
-                    .join(package)
-                    .join(identity)
-                    .join(version)
+                package.name.as_str(),
+                Some(package.version.as_str()),
+                home.join("packages/registry")
+                    .join(registry)
+                    .join(&package.name)
+                    .join(&package.version)
                     .join(target),
-                PackageSource::Local {
-                    manifest_path: authored.join("Cargo.toml"),
+                PackageSource::Registry {
+                    source: if registry == "phoxal" {
+                        PHOXAL_INDEX
+                    } else {
+                        registry
+                    }
+                    .to_owned(),
                 },
             )
         }
+        Source::Git(git) => (
+            git.name.as_str(),
+            None,
+            home.join("packages/git")
+                .join(&git.name)
+                .join(&git.rev)
+                .join(target),
+            PackageSource::Git {
+                source: format!("git+{}#{}", git.url, git.rev),
+            },
+        ),
+        Source::Path(_) => unreachable!("handled above"),
     };
+    let binary = binary.unwrap_or(package);
     let executable = store.join("bin").join(binary);
     let source_root = store.join("source");
-    if !executable.is_file() || !source_root.join("Cargo.toml").is_file() {
+    if !executable.is_file()
+        || !source_root.join("api").is_dir()
+        || !store.join("package-id").is_file()
+    {
         return Err(invalid(
             layout.robot_manifest(),
-            format!("{package} {version} is not prepared; run `cargo phoxal prepare`"),
+            format!("{package} is not prepared; run `cargo phoxal prepare`"),
         ));
     }
+    let version = if let Some(version) = authored_version {
+        version.to_owned()
+    } else {
+        fs::read_to_string(store.join("package-version")).map_err(|source| Error::ArtifactFile {
+            path: store.join("package-version"),
+            source,
+        })?
+    };
     Ok(InstalledSelection {
         package: package.to_owned(),
-        version: version.to_owned(),
+        version,
         binary: binary.to_owned(),
-        executable,
+        executable: Some(executable),
+        package_id: fs::read_to_string(store.join("package-id")).map_err(|source| {
+            Error::ArtifactFile {
+                path: store.join("package-id"),
+                source,
+            }
+        })?,
+        source_path: None,
+        manifest_path: None,
         source_root,
         source,
     })
 }
 
-#[derive(Deserialize)]
-struct Robot {
-    #[serde(default)]
-    services: BTreeMap<String, Selection>,
-    robot: RobotSection,
+fn local_selection(
+    layout: &ProjectLayout,
+    path: &Path,
+    binary: Option<&str>,
+    options: &CargoOptions,
+) -> Result<InstalledSelection, Error> {
+    if path.as_os_str().is_empty() || !path.is_relative() {
+        return Err(invalid(
+            layout.robot_manifest(),
+            "local source must be a nonempty relative path",
+        ));
+    }
+    let source_root =
+        layout
+            .root()
+            .join(path)
+            .canonicalize()
+            .map_err(|source| Error::ArtifactFile {
+                path: layout.root().join(path),
+                source,
+            })?;
+    let manifest_path = source_root.join("Cargo.toml");
+    let mut local_options = options.clone();
+    local_options.features.clear();
+    local_options.all_features = false;
+    local_options.no_default_features = false;
+    local_options.cargo_args.clear();
+    let metadata =
+        super::cargo::load_metadata_at(&manifest_path, &source_root, None, &local_options)?;
+    let selected = metadata
+        .packages
+        .iter()
+        .find(|candidate| candidate.manifest_path.as_std_path() == manifest_path)
+        .ok_or_else(|| invalid(&manifest_path, "local participant is not a Cargo package"))?;
+    let binary = binary.unwrap_or(&selected.name);
+    let target = selected
+        .targets
+        .iter()
+        .find(|target| target.name == binary && target.is_bin())
+        .ok_or_else(|| {
+            invalid(
+                &manifest_path,
+                format!("local participant has no binary `{binary}`"),
+            )
+        })?;
+    Ok(InstalledSelection {
+        package: selected.name.to_string(),
+        version: selected.version.to_string(),
+        binary: binary.to_owned(),
+        executable: None,
+        package_id: selected.id.to_string(),
+        source_path: Some(target.src_path.as_std_path().to_owned()),
+        manifest_path: Some(manifest_path.clone()),
+        source_root,
+        source: PackageSource::Local { manifest_path },
+    })
 }
 
-#[derive(Deserialize)]
-struct RobotSection {
-    #[serde(default)]
-    components: BTreeMap<String, Component>,
-}
-
-#[derive(Deserialize)]
-struct Component {
-    #[serde(flatten)]
-    selection: Selection,
-    #[serde(default)]
-    driver: Option<serde_yaml::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Selection {
-    package: String,
-    version: String,
-    #[serde(default)]
-    binary: Option<String>,
-    #[serde(default)]
-    source: Option<Source>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum Source {
-    Path(PathSource),
-    Git(GitSource),
-    Registry(RegistrySource),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PathSource {
-    path: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GitSource {
-    git: String,
-    rev: String,
-    path: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RegistrySource {
-    registry: String,
-}
-
-/// Prepares the exact executable and source closure declared by `robot.yaml`.
+/// Prepares the executable and API closure declared by `robot.yaml`.
 pub(crate) fn prepare(
     layout: &ProjectLayout,
     options: &CargoOptions,
 ) -> Result<Vec<String>, Error> {
     options.validate()?;
-    let source = fs::read(layout.robot_manifest()).map_err(|source| Error::ReadRobot {
+    let text = fs::read_to_string(layout.robot_manifest()).map_err(|source| Error::ReadRobot {
         path: layout.robot_manifest().to_owned(),
         source,
     })?;
-    let robot: Robot = serde_yaml::from_slice(&source).map_err(|source| Error::ParseRobot {
-        path: layout.robot_manifest().to_owned(),
-        source,
-    })?;
+    let robot = super::document::parse_and_validate(&text, layout.robot_manifest())?;
     prepare_robot(layout, options, robot)
 }
 
 fn prepare_robot(
     layout: &ProjectLayout,
     options: &CargoOptions,
-    robot: Robot,
+    robot: RobotDocument,
 ) -> Result<Vec<String>, Error> {
     let _lock = preparation_lock(layout)?;
     let home = phoxal_home()?;
@@ -247,184 +245,42 @@ fn prepare_robot(
         Some(target) => target.clone(),
         None => host_target()?,
     };
+    let RobotDocument::V0 {
+        robot, services, ..
+    } = robot;
     let mut changes = Vec::new();
     let mut seen = BTreeSet::new();
-    for (instance, selection) in robot.services {
-        if !seen.insert(format!("{selection:?}")) {
-            continue;
-        }
-        if let Some(change) =
-            prepare_selection(layout, options, &home, &target, &instance, &selection)?
-        {
-            changes.push(change);
-        }
-    }
-    for (instance, component) in robot.robot.components {
-        if component.driver.is_some()
-            && seen.insert(format!("{:?}", component.selection))
+    for (instance, selection) in services {
+        if seen.insert(format!("{:?}:{:?}", selection.source, selection.binary))
             && let Some(change) = prepare_selection(
                 layout,
                 options,
                 &home,
                 &target,
                 &instance,
-                &component.selection,
+                &selection.source,
+                selection.binary.as_deref(),
             )?
         {
             changes.push(change);
         }
     }
-    Ok(changes)
-}
-
-/// Proposes or applies newer exact registry selections already in `robot.yaml`.
-pub(crate) fn update(
-    layout: &ProjectLayout,
-    options: &CargoOptions,
-    dry_run: bool,
-    role: Option<&str>,
-    instance: Option<&str>,
-) -> Result<Vec<String>, Error> {
-    options.validate()?;
-    if options.selection != super::cargo::CargoSelection::default()
-        || options.profile.is_some()
-        || !options.features.is_empty()
-        || options.all_features
-        || options.no_default_features
-        || options.release
-        || options.message_format.is_some()
-        || !options.cargo_args.is_empty()
-        || !options.test_args.is_empty()
-    {
-        return Err(Error::InvalidOptions {
-            message: "update accepts participant selection, --dry-run, Cargo path, target, and offline or lock mode only".to_owned(),
-        });
-    }
-    let original = fs::read(layout.robot_manifest()).map_err(|source| Error::ReadRobot {
-        path: layout.robot_manifest().to_owned(),
-        source,
-    })?;
-    let original_text = std::str::from_utf8(&original)
-        .map_err(|error| invalid(layout.robot_manifest(), error.to_string()))?;
-    super::document::parse_and_validate(original_text, layout.robot_manifest())?;
-    let robot: Robot = serde_yaml::from_slice(&original).map_err(|source| Error::ParseRobot {
-        path: layout.robot_manifest().to_owned(),
-        source,
-    })?;
-    if role.is_some() != instance.is_some()
-        || role.is_some_and(|role| role != "service" && role != "component")
-    {
-        return Err(invalid(
-            layout.robot_manifest(),
-            "select `service <instance>` or `component <instance>`",
-        ));
-    }
-    let mut proposed: serde_yaml::Value =
-        serde_yaml::from_slice(&original).map_err(|source| Error::ParseRobot {
-            path: layout.robot_manifest().to_owned(),
-            source,
-        })?;
-    let mut changes = Vec::new();
-    let mut found = false;
-    for (name, selection) in &robot.services {
-        if role.is_some() && (role != Some("service") || instance != Some(name)) {
-            continue;
-        }
-        found = true;
-        match newest_eligible(layout, options, selection)? {
-            Some(version) if version != selection.version => {
-                proposed["services"][name]["version"] = serde_yaml::Value::String(version.clone());
-                changes.push(format!(
-                    "service {name}: {} {} -> {version}",
-                    selection.package, selection.version
-                ));
-            }
-            _ => changes.push(format!(
-                "service {name}: {} {} {}",
-                selection.package,
-                selection.version,
-                if matches!(
-                    &selection.source,
-                    Some(Source::Git(_)) | Some(Source::Path(_))
-                ) {
-                    "manually selected"
-                } else {
-                    "unchanged"
-                }
-            )),
+    for (instance, component) in robot.components {
+        if component.driver.is_some()
+            && seen.insert(format!("{:?}:{:?}", component.source, component.binary))
+            && let Some(change) = prepare_selection(
+                layout,
+                options,
+                &home,
+                &target,
+                &instance,
+                &component.source,
+                component.binary.as_deref(),
+            )?
+        {
+            changes.push(change);
         }
     }
-    for (name, component) in &robot.robot.components {
-        if role.is_some() && (role != Some("component") || instance != Some(name)) {
-            continue;
-        }
-        found = true;
-        match newest_eligible(layout, options, &component.selection)? {
-            Some(version) if version != component.selection.version => {
-                proposed["robot"]["components"][name]["version"] =
-                    serde_yaml::Value::String(version.clone());
-                changes.push(format!(
-                    "component {name}: {} {} -> {version}",
-                    component.selection.package, component.selection.version
-                ));
-            }
-            _ => changes.push(format!(
-                "component {name}: {} {} {}",
-                component.selection.package,
-                component.selection.version,
-                if matches!(
-                    &component.selection.source,
-                    Some(Source::Git(_)) | Some(Source::Path(_))
-                ) {
-                    "manually selected"
-                } else {
-                    "unchanged"
-                }
-            )),
-        }
-    }
-    if !found && role.is_some() {
-        return Err(invalid(
-            layout.robot_manifest(),
-            format!("selected {role:?} {instance:?} is not declared"),
-        ));
-    }
-    if dry_run || !changes.iter().any(|change| change.contains(" -> ")) {
-        return Ok(changes);
-    }
-    let encoded = serde_yaml::to_string(&proposed)
-        .map_err(|error| invalid(layout.robot_manifest(), error.to_string()))?;
-    super::document::parse_and_validate(&encoded, layout.robot_manifest())?;
-    let staged: Robot = serde_yaml::from_str(&encoded)
-        .map_err(|error| invalid(layout.robot_manifest(), error.to_string()))?;
-    prepare_robot(layout, options, staged)?;
-    let validation = tempfile::tempdir().map_err(|source| Error::ArtifactFile {
-        path: std::env::temp_dir(),
-        source,
-    })?;
-    phoxal_build::validate_project_api(layout.root(), encoded.as_bytes(), validation.path())
-        .map_err(|error| {
-            invalid(
-                layout.robot_manifest(),
-                format!("updated API composition is invalid: {error}"),
-            )
-        })?;
-    if fs::read(layout.robot_manifest()).map_err(|source| Error::ReadRobot {
-        path: layout.robot_manifest().to_owned(),
-        source,
-    })? != original
-    {
-        return Err(invalid(
-            layout.robot_manifest(),
-            "robot.yaml changed during update; retry",
-        ));
-    }
-    super::preparation::atomic_write(layout.robot_manifest(), encoded.as_bytes()).map_err(
-        |source| Error::ArtifactFile {
-            path: layout.robot_manifest().to_owned(),
-            source,
-        },
-    )?;
     Ok(changes)
 }
 
@@ -434,167 +290,80 @@ fn prepare_selection(
     home: &Path,
     target: &str,
     instance: &str,
-    selection: &Selection,
+    source: &Source,
+    binary: Option<&str>,
 ) -> Result<Option<String>, Error> {
     let manifest = layout.robot_manifest();
-    if !identifier(instance) || !identifier(&selection.package) {
+    if !identifier(instance) || binary.is_some_and(|binary| !identifier(binary)) {
         return Err(invalid(
             manifest,
-            format!(
-                "invalid participant `{instance}` or package `{}`",
-                selection.package
-            ),
+            format!("{instance} has an invalid participant or binary name"),
         ));
     }
-    let version = semver::Version::parse(&selection.version).map_err(|error| {
-        invalid(
-            manifest,
-            format!("{instance} needs an exact semantic version: {error}"),
-        )
-    })?;
-    if version.to_string() != selection.version {
-        return Err(invalid(
-            manifest,
-            format!("{instance} version must be canonical and exact"),
-        ));
+    if let Source::Path(path) = source {
+        let path = Path::new(path);
+        if path.as_os_str().is_empty() || !path.is_relative() {
+            return Err(invalid(
+                manifest,
+                format!("{instance} local source must be a nonempty relative path"),
+            ));
+        }
+        let api_source = layout.root().join(path).join("api");
+        if !api_source.is_dir() {
+            return Err(invalid(
+                &api_source,
+                format!("{instance} has no api/ directory"),
+            ));
+        }
+        local_selection(layout, path, binary, options)?;
+        return Ok(None);
     }
-    let binary = selection.binary.as_deref().unwrap_or(&selection.package);
-    if !identifier(binary) {
-        return Err(invalid(
-            manifest,
-            format!("{instance} has an invalid binary target"),
-        ));
-    }
-    let (store, prepared) = match &selection.source {
-        None => (
-            home.join("packages/registry/phoxal")
-                .join(&selection.package)
-                .join(&selection.version)
-                .join(target),
-            Some(
+    let (package, expected_version, store, prepared) = match source {
+        Source::Package(package) => {
+            let registry = package.registry.as_deref().unwrap_or("phoxal");
+            (
+                package.name.as_str(),
+                Some(package.version.as_str()),
+                home.join("packages/registry")
+                    .join(registry)
+                    .join(&package.name)
+                    .join(&package.version)
+                    .join(target),
                 layout
                     .root()
-                    .join(".phoxal/registry/phoxal")
-                    .join(&selection.package)
-                    .join(&selection.version)
+                    .join(".phoxal/registry")
+                    .join(registry)
+                    .join(&package.name)
+                    .join(&package.version)
                     .join("api"),
-            ),
-        ),
-        Some(Source::Registry(source)) => {
-            if !identifier(&source.registry) {
-                return Err(invalid(
-                    manifest,
-                    format!("{instance} has an invalid registry"),
-                ));
-            }
-            (
-                home.join("packages/registry")
-                    .join(&source.registry)
-                    .join(&selection.package)
-                    .join(&selection.version)
-                    .join(target),
-                Some(
-                    layout
-                        .root()
-                        .join(".phoxal/registry")
-                        .join(&source.registry)
-                        .join(&selection.package)
-                        .join(&selection.version)
-                        .join("api"),
-                ),
             )
         }
-        Some(Source::Git(source)) => {
-            if source.git.trim().is_empty()
-                || source.rev.len() != 40
-                || !source.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
-                || source
-                    .path
-                    .as_ref()
-                    .is_some_and(|path| !safe_relative_path(path))
-            {
-                return Err(invalid(
-                    manifest,
-                    format!("{instance} needs a Git URL and complete commit"),
-                ));
-            }
-            (
-                home.join("packages/git")
-                    .join(&selection.package)
-                    .join(&source.rev)
-                    .join(&selection.version)
-                    .join(target),
-                Some(
-                    layout
-                        .root()
-                        .join(".phoxal/git")
-                        .join(&selection.package)
-                        .join(&source.rev)
-                        .join(&selection.version)
-                        .join("api"),
-                ),
-            )
-        }
-        Some(Source::Path(source)) => {
-            if source.path.as_os_str().is_empty() || !source.path.is_relative() {
-                return Err(invalid(
-                    manifest,
-                    format!("{instance} local source must be a nonempty relative path"),
-                ));
-            }
-            let absolute = layout
+        Source::Git(git) => (
+            git.name.as_str(),
+            None,
+            home.join("packages/git")
+                .join(&git.name)
+                .join(&git.rev)
+                .join(target),
+            layout
                 .root()
-                .join(&source.path)
-                .canonicalize()
-                .map_err(|error| Error::ArtifactFile {
-                    path: layout.root().join(&source.path),
-                    source: error,
-                })?;
-            let digest = Sha256::digest(absolute.to_string_lossy().as_bytes());
-            let identity = digest[..8]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            (
-                home.join("packages/local")
-                    .join(&selection.package)
-                    .join(identity)
-                    .join(&selection.version)
-                    .join(target),
-                None,
-            )
-        }
+                .join(".phoxal/git")
+                .join(&git.name)
+                .join(&git.rev)
+                .join("api"),
+        ),
+        Source::Path(_) => unreachable!("handled above"),
     };
+    let binary = binary.unwrap_or(package);
     let installed = store.join("bin").join(binary);
     let complete_install = installed.is_file()
         && store.join(".crates.toml").is_file()
-        && store.join("source/Cargo.toml").is_file()
-        && (matches!(&selection.source, Some(Source::Path(_)))
-            || store.join("source/Cargo.lock").is_file());
-    if complete_install && prepared.as_ref().is_some_and(|path| path.is_dir()) {
+        && store.join("source/api").is_dir()
+        && store.join("package-id").is_file()
+        && store.join("package-version").is_file();
+    if complete_install && prepared.is_dir() {
         return Ok(None);
     }
-    // Local package inputs and their local Cargo dependency closure are mutable.
-    let local_snapshot = match &selection.source {
-        Some(Source::Path(source)) => Some(source_tree(&layout.root().join(&source.path))?),
-        _ => None,
-    };
-    let local_digest = match (&selection.source, &local_snapshot) {
-        (Some(Source::Path(source)), Some(snapshot)) => Some(local_install_digest(
-            &layout.root().join(&source.path),
-            snapshot,
-            options,
-        )?),
-        _ => None,
-    };
-    if complete_install
-        && prepared.is_none()
-        && let Some(digest) = &local_digest
-        && fs::read(store.join("source-digest")).ok().as_deref() == Some(digest.as_bytes())
-    {
-        return Ok(None);
-    }
-
     let staging = home.join("packages/.staging");
     fs::create_dir_all(&staging).map_err(|source| Error::ArtifactFile {
         path: staging.clone(),
@@ -618,44 +387,31 @@ fn prepare_selection(
     if options.offline || matches!(options.lock, super::cargo::LockMode::Frozen) {
         command.arg("--offline");
     }
-    match &selection.source {
-        None => {
-            command.args(["--registry", "phoxal"]);
+    match source {
+        Source::Package(package) => {
+            command.args([
+                "--registry",
+                package.registry.as_deref().unwrap_or("phoxal"),
+            ]);
             command.args([
                 "--version",
-                &format!("={}", selection.version),
-                &selection.package,
+                &format!("={}", package.version),
+                package.name.as_str(),
             ]);
         }
-        Some(Source::Registry(source)) => {
-            command.args(["--registry", &source.registry]);
-            command.args([
-                "--version",
-                &format!("={}", selection.version),
-                &selection.package,
-            ]);
+        Source::Git(git) => {
+            command.args(["--git", &git.url, "--rev", &git.rev, &git.name]);
         }
-        Some(Source::Git(source)) => {
-            command.args([
-                "--git",
-                &source.git,
-                "--rev",
-                &source.rev,
-                &selection.package,
-            ]);
-        }
-        Some(Source::Path(source)) => {
-            command.arg("--path");
-            command.arg(layout.root().join(&source.path));
-        }
+        Source::Path(_) => unreachable!("handled above"),
     }
+    let operation = format!("install {package}");
     let output = command.output().map_err(|source| Error::CargoSpawn {
-        operation: format!("install {} {}", selection.package, selection.version),
+        operation: operation.clone(),
         source,
     })?;
     if !output.status.success() {
         return Err(Error::CargoCommand {
-            operation: format!("install {} {}", selection.package, selection.version),
+            operation,
             status: output
                 .status
                 .code()
@@ -664,47 +420,29 @@ fn prepare_selection(
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         });
     }
-    let source_root = captured_source(
-        &output.stdout,
-        binary,
-        &selection.package,
-        &selection.version,
-    )?;
-    if let Some(before) = &local_snapshot
-        && &source_tree(&source_root)? != before
-    {
-        return Err(invalid(
-            &source_root,
-            format!("{instance} local source changed during installation; retry preparation"),
-        ));
+    let (source_root, package_id, version) =
+        captured_source(&output.stdout, binary, package, expected_version, options)?;
+    for (name, value) in [
+        ("package-id", package_id.as_str()),
+        ("package-version", version.as_str()),
+    ] {
+        let path = install.path().join(name);
+        fs::write(&path, value).map_err(|source| Error::ArtifactFile { path, source })?;
     }
-    if let (Some(before), Some(snapshot)) = (&local_digest, &local_snapshot)
-        && local_install_digest(&source_root, snapshot, options)? != *before
-    {
-        return Err(invalid(
-            &source_root,
-            format!("{instance} local dependency changed during installation; retry preparation"),
-        ));
-    }
-    if let Some(Source::Git(GitSource {
-        path: Some(path), ..
-    })) = &selection.source
+    if let Source::Git(git) = source
+        && let Some(path) = &git.path
         && !source_root.ends_with(path)
     {
         return Err(invalid(
             &source_root,
-            format!(
-                "Git package {} is not at selected path {}",
-                selection.package,
-                path.display()
-            ),
+            format!("Git package {package} is not at selected path {path}"),
         ));
     }
     let api_source = source_root.join("api");
     if !api_source.is_dir() {
         return Err(invalid(
             &api_source,
-            format!("{} has no packaged api/ directory", selection.package),
+            format!("{package} has no packaged api/ directory"),
         ));
     }
     let validation = tempfile::tempdir_in(&staging).map_err(|source| Error::ArtifactFile {
@@ -714,23 +452,13 @@ fn prepare_selection(
     phoxal_build::validate_participant_api(&api_source, validation.path())
         .map_err(|error| invalid(&api_source, format!("invalid participant API: {error}")))?;
     retain_package_files(&source_root, install.path())?;
-    if let Some(digest) = &local_digest {
-        fs::write(install.path().join("source-digest"), digest).map_err(|source| {
-            Error::ArtifactFile {
-                path: install.path().join("source-digest"),
-                source,
-            }
-        })?;
-    }
     if !install.path().join("bin").join(binary).is_file() {
         return Err(invalid(
             install.path(),
             format!("Cargo did not install binary `{binary}`"),
         ));
     }
-    if let Some(destination) = &prepared {
-        publish_api(&api_source, destination)?;
-    }
+    publish_api(&api_source, &prepared)?;
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
             path: parent.to_owned(),
@@ -748,107 +476,30 @@ fn prepare_selection(
             })?;
             if let Err(source) = fs::rename(install.path(), &store) {
                 fs::rename(&previous, &store).map_err(|restore| {
-                    invalid(
-                        &store,
-                        format!(
-                            "cannot publish installation: {source}; cannot restore previous installation: {restore}"
-                        ),
-                    )
+                    invalid(&store, format!("cannot publish installation: {source}; cannot restore previous installation: {restore}"))
                 })?;
                 return Err(Error::ArtifactFile {
                     path: store,
                     source,
                 });
             }
-            return Ok(Some(format!(
-                "{instance} {} {}",
-                selection.package, selection.version
-            )));
+            return Ok(Some(format!("{instance} {package} {version}")));
         }
     }
     fs::rename(install.path(), &store).map_err(|source| Error::ArtifactFile {
         path: store.clone(),
         source,
     })?;
-    Ok(Some(format!(
-        "{instance} {} {}",
-        selection.package, selection.version
-    )))
-}
-
-fn source_tree_digest(files: &BTreeMap<PathBuf, [u8; 32]>) -> String {
-    let mut digest = Sha256::new();
-    for (path, hash) in files {
-        digest.update(path.to_string_lossy().as_bytes());
-        digest.update(hash);
-    }
-    format!("{:x}", digest.finalize())
-}
-
-fn local_install_digest(
-    source: &Path,
-    files: &BTreeMap<PathBuf, [u8; 32]>,
-    options: &CargoOptions,
-) -> Result<String, Error> {
-    let mut metadata_options = CargoOptions {
-        cargo_path: options.cargo_path.clone(),
-        lock: options.lock,
-        offline: options.offline,
-        target: options.target.clone(),
-        ..CargoOptions::default()
-    };
-    // Cargo installs participant defaults independently of root feature flags.
-    metadata_options.features.clear();
-    let manifest = source.join("Cargo.toml");
-    let metadata = super::cargo::load_metadata_at(&manifest, source, None, &metadata_options)?;
-    let root = metadata
-        .root_package()
-        .ok_or_else(|| invalid(&manifest, "local participant is not a Cargo package"))?;
-    let resolved = metadata
-        .resolve
-        .as_ref()
-        .ok_or_else(|| invalid(&manifest, "Cargo returned no dependency resolution"))?;
-    let mut stack = vec![root.id.clone()];
-    let mut seen = BTreeSet::new();
-    let mut local = BTreeMap::new();
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if let Some(node) = resolved.nodes.iter().find(|node| node.id == id) {
-            stack.extend(node.deps.iter().map(|dependency| dependency.pkg.clone()));
-        }
-        let Some(package) = metadata.packages.iter().find(|package| package.id == id) else {
-            continue;
-        };
-        if package.id == root.id || package.source.is_some() {
-            continue;
-        }
-        let dependency_root = package
-            .manifest_path
-            .as_std_path()
-            .parent()
-            .ok_or_else(|| invalid(&manifest, "local dependency has no source root"))?;
-        local.insert(
-            package.id.to_string(),
-            source_tree_digest(&source_tree(dependency_root)?),
-        );
-    }
-    let mut digest = Sha256::new();
-    digest.update(source_tree_digest(files));
-    for (package, tree) in local {
-        digest.update(package);
-        digest.update(tree);
-    }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(Some(format!("{instance} {package} {version}")))
 }
 
 fn captured_source(
     output: &[u8],
     binary: &str,
     package: &str,
-    version: &str,
-) -> Result<PathBuf, Error> {
+    expected_version: Option<&str>,
+    options: &CargoOptions,
+) -> Result<(PathBuf, String, String), Error> {
     for line in output.split(|byte| *byte == b'\n') {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             continue;
@@ -865,6 +516,9 @@ fn captured_source(
         let Some(source) = value["target"]["src_path"].as_str() else {
             continue;
         };
+        let Some(reported_id) = value["package_id"].as_str() else {
+            continue;
+        };
         for directory in Path::new(source).ancestors().skip(1) {
             let manifest = directory.join("Cargo.toml");
             if !manifest.is_file() {
@@ -879,17 +533,41 @@ fn captured_source(
                     path: manifest.clone(),
                     source,
                 })?;
-            if document["package"]["name"].as_str() == Some(package)
-                && document["package"]["version"].as_str() == Some(version)
-            {
-                return Ok(directory.to_owned());
+            if document["package"]["name"].as_str() == Some(package) {
+                let mut command = cargo_metadata::MetadataCommand::new();
+                command.cargo_path(options.cargo_program());
+                command
+                    .manifest_path(&manifest)
+                    .current_dir(directory)
+                    .no_deps();
+                if options.offline || matches!(options.lock, super::cargo::LockMode::Frozen) {
+                    command.other_options(vec!["--offline".to_owned()]);
+                }
+                let metadata = command.exec().map_err(|error| {
+                    invalid(
+                        &manifest,
+                        format!("cannot read Cargo package information: {error}"),
+                    )
+                })?;
+                if let Some(candidate) = metadata.packages.iter().find(|candidate| {
+                    candidate.manifest_path.as_std_path() == manifest
+                        && candidate.name == package
+                        && expected_version
+                            .is_none_or(|version| candidate.version.to_string() == version)
+                }) {
+                    return Ok((
+                        directory.to_owned(),
+                        reported_id.to_owned(),
+                        candidate.version.to_string(),
+                    ));
+                }
             }
         }
     }
     Err(invalid(
         Path::new("Cargo.toml"),
         format!(
-            "Cargo did not report a binary artifact for exact package {package} {version} ({binary})"
+            "Cargo did not report a binary artifact for package {package} {expected_version:?} ({binary})"
         ),
     ))
 }
@@ -1012,86 +690,20 @@ fn collect_files(
     Ok(())
 }
 
-fn source_tree(root: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>, Error> {
-    let mut files = BTreeMap::new();
-    collect_source_files(root, root, &mut files)?;
-    if let Some(lock) = root
-        .ancestors()
-        .map(|directory| directory.join("Cargo.lock"))
-        .find(|path| path.is_file())
-    {
-        files.insert(PathBuf::from("Cargo.lock"), digest_file(&lock)?);
-    }
-    Ok(files)
-}
-
-fn collect_source_files(
-    root: &Path,
-    directory: &Path,
-    files: &mut BTreeMap<PathBuf, [u8; 32]>,
-) -> Result<(), Error> {
-    for entry in fs::read_dir(directory).map_err(|source| Error::ArtifactFile {
-        path: directory.to_owned(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::ArtifactFile {
-            path: directory.to_owned(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|source| Error::ArtifactFile {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.is_dir() {
-            if ["target", ".git", ".codex", ".phoxal"]
-                .iter()
-                .any(|skip| entry.file_name() == *skip)
-                || (path != root && path.join("Cargo.toml").is_file())
-            {
-                continue;
-            }
-            collect_source_files(root, &path, files)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| invalid(&path, error.to_string()))?;
-            files.insert(relative.to_owned(), digest_file(&path)?);
-        } else {
-            return Err(invalid(
-                &path,
-                "local package source contains a symlink or special file",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn digest_file(path: &Path) -> Result<[u8; 32], Error> {
-    let mut file = File::open(path).map_err(|source| Error::ArtifactFile {
-        path: path.to_owned(),
-        source,
-    })?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 65_536];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|source| Error::ArtifactFile {
-                path: path.to_owned(),
-                source,
-            })?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(hash.finalize().into())
-}
-
 fn retain_package_files(source: &Path, installed: &Path) -> Result<(), Error> {
     let retained = installed.join("source");
-    copy_package_source(source, &retained)
+    copy_package_source(&source.join("api"), &retained.join("api"))?;
+    let component = source.join("component.yaml");
+    if component.is_file() {
+        fs::copy(&component, retained.join("component.yaml")).map_err(|error| {
+            Error::ArtifactFile {
+                path: component,
+                source: error,
+            }
+        })?;
+        super::bundle::retain_component_resources(source, &retained)?;
+    }
+    Ok(())
 }
 
 fn copy_package_source(source: &Path, retained: &Path) -> Result<(), Error> {
@@ -1236,13 +848,6 @@ fn identifier(value: &str) -> bool {
         })
 }
 
-fn safe_relative_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|component| matches!(component, std::path::Component::Normal(_)))
-}
-
 fn invalid(path: &Path, message: impl Into<String>) -> Error {
     Error::ManifestPreparation {
         path: path.to_owned(),
@@ -1256,10 +861,81 @@ mod tests {
 
     #[test]
     fn git_selection_with_package_path_remains_git() {
-        let selected: Selection = serde_yaml::from_str(
-            "package: acme-motion\nversion: '1.2.3'\nsource:\n  git: https://example.test/motion.git\n  rev: 0123456789abcdef0123456789abcdef01234567\n  path: services/motion\n",
+        let selected: Source = serde_yaml::from_str(
+            "git:\n  name: acme-motion\n  url: https://example.test/motion.git\n  rev: 0123456789abcdef0123456789abcdef01234567\n  path: services/motion\n",
         )
         .expect("Git selection");
-        assert!(matches!(selected.source, Some(Source::Git(_))));
+        assert!(matches!(selected, Source::Git(_)));
+    }
+
+    #[test]
+    fn captured_source_accepts_workspace_inherited_package_version() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = directory.path();
+        let provider = root.join("provider");
+        fs::create_dir_all(provider.join("src")).expect("provider source directory");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"provider\"]\n[workspace.package]\nversion = \"1.2.3\"\n",
+        )
+        .expect("workspace manifest");
+        fs::write(
+            provider.join("Cargo.toml"),
+            "[package]\nname = \"proof-provider\"\nversion.workspace = true\nedition = \"2024\"\n",
+        )
+        .expect("provider manifest");
+        let source = provider.join("src/main.rs");
+        fs::write(&source, "fn main() {}\n").expect("provider source");
+        let message = serde_json::json!({"reason":"compiler-artifact","package_id":"path+file:///proof-provider#1.2.3","target":{"name":"proof-provider","kind":["bin"],"src_path":source}}).to_string();
+        let options = CargoOptions {
+            offline: true,
+            ..CargoOptions::default()
+        };
+        let (captured, package_id, version) = captured_source(
+            message.as_bytes(),
+            "proof-provider",
+            "proof-provider",
+            Some("1.2.3"),
+            &options,
+        )
+        .expect("inherited version");
+        assert_eq!(captured, provider);
+        assert_eq!(package_id, "path+file:///proof-provider#1.2.3");
+        assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn retained_component_contains_runtime_resources_without_package_source() {
+        let directory = tempfile::tempdir().expect("temporary package");
+        let source = directory.path().join("source");
+        let installed = directory.path().join("installed");
+        fs::create_dir_all(source.join("api")).expect("API directory");
+        fs::create_dir_all(source.join("assets")).expect("asset directory");
+        fs::create_dir_all(source.join("src")).expect("source directory");
+        fs::write(source.join("api/component.proto"), "syntax = \"proto3\";").expect("API file");
+        fs::write(source.join("component.yaml"), "schema: phoxal/component/v0\nmodel: { file: model.xml, root_body: mount }\ncapabilities: {}\n").expect("component definition");
+        fs::write(source.join("model.xml"), "<mujoco model=\"proof\"/>").expect("model");
+        fs::write(source.join("assets/mesh.obj"), "proof mesh").expect("resource");
+        fs::write(source.join("src/main.rs"), "fn main() {}").expect("Rust source");
+        fs::write(
+            source.join("Cargo.toml"),
+            "[package]\nname = \"proof\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("manifest");
+
+        retain_package_files(&source, &installed).expect("retain runtime resources");
+        for path in [
+            "api/component.proto",
+            "component.yaml",
+            "model.xml",
+            "assets/mesh.obj",
+        ] {
+            assert!(
+                installed.join("source").join(path).is_file(),
+                "missing {path}"
+            );
+        }
+        assert!(!installed.join("source/Cargo.toml").exists());
+        assert!(!installed.join("source/src").exists());
     }
 }

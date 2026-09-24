@@ -13,7 +13,7 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn exact_local_participant_installs_without_a_robot_cargo_dependency()
+fn local_participant_prepares_without_installing_or_building()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let robot = directory.path().join("robot");
@@ -31,7 +31,7 @@ fn exact_local_participant_installs_without_a_robot_cargo_dependency()
     fs::write(robot.join("src/main.rs"), "fn main() {}\n")?;
     fs::write(
         robot.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot: { id: proof-robot }\nservices:\n  motion:\n    package: proof-provider\n    version: '0.1.0'\n    source: { path: provider }\n",
+        "schema: phoxal/robot/v0\nrobot: { id: proof-robot }\nservices:\n  motion:\n    source: { path: provider }\n",
     )?;
     fs::write(
         provider.join("Cargo.toml"),
@@ -66,18 +66,14 @@ fn exact_local_participant_installs_without_a_robot_cargo_dependency()
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("prepared motion proof-provider 0.1.0")
+        output.stderr.is_empty(),
+        "local preparation should not install a participant: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(!robot.join(".phoxal").exists());
     assert!(!fs::read_to_string(robot.join("Cargo.toml"))?.contains("proof-provider"));
-    assert!(contains_file(
-        &home.join("packages/local/proof-provider"),
-        "proof-provider"
-    )?);
-    assert!(contains_file(
-        &home.join("packages/local/proof-provider"),
-        "Cargo.lock"
-    )?);
+    assert!(!home.join("packages/local").exists());
+    assert!(!provider.join("target").exists());
     Ok(())
 }
 
@@ -176,7 +172,7 @@ fn exact_git_revision_prepares_alternate_binary_and_api() -> Result<(), Box<dyn 
     fs::write(
         robot.join("robot.yaml"),
         format!(
-            "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    package: {package}\n    version: '{version}'\n    binary: provider-daemon\n    source:\n      git: file://{}\n      rev: {revision}\n",
+            "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    binary: provider-daemon\n    source:\n      git:\n        name: {package}\n        url: file://{}\n        rev: {revision}\n",
             source.display()
         ),
     )?;
@@ -197,7 +193,6 @@ fn exact_git_revision_prepares_alternate_binary_and_api() -> Result<(), Box<dyn 
                 .join(".phoxal/git")
                 .join(package)
                 .join(&revision)
-                .join(version)
                 .join("api/status.proto")
         )?,
         proto
@@ -205,6 +200,10 @@ fn exact_git_revision_prepares_alternate_binary_and_api() -> Result<(), Box<dyn 
     assert!(contains_file(
         &phoxal_home.join("packages/git").join(package),
         "provider-daemon"
+    )?);
+    assert!(!contains_file(
+        &phoxal_home.join("packages/git").join(package),
+        "Cargo.toml"
     )?);
     Ok(())
 }
@@ -280,7 +279,7 @@ fn exact_registry_participant_recovers_prepared_api_without_cargo_cache()
     fs::write(
         robot.join("robot.yaml"),
         format!(
-            "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    package: {package}\n    version: '{version}'\n    source: {{ registry: proof }}\n"
+            "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    source:\n      package: {{ name: {package}, version: '{version}', registry: proof }}\n"
         ),
     )?;
     let prepared = robot
@@ -310,6 +309,10 @@ fn exact_registry_participant_recovers_prepared_api_without_cargo_cache()
     assert!(contains_file(
         &phoxal_home.join("packages/registry/proof"),
         package
+    )?);
+    assert!(!contains_file(
+        &phoxal_home.join("packages/registry/proof"),
+        "Cargo.toml"
     )?);
     let warm = prepare()?;
     assert!(
@@ -343,225 +346,6 @@ fn exact_registry_participant_recovers_prepared_api_without_cargo_cache()
         String::from_utf8_lossy(&rejected.stderr)
     );
     Ok(())
-}
-
-#[test]
-fn registry_update_selects_exact_candidate_and_keeps_previous_selection_on_failure()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let package = "proof-registry-update";
-    let registry = directory.path().join("registry");
-    let robot = directory.path().join("robot");
-    let cargo_home = directory.path().join("cargo-home");
-    let phoxal_home = directory.path().join("phoxal-home");
-    fs::create_dir_all(&robot)?;
-    fs::create_dir_all(&cargo_home)?;
-    let server = RegistryServer::start(&registry)?;
-    fs::create_dir_all(&registry)?;
-    fs::write(
-        registry.join("config.json"),
-        format!(
-            "{{\"dl\":\"http://127.0.0.1:{}/api/v1/crates\"}}",
-            server.port
-        ),
-    )?;
-    let first = archive_update_candidate(
-        directory.path(),
-        &registry,
-        &cargo_home,
-        package,
-        "0.1.0",
-        true,
-    )?;
-    let second = archive_update_candidate(
-        directory.path(),
-        &registry,
-        &cargo_home,
-        package,
-        "0.2.0",
-        true,
-    )?;
-    let index = registry.join("pr/oo").join(package);
-    fs::create_dir_all(index.parent().expect("index parent"))?;
-    fs::write(&index, format!("{first}\n{second}\n"))?;
-    fs::write(
-        robot.join("Cargo.toml"),
-        "[package]\nname = \"update-robot\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-    )?;
-    fs::write(
-        robot.join("robot.yaml"),
-        format!(
-            "schema: phoxal/robot/v0\nrobot:\n  id: update-robot\n  components:\n    sensor:\n      package: {package}\n      version: '0.1.0'\n      source: {{ registry: proof }}\n      mount_site: proof_mount\n      driver: {{}}\nservices:\n  provider:\n    package: {package}\n    version: '0.1.0'\n    source: {{ registry: proof }}\n"
-        ),
-    )?;
-    let original = fs::read(robot.join("robot.yaml"))?;
-    let run = |arguments: &[&str]| -> Result<std::process::Output, Box<dyn std::error::Error>> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
-            .args(arguments)
-            .current_dir(&robot)
-            .env("CARGO_HOME", &cargo_home)
-            .env("PHOXAL_HOME", &phoxal_home)
-            .env(
-                "CARGO_REGISTRIES_PROOF_INDEX",
-                format!("sparse+http://127.0.0.1:{}/", server.port),
-            )
-            .output()?)
-    };
-    let prepared = run(&["prepare"])?;
-    assert!(
-        prepared.status.success(),
-        "{}",
-        String::from_utf8_lossy(&prepared.stderr)
-    );
-    let dry_run = run(&["update", "--dry-run", "service", "provider"])?;
-    assert!(
-        dry_run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&dry_run.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&dry_run.stdout).contains("0.1.0 -> 0.2.0"),
-        "{}",
-        String::from_utf8_lossy(&dry_run.stdout)
-    );
-    assert_eq!(fs::read(robot.join("robot.yaml"))?, original);
-    assert!(
-        !robot
-            .join(".phoxal/registry/proof")
-            .join(package)
-            .join("0.2.0")
-            .exists()
-    );
-    let component_dry_run = run(&["update", "--dry-run", "component", "sensor"])?;
-    assert!(
-        component_dry_run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&component_dry_run.stderr)
-    );
-    assert!(String::from_utf8_lossy(&component_dry_run.stdout).contains("0.1.0 -> 0.2.0"));
-    assert_eq!(fs::read(robot.join("robot.yaml"))?, original);
-    let component_applied = run(&["update", "component", "sensor"])?;
-    assert!(
-        component_applied.status.success(),
-        "{}",
-        String::from_utf8_lossy(&component_applied.stderr)
-    );
-    let component_selected = fs::read_to_string(robot.join("robot.yaml"))?;
-    let component_document: serde_yaml::Value = serde_yaml::from_str(&component_selected)?;
-    assert_eq!(
-        component_document["robot"]["components"]["sensor"]["version"],
-        "0.2.0"
-    );
-    assert_eq!(
-        component_document["services"]["provider"]["version"],
-        "0.1.0"
-    );
-
-    let applied = run(&["update"])?;
-    assert!(
-        applied.status.success(),
-        "{}",
-        String::from_utf8_lossy(&applied.stderr)
-    );
-    let selected = fs::read(robot.join("robot.yaml"))?;
-    let selected_document: serde_yaml::Value = serde_yaml::from_slice(&selected)?;
-    assert_eq!(
-        selected_document["robot"]["components"]["sensor"]["version"],
-        "0.2.0"
-    );
-    assert_eq!(
-        selected_document["services"]["provider"]["version"],
-        "0.2.0"
-    );
-    assert!(
-        robot
-            .join(".phoxal/registry/proof")
-            .join(package)
-            .join("0.2.0/api/status.proto")
-            .is_file()
-    );
-    let no_op = run(&["update"])?;
-    assert!(
-        no_op.status.success(),
-        "{}",
-        String::from_utf8_lossy(&no_op.stderr)
-    );
-    assert_eq!(fs::read(robot.join("robot.yaml"))?, selected);
-
-    let third = archive_update_candidate(
-        directory.path(),
-        &registry,
-        &cargo_home,
-        package,
-        "0.3.0",
-        false,
-    )?;
-    fs::write(&index, format!("{first}\n{second}\n{third}\n"))?;
-    let rejected = run(&["update"])?;
-    assert!(!rejected.status.success());
-    assert_eq!(fs::read(robot.join("robot.yaml"))?, selected);
-    assert!(
-        robot
-            .join(".phoxal/registry/proof")
-            .join(package)
-            .join("0.2.0/api/status.proto")
-            .is_file()
-    );
-    Ok(())
-}
-
-fn archive_update_candidate(
-    root: &Path,
-    registry: &Path,
-    cargo_home: &Path,
-    package: &str,
-    version: &str,
-    valid_api: bool,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let source = root.join(format!("source-{version}"));
-    fs::create_dir_all(source.join("src"))?;
-    fs::create_dir_all(source.join("api"))?;
-    fs::write(
-        source.join("Cargo.toml"),
-        format!("[package]\nname = {package:?}\nversion = {version:?}\nedition = \"2024\"\n"),
-    )?;
-    fs::write(source.join("src/main.rs"), "fn main() {}\n")?;
-    fs::write(source.join("build.rs"), "fn main() {}\n")?;
-    let proto = if valid_api {
-        "syntax = \"proto3\"; package proof.update.v1; message Status { bool ready = 1; } service Provider { rpc Read(Status) returns (Status); }\n"
-    } else {
-        "syntax = \"proto3\"; package proof.update.v1; message Status { bool ready = 1; } service Provider { rpc Read(Status) returns (Status); } service Other { rpc Read(Status) returns (Status); }\n"
-    };
-    fs::write(source.join("api/status.proto"), proto)?;
-    let lock = Command::new("cargo")
-        .args(["generate-lockfile", "--offline", "--manifest-path"])
-        .arg(source.join("Cargo.toml"))
-        .env("CARGO_HOME", cargo_home)
-        .output()?;
-    assert!(
-        lock.status.success(),
-        "{}",
-        String::from_utf8_lossy(&lock.stderr)
-    );
-    let archive_path = registry
-        .join("api/v1/crates")
-        .join(package)
-        .join(version)
-        .join("download");
-    fs::create_dir_all(registry.join("api/v1/crates").join(package).join(version))?;
-    let archive = GzEncoder::new(fs::File::create(&archive_path)?, Compression::default());
-    let mut archive = tar::Builder::new(archive);
-    archive.append_dir_all(format!("{package}-{version}"), &source)?;
-    archive.into_inner()?.finish()?;
-    let checksum = format!("{:x}", Sha256::digest(fs::read(&archive_path)?));
-    Ok(serde_json::json!({
-        "name": package,
-        "vers": version,
-        "deps": [{"name":"phoxal", "req":format!("={}", phoxal_build::SDK_VERSION), "kind":"build", "optional":false}],
-        "cksum": checksum,
-        "features": {},
-        "yanked": false
-    }).to_string())
 }
 
 struct RegistryServer {

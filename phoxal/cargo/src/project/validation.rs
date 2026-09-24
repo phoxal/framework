@@ -7,47 +7,13 @@
 //! artifact.  It never executes a target binary.
 
 use std::collections::BTreeMap;
-use std::fs;
 
 use crate::project::artifact::{self, ArtifactContract};
-use crate::project::cargo;
 use crate::project::document::RobotDocument;
-use crate::project::{CargoOptions, Error, PreparedProject};
+use crate::project::{Error, PreparedProject};
 use phoxal::artifact::RuntimeRecord;
 
 pub(crate) type ArtifactKey = (String, String);
-
-/// Build and inspect every selected runtime executable for a check command.
-pub(crate) fn validate_selected_contracts(
-    prepared: &PreparedProject,
-    options: &CargoOptions,
-) -> Result<BTreeMap<ArtifactKey, ArtifactContract>, Error> {
-    options.validate()?;
-    let mut contracts = BTreeMap::new();
-    for (instance, target) in prepared.assembly_targets() {
-        let key = (target.package_id.clone(), target.target.clone());
-        if contracts.contains_key(&key) {
-            continue;
-        }
-        let output = cargo::build_target(prepared, target, options)?;
-        let executable = cargo::artifact_path(&output.stdout, target)?;
-        let metadata = fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
-            path: executable.clone(),
-            source,
-        })?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(Error::ArtifactInvalid {
-                path: executable,
-                message: "Cargo reported a non-regular executable".to_owned(),
-            });
-        }
-        let contract = inspect_contract(prepared, &instance, target, &executable)?;
-        contracts.insert(key, contract);
-    }
-    validate_configurations(prepared, &contracts)?;
-    validate_connections(prepared, &contracts)?;
-    Ok(contracts)
-}
 
 /// Validate authored service and component-driver configuration against the
 /// exact contract selected for each instance.
@@ -97,29 +63,6 @@ pub(crate) fn validate_configurations(
     Ok(())
 }
 
-fn inspect_contract(
-    prepared: &PreparedProject,
-    instance: &str,
-    target: &crate::SelectedTarget,
-    executable: &std::path::Path,
-) -> Result<ArtifactContract, Error> {
-    artifact::inspect_file(executable).map_err(|error| {
-        if matches!(error, artifact::Error::MissingRecord) {
-            Error::MissingArtifactContract {
-                role: prepared.executable_role(instance),
-                instance: instance.to_owned(),
-                package: target.package.clone(),
-                target: target.target.clone(),
-            }
-        } else {
-            Error::ArtifactInvalid {
-                path: executable.to_owned(),
-                message: error.to_string(),
-            }
-        }
-    })
-}
-
 fn authored_configuration(
     prepared: &PreparedProject,
     instance: &str,
@@ -161,21 +104,6 @@ fn authored_configuration(
 
 fn schema_is_null(schema: &serde_json::Value) -> bool {
     schema.get("type").and_then(serde_json::Value::as_str) == Some("null")
-}
-
-pub(crate) fn validate_connections(
-    prepared: &PreparedProject,
-    contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
-) -> Result<(), Error> {
-    validate_connections_for_document(prepared, contracts, prepared.document())
-}
-
-pub(crate) fn validate_connections_for_document(
-    prepared: &PreparedProject,
-    contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
-    document: &RobotDocument,
-) -> Result<(), Error> {
-    validate_connections_for_document_with_virtual_producers(prepared, contracts, document, &[])
 }
 
 pub(crate) fn validate_connections_for_document_with_virtual_producers(

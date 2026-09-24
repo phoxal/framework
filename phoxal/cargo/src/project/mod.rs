@@ -136,17 +136,6 @@ impl Project {
         ))
     }
 
-    /// Updates exact participant versions only after preparing and validating the proposal.
-    pub fn update(
-        &self,
-        options: &CargoOptions,
-        dry_run: bool,
-        role: Option<&str>,
-        instance: Option<&str>,
-    ) -> Result<Vec<String>, Error> {
-        participant::update(&self.layout, options, dry_run, role, instance)
-    }
-
     /// Provisions the independent simulator application, probes its native
     /// model contract, builds the simulation bundle, and runs one finite
     /// simulation with bounded supervisor cleanup.
@@ -296,13 +285,10 @@ impl PreparedProject {
         }
     }
 
-    /// Runs Cargo check and validates the exact compiled Runtime contracts and
-    /// authored configuration for every selected execution target.
+    /// Validates the authored project, prepares its selected APIs, and runs
+    /// Cargo check without building runtime executables.
     pub fn check(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
-        let outputs = self.run(CargoOperation::Check, options)?;
-        validation::validate_selected_contracts(self, options)?;
-        self.build_supervisor(options)?;
-        Ok(outputs)
+        self.run(CargoOperation::Check, options)
     }
 
     /// Builds and atomically publishes the complete selected executable bundle.
@@ -316,25 +302,6 @@ impl PreparedProject {
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
         bundle::assemble_with_inputs(self, options, output, false, None, None)
-    }
-
-    /// Builds the exact supervisor binary selected through the root Cargo
-    /// graph and returns Cargo's reported executable path.
-    pub fn build_supervisor(&self, options: &CargoOptions) -> Result<PathBuf, Error> {
-        let output = cargo::build_target(self, &self.cargo_sources.supervisor, options)?;
-        let executable = cargo::artifact_path(&output.stdout, &self.cargo_sources.supervisor)?;
-        let metadata =
-            std::fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
-                path: executable.clone(),
-                source,
-            })?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(Error::ArtifactInvalid {
-                path: executable,
-                message: "Cargo reported a non-regular supervisor executable".to_owned(),
-            });
-        }
-        Ok(executable)
     }
 
     /// Builds an immutable bundle and launches its selected supervisor in the

@@ -3,30 +3,43 @@
 use phoxal::scenario::{CapturePolicy, Simulation};
 phoxal::api!();
 
-use api::__contracts::phoxal::motion::v1::MotionIntent;
 use api::controller;
-
-const WHEELS: [&str; 4] = [
-    "front_left_drive",
-    "front_right_drive",
-    "rear_left_drive",
-    "rear_right_drive",
-];
+use api::controller::MotionIntent;
 
 #[phoxal::scenario]
 fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
     let mut plan = sim.plan();
     let body = plan.record_body("phoxal-test-robot")?;
-    let wheels = WHEELS
-        .iter()
-        .map(|wheel| {
+    let wheels = [
+        (
+            "front_left_drive",
             plan.record(
-                api::__contracts::phoxal::component::ddsm115::v1::ddsm115::methods::ENCODER
-                    .bind(wheel),
+                api::front_left_drive::encoder(),
                 CapturePolicy::best_effort_history(1_024)?,
-            )
-        })
-        .collect::<phoxal::Result<Vec<_>>>()?;
+            )?,
+        ),
+        (
+            "front_right_drive",
+            plan.record(
+                api::front_right_drive::encoder(),
+                CapturePolicy::best_effort_history(1_024)?,
+            )?,
+        ),
+        (
+            "rear_left_drive",
+            plan.record(
+                api::rear_left_drive::encoder(),
+                CapturePolicy::best_effort_history(1_024)?,
+            )?,
+        ),
+        (
+            "rear_right_drive",
+            plan.record(
+                api::rear_right_drive::encoder(),
+                CapturePolicy::best_effort_history(1_024)?,
+            )?,
+        ),
+    ];
 
     plan.send(manual(0.0, 0.0))?;
     plan.wait_steps(30)?;
@@ -40,7 +53,7 @@ fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
     plan.wait_steps(30)?;
 
     let observed = sim.run(plan)?;
-    for (wheel, capture) in WHEELS.into_iter().zip(wheels) {
+    for (wheel, capture) in wheels {
         let moved = observed.history(&capture)?.iter().any(|sample| {
             sample
                 .value()

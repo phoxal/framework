@@ -210,7 +210,6 @@ pub(super) fn normalize_receipt(
         .ok_or_else(|| simulation_rejected("simulation backend omitted its phase receipt"))?;
     receipt.transition_key = Some(admission.transition_key.clone());
     receipt.correlation_id = correlation_id.to_vec();
-    receipt.request_digest = admission.request_digest.to_vec();
     receipt.membership_digest = digest.to_vec();
     receipt.products = memberships;
     receipt.prepared_boundary = admission.transition_key.boundary;

@@ -266,7 +266,7 @@ fn observations(boundary: u64) -> Vec<Observation> {
 }
 
 #[tokio::test]
-async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
+async fn completed_phases_reject_duplicates_and_reset_retires_the_grant() {
     let fixture = Fixture::new().await;
     assert!(
         prepare_boundary(
@@ -281,8 +281,19 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
         .is_err(),
         "initial observations are mandatory"
     );
-    let initial = fixture.initialize().await;
-    assert_eq!(fixture.initialize().await, initial);
+    fixture.initialize().await;
+    assert!(
+        admit_initial_observations(
+            &fixture.route,
+            fixture.initial(),
+            &fixture.adapter,
+            &fixture.authority,
+            &fixture.backend,
+            0
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(fixture.counts.initial.load(Ordering::SeqCst), 1);
     let foreign = PublicRoute::for_operation(
         &DeploymentTarget::new("local", "supervisor").unwrap(),
@@ -303,7 +314,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
         .is_err()
     );
     let request = fixture.prepare();
-    let prepared = prepare_boundary(
+    prepare_boundary(
         &fixture.route,
         request.clone(),
         &fixture.adapter,
@@ -313,7 +324,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
     )
     .await
     .unwrap();
-    assert_eq!(
+    assert!(
         prepare_boundary(
             &fixture.route,
             request.clone(),
@@ -323,8 +334,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
             0
         )
         .await
-        .unwrap(),
-        prepared
+        .is_err()
     );
     assert_eq!(fixture.counts.prepared.load(Ordering::SeqCst), 1);
     let observations = observations(1);
@@ -360,7 +370,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
         .as_mut()
         .unwrap()
         .capture_time_ns = 1_000_000;
-    let receipt = admit_observations(
+    admit_observations(
         &fixture.route,
         admission.clone(),
         &fixture.adapter,
@@ -370,7 +380,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
     )
     .await
     .unwrap();
-    assert_eq!(
+    assert!(
         admit_observations(
             &fixture.route,
             admission,
@@ -380,8 +390,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
             0
         )
         .await
-        .unwrap(),
-        receipt
+        .is_err()
     );
     assert_eq!(fixture.counts.admitted.load(Ordering::SeqCst), 1);
     let reset = ResetRequest {
@@ -405,7 +414,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
     .await
     .unwrap();
     assert_ne!(response.authority_grant, fixture.key.authority_grant);
-    assert_eq!(
+    assert!(
         reset_simulation(
             &fixture.route,
             reset,
@@ -416,8 +425,7 @@ async fn complete_phases_replay_exactly_and_reset_retires_the_grant() {
             0
         )
         .await
-        .unwrap(),
-        response
+        .is_err()
     );
     assert_eq!(fixture.counts.resets.load(Ordering::SeqCst), 1);
     assert!(
@@ -460,7 +468,6 @@ async fn blocked_prepare_does_not_block_progress_or_release_and_cannot_commit_af
                 authority_grant: fixture.key.authority_grant.clone(),
                 session_id: fixture.key.session_id.clone(),
                 correlation_id: vec![6],
-                ..Default::default()
             },
             &fixture.adapter,
             &fixture.authority,
@@ -547,7 +554,7 @@ async fn not_due_must_match_the_exact_immutable_rational_schedule() {
 }
 
 #[tokio::test]
-async fn retained_phase_and_progress_require_a_live_session_and_timeline() {
+async fn phase_and_progress_require_a_live_session_and_timeline() {
     for close_session in [true, false] {
         let fixture = Fixture::new().await;
         fixture.initialize().await;
@@ -589,7 +596,7 @@ async fn retained_phase_and_progress_require_a_live_session_and_timeline() {
             )
             .await
             .is_err(),
-            "cached phase must not outlive its session or timeline"
+            "phase must not outlive its session or timeline"
         );
         assert!(
             progress_simulation(
@@ -598,8 +605,6 @@ async fn retained_phase_and_progress_require_a_live_session_and_timeline() {
                     session_id: fixture.key.session_id.clone(),
                     authority_grant: fixture.key.authority_grant.clone(),
                     correlation_id: vec![12],
-                    transition_key: Some(fixture.key.clone()),
-                    ..Default::default()
                 },
                 &fixture.adapter,
                 &fixture.authority,
@@ -608,64 +613,48 @@ async fn retained_phase_and_progress_require_a_live_session_and_timeline() {
             )
             .await
             .is_err(),
-            "cached progress must not outlive its session or timeline"
+            "progress must not outlive its session or timeline"
         );
     }
 }
 
 #[tokio::test]
-async fn invalid_or_unretainable_backend_receipt_is_a_terminal_failure() {
-    for omit_receipt in [true, false] {
-        let fixture = Fixture::new().await;
-        fixture
-            .counts
-            .omit_receipt
-            .store(omit_receipt, Ordering::SeqCst);
-        if !omit_receipt {
-            fixture
-                .authority
-                .lock()
-                .await
-                .as_mut()
-                .unwrap()
-                .receipt_byte_cap = 1;
-        }
-        for _ in 0..2 {
-            assert!(
-                admit_initial_observations(
-                    &fixture.route,
-                    fixture.initial(),
-                    &fixture.adapter,
-                    &fixture.authority,
-                    &fixture.backend,
-                    0
-                )
-                .await
-                .is_err()
-            );
-        }
-        assert_eq!(fixture.counts.initial.load(Ordering::SeqCst), 1);
-        let progress = progress_simulation(
-            &fixture.route,
-            ProgressRequest {
-                session_id: fixture.key.session_id.clone(),
-                authority_grant: fixture.key.authority_grant.clone(),
-                correlation_id: vec![12],
-                transition_key: Some(fixture.key.clone()),
-                ..Default::default()
-            },
-            &fixture.adapter,
-            &fixture.authority,
-            &fixture.backend,
-            0,
-        )
-        .await
-        .unwrap();
+async fn invalid_backend_receipt_is_a_terminal_failure() {
+    let fixture = Fixture::new().await;
+    fixture.counts.omit_receipt.store(true, Ordering::SeqCst);
+    for _ in 0..2 {
         assert!(
-            progress.failed,
-            "backend already mutated; this cannot remain an unknown retryable outcome"
+            admit_initial_observations(
+                &fixture.route,
+                fixture.initial(),
+                &fixture.adapter,
+                &fixture.authority,
+                &fixture.backend,
+                0
+            )
+            .await
+            .is_err()
         );
-        assert_eq!(progress.completed_boundary, 0);
-        assert!(progress.detail.is_some());
     }
+    assert_eq!(fixture.counts.initial.load(Ordering::SeqCst), 1);
+    let progress = progress_simulation(
+        &fixture.route,
+        ProgressRequest {
+            session_id: fixture.key.session_id.clone(),
+            authority_grant: fixture.key.authority_grant.clone(),
+            correlation_id: vec![12],
+        },
+        &fixture.adapter,
+        &fixture.authority,
+        &fixture.backend,
+        0,
+    )
+    .await
+    .unwrap();
+    assert!(
+        progress.failed,
+        "backend already mutated; this cannot remain an unknown retryable outcome"
+    );
+    assert_eq!(progress.completed_boundary, 0);
+    assert!(progress.detail.is_some());
 }

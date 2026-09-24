@@ -104,19 +104,6 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
                     Ok(())
                 }
                 Command::Test(arguments) => run_test(&project, arguments),
-                Command::Update(arguments) => {
-                    let options = arguments.options.into_options(Vec::new(), Vec::new());
-                    let changes = project.update(
-                        &options,
-                        arguments.dry_run,
-                        arguments.role.as_deref(),
-                        arguments.instance.as_deref(),
-                    )?;
-                    for change in changes {
-                        println!("{change}");
-                    }
-                    Ok(())
-                }
                 Command::Simulation(_) => unreachable!("simulation was handled above"),
                 Command::Publish(_) => unreachable!("publish was handled above"),
                 Command::Prepare(_) => unreachable!("prepare was handled above"),
@@ -336,13 +323,7 @@ fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> 
     println!("version: {}", result.version());
     println!("archive: {}", result.archive().display());
     println!("sha256: {}", result.checksum());
-    println!("inventory: {}", result.inventory().display());
-    println!("checksum-file: {}", result.checksum_file().display());
     println!("bytes: {}", result.bytes());
-    println!("files:");
-    for file in result.files() {
-        println!("  {} {} {}", file.path, file.bytes, file.sha256);
-    }
     if !dry_run {
         let submission = submit_publication(&result, |authorization| {
             eprintln!(
@@ -573,7 +554,6 @@ impl Cli {
                 json_common(&arguments.options, &arguments.cargo_args)
             }
             Command::Test(arguments) => json_common(&arguments.options, &[]),
-            Command::Update(arguments) => json_common(&arguments.options, &[]),
             Command::Simulation(arguments) => match &arguments.command {
                 SimulationCommand::Install(_) | SimulationCommand::Upgrade(_) => false,
                 SimulationCommand::Status(_) | SimulationCommand::Uninstall => false,
@@ -589,7 +569,7 @@ impl Cli {
 enum Command {
     /// Install exact selected participants and prepare their Protobuf sources.
     Prepare(PrepareArgs),
-    /// Prepare the project, validate composition, and Cargo-check selected targets.
+    /// Validate the project and selected APIs, then Cargo-check requested code.
     Check(CommandArgs),
     /// Prepare the project, validate composition, and build selected targets.
     Build(BuildArgs),
@@ -597,8 +577,6 @@ enum Command {
     Run(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
-    /// Inspect or apply newer exact versions of selected participants.
-    Update(UpdateArgs),
     /// Provision and run the independent native simulator application.
     Simulation(SimulationArgs),
     /// Prepare an authored component or service package for registry review.
@@ -687,21 +665,6 @@ struct SimulationRunArgs {
     run_id: Option<String>,
     #[command(flatten)]
     options: CommonArgs,
-}
-
-#[derive(Debug, Args)]
-struct UpdateArgs {
-    #[command(flatten)]
-    options: CommonArgs,
-    /// Report proposed exact versions without changing the project.
-    #[arg(long)]
-    dry_run: bool,
-    /// Select one existing service or component.
-    #[arg(value_parser = ["service", "component"], requires = "instance")]
-    role: Option<String>,
-    /// Instance name of the selected service or component.
-    #[arg(requires = "role")]
-    instance: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1178,28 +1141,5 @@ mod tests {
         assert!(options.cargo_args.is_empty());
         assert_eq!(options.test_args, [OsString::from("--nocapture")]);
         assert!(json_requested(&options));
-    }
-
-    #[test]
-    fn update_command_selects_one_existing_participant() {
-        let parsed = Cli::try_parse_from([
-            "cargo-phoxal",
-            "update",
-            "--offline",
-            "--dry-run",
-            "service",
-            "motion",
-        ])
-        .expect("update command parses");
-        let arguments = match parsed.command {
-            Command::Update(arguments) => arguments,
-            _ => panic!("the update command parsed as a different variant"),
-        };
-        assert!(arguments.dry_run);
-        assert_eq!(arguments.role.as_deref(), Some("service"));
-        assert_eq!(arguments.instance.as_deref(), Some("motion"));
-        let options = arguments.options.into_options(Vec::new(), Vec::new());
-        assert!(options.offline);
-        assert!(options.cargo_args.is_empty());
     }
 }

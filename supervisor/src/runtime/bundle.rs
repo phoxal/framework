@@ -15,6 +15,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use phoxal::artifact::MethodShape;
+use phoxal::artifact::document::Source;
 
 /// The bundle directory's name inside a deployment release. The supervisor is
 /// handed a bundle root and knows nothing about releases, but it does have to
@@ -278,15 +279,12 @@ pub(crate) enum SourceDocument {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SourceService {
-    package: String,
-    version: String,
+    source: Source,
     #[serde(default)]
     binary: Option<String>,
-    #[serde(default)]
-    source: Option<serde_json::Value>,
     #[serde(default)]
     config: Option<serde_json::Value>,
 }
@@ -304,13 +302,10 @@ pub(crate) struct SourceRobot {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceComponent {
-    package: String,
-    version: String,
+    source: Source,
     mount_site: String,
     #[serde(default)]
     binary: Option<String>,
-    #[serde(default)]
-    source: Option<serde_json::Value>,
     #[serde(default)]
     driver: Option<serde_json::Value>,
     #[serde(default)]
@@ -834,9 +829,7 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
     let _ = (&document_robot.model, document_brain, document_connections);
     for (instance, component) in &document_robot.components {
         validate_segment(instance, "component instance")?;
-        if component.package.is_empty() || component.version.is_empty() {
-            bail!("component `{instance}` has an incomplete exact package selection");
-        }
+        validate_selected_source(&component.source, instance)?;
         if component.mount_site.is_empty() {
             bail!("component `{instance}` has an empty mount link");
         }
@@ -849,13 +842,28 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
     }
     for (service, definition) in document_services {
         validate_segment(service, "service instance")?;
-        if definition.package.is_empty() || definition.version.is_empty() {
-            bail!("service `{service}` has an incomplete exact package selection");
-        }
+        validate_selected_source(&definition.source, service)?;
         if definition.binary.as_deref().is_some_and(str::is_empty) {
             bail!("service `{service}` has an empty binary target");
         }
         let _ = &definition.source;
+    }
+    Ok(())
+}
+
+fn validate_selected_source(source: &Source, instance: &str) -> Result<()> {
+    let valid = match source {
+        Source::Path(path) => !path.trim().is_empty() && Path::new(path).is_relative(),
+        Source::Package(package) => !package.name.is_empty() && !package.version.is_empty(),
+        Source::Git(git) => {
+            !git.name.is_empty()
+                && !git.url.is_empty()
+                && git.rev.len() == 40
+                && git.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
+    };
+    if !valid {
+        bail!("participant `{instance}` has an invalid source selection");
     }
     Ok(())
 }
@@ -1049,19 +1057,18 @@ mod tests {
         fs::write(&executable, executable_bytes).expect("bundle executable");
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
             .expect("make bundle executable runnable");
-        let manifest = format!(
-            r#"{{
+        let manifest = r#"{
                 "schema": "phoxal/bundle/v0",
                 "robot_id": "fixture",
-                "root_package": {{
+                "root_package": {
                     "id": "path+file:///fixture#fixture@0.1.0",
                     "name": "fixture",
                     "source": "local"
-                }},
+                },
                 "target": "host",
                 "profile": "dev",
                 "features": [],
-                "executables": [{{
+                "executables": [{
                     "role": "brain",
                     "instance": "brain",
                     "package_id": "path+file:///fixture#fixture@0.1.0",
@@ -1069,10 +1076,9 @@ mod tests {
                     "target": "fixture",
                     "path": "bin/brain",
                     "artifact": null
-                }}],
+                }],
                 "components": []
-            }}"#
-        );
+            }"#;
         fs::write(directory.path().join("manifest.json"), manifest)
             .expect("source bundle manifest");
         fs::write(
@@ -1172,11 +1178,9 @@ mod tests {
         BTreeMap::from([(
             "imu".to_owned(),
             SourceComponent {
-                package: "phoxal-component-bno085".to_owned(),
-                version: "0.0.0-dev.2".to_owned(),
+                source: Source::Path("../bno085".to_owned()),
                 mount_site: "base".to_owned(),
                 binary: None,
-                source: None,
                 driver: Some(serde_json::json!({})),
                 config: None,
             },

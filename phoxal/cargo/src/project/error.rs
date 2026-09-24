@@ -743,15 +743,6 @@ pub enum PublicationError {
         /// Filesystem failure.
         source: std::io::Error,
     },
-    /// A Git source identity contains credentials or cannot be represented
-    /// without leaking a developer-local path.
-    #[error("publication Git source identity is unsafe at {path}: {message}")]
-    UnsafeGitIdentity {
-        /// Authored Git checkout or manifest path.
-        path: PathBuf,
-        /// Safe diagnostic explaining the rejected identity.
-        message: String,
-    },
     /// A captured Cargo configuration contains credential material.
     #[error("publication Cargo configuration is unsafe at {path}: {message}")]
     UnsafeCargoConfiguration {
@@ -819,22 +810,6 @@ pub enum PublicationError {
         package: String,
         /// Package-relative asset path.
         asset: String,
-    },
-    /// Publication inventory could not be written.
-    #[error("cannot write publication inventory {path}: {source}")]
-    WriteInventory {
-        /// Inventory path.
-        path: PathBuf,
-        /// Filesystem failure.
-        source: std::io::Error,
-    },
-    /// Publication checksums could not be written.
-    #[error("cannot write publication checksum {path}: {source}")]
-    WriteChecksum {
-        /// Checksum path.
-        path: PathBuf,
-        /// Filesystem failure.
-        source: std::io::Error,
     },
     /// The prepared archive exceeds GitHub's Git blob upload limit.
     #[error("prepared archive has {bytes} bytes, exceeding GitHub's {maximum}-byte Git blob limit")]

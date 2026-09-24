@@ -644,11 +644,9 @@ robot:
   components: {}
 services:
   consumer:
-    package: phoxal-service-consumer
-    version: 0.1.0
+    source: { package: { name: phoxal-service-consumer, version: 0.1.0 } }
   producer:
-    package: phoxal-service-producer
-    version: 0.1.0
+    source: { package: { name: phoxal-service-producer, version: 0.1.0 } }
 connections:
   consumer.input: producer.output
 "#,

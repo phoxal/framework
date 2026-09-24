@@ -22,8 +22,7 @@ use crate::project::error::{ValidationError, ValidationErrors};
 // truth for every inert record; this tool module keeps the
 // tool's validation logic and reads YAML.
 pub use phoxal::artifact::document::{
-    BrainSelection, ComponentDocument, ConnectionSources, PortReference, RobotDocument,
-    ServiceSource,
+    BrainSelection, ComponentDocument, ConnectionSources, PortReference, RobotDocument, Source,
 };
 
 /// Parses and validates a `robot.yaml` document with its authored path
@@ -133,19 +132,9 @@ fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
                 field: "robot.components".to_owned(),
             });
         }
-        if component.package.trim().is_empty() {
-            errors.push(ValidationError::EmptySourceKey {
-                field: format!("robot.components.{instance}.package"),
-            });
-        } else if !is_identifier(&component.package) {
-            errors.push(ValidationError::InvalidIdentifier {
-                field: format!("robot.components.{instance}.package"),
-                value: component.package.clone(),
-            });
-        }
-        validate_exact_version(
-            &format!("robot.components.{instance}.version"),
-            &component.version,
+        validate_source(
+            &format!("robot.components.{instance}.source"),
+            &component.source,
             errors,
         );
         if let Some(binary) = &component.binary {
@@ -154,9 +143,6 @@ fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
                 binary,
                 errors,
             );
-        }
-        if let Some(source) = &component.source {
-            validate_service_source(instance, source, errors);
         }
         if component.mount_site.trim().is_empty() {
             errors.push(ValidationError::EmptySourceKey {
@@ -206,23 +192,15 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
     let RobotDocument::V0 { services, .. } = document;
     for (service, selection) in services {
         push_identifier_error(&format!("services.{service}"), service, errors);
-        push_identifier_error(
-            &format!("services.{service}.package"),
-            &selection.package,
-            errors,
-        );
-        validate_exact_version(
-            &format!("services.{service}.version"),
-            &selection.version,
+        validate_source(
+            &format!("services.{service}.source"),
+            &selection.source,
             errors,
         );
         if service == "brain" {
             errors.push(ValidationError::ReservedBrainId {
                 field: "services".to_owned(),
             });
-        }
-        if let Some(source) = &selection.source {
-            validate_service_source(service, source, errors);
         }
         if let Some(binary) = &selection.binary
             && (binary.trim().is_empty() || !is_identifier(binary))
@@ -238,47 +216,48 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
     }
 }
 
-fn validate_service_source(
-    service: &str,
-    source: &ServiceSource,
-    errors: &mut Vec<ValidationError>,
-) {
-    let invalid = match source {
-        ServiceSource::Path(source) => source
-            .path
-            .trim()
-            .is_empty()
-            .then_some("path must not be empty"),
-        ServiceSource::Git(source) => {
-            if source.git.trim().is_empty() {
-                Some("git must not be empty")
-            } else if source.rev.len() != 40
-                || !source.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                Some("rev must select a complete immutable Git commit")
-            } else if source
-                .path
-                .as_ref()
-                .is_some_and(|path| path.trim().is_empty())
-            {
-                Some("Git package path must not be empty")
-            } else {
-                None
+fn validate_source(field: &str, source: &Source, errors: &mut Vec<ValidationError>) {
+    match source {
+        Source::Path(path) => {
+            if path.trim().is_empty() || !Path::new(path).is_relative() {
+                errors.push(ValidationError::InvalidIdentifier {
+                    field: format!("{field}.path"),
+                    value: path.clone(),
+                });
             }
         }
-        ServiceSource::Registry(source) => {
-            if source.registry.trim().is_empty() {
-                Some("registry must not be empty")
-            } else {
-                None
+        Source::Package(package) => {
+            push_identifier_error(&format!("{field}.package.name"), &package.name, errors);
+            validate_exact_version(
+                &format!("{field}.package.version"),
+                &package.version,
+                errors,
+            );
+            if let Some(registry) = &package.registry {
+                push_identifier_error(&format!("{field}.package.registry"), registry, errors);
             }
         }
-    };
-    if let Some(message) = invalid {
-        errors.push(ValidationError::InvalidService {
-            service: service.to_owned(),
-            message: message.to_owned(),
-        });
+        Source::Git(git) => {
+            push_identifier_error(&format!("{field}.git.name"), &git.name, errors);
+            if git.url.trim().is_empty()
+                || git.rev.len() != 40
+                || !git.rev.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || git.path.as_ref().is_some_and(|path| {
+                    let path = Path::new(path);
+                    path.as_os_str().is_empty()
+                        || !path.is_relative()
+                        || path
+                            .components()
+                            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                })
+            {
+                errors.push(ValidationError::InvalidService {
+                    service: field.to_owned(),
+                    message: "Git source needs a URL, full commit, and safe package path"
+                        .to_owned(),
+                });
+            }
+        }
     }
 }
 

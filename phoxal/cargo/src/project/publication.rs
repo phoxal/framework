@@ -1,13 +1,10 @@
-//! Isolated Cargo package preparation for registry review.
+//! Cargo package preparation for registry submission.
 //!
-//! This module owns the local half of the publication workflow. It selects a
-//! package from authored Cargo manifests, captures the required source context
-//! outside that source tree, invokes Cargo's own packager, and verifies the
-//! resulting archive before writing review inventory and checksum records.
+//! This module selects a package from authored Cargo manifests, captures the
+//! Cargo context needed to package it, and verifies the resulting archive.
 //!
-//! Remote submission consumes this module's exact retained result through the
-//! sibling `submission` module. Keeping preparation independent means dry runs
-//! never initialize credentials or make a remote request.
+//! Remote submission consumes the archive through the sibling `submission`
+//! module. Dry runs do not initialize credentials or make a remote request.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -27,8 +24,6 @@ use crate::project::error::{Error, PublicationError};
 use crate::project::preparation;
 
 const GENERATED_LIB: &str = "_cargo/lib.rs";
-const INVENTORY_FILE: &str = "review-inventory.json";
-const CHECKSUM_FILE: &str = "archive.sha256";
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
@@ -107,41 +102,6 @@ pub struct PublicationOptions {
     pub dry_run: bool,
 }
 
-/// One file in the verified Cargo archive.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicationFile {
-    /// Package-relative archive path using forward slashes.
-    pub path: String,
-    /// File size in bytes.
-    pub bytes: u64,
-    /// Lowercase SHA-256 digest of the file bytes.
-    pub sha256: String,
-}
-
-/// Provenance for the authored source and any derived targetless carrier.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicationSourceProvenance {
-    /// Whether the retained source is a clean Git checkout or a local tree.
-    pub origin: String,
-    /// Source path within the publication staging context.
-    pub path: String,
-    /// Deterministic digest of the authored source tree.
-    pub digest: String,
-    /// Preparation applied to the staged source.
-    pub preparation: String,
-    /// Git repository URL when the authored source is a clean Git checkout.
-    pub repository: Option<String>,
-    /// Full authored Git commit when the source is a clean Git checkout.
-    pub revision: Option<String>,
-    /// Package directory within the authored Git commit.
-    pub subdirectory: Option<String>,
-    /// Exact bytes added to a derived staged carrier.
-    pub derived_files: Vec<PublicationFile>,
-    /// Exact staged manifests, locks, and configuration files used for Cargo
-    /// publication.
-    pub staged_files: Vec<PublicationFile>,
-}
-
 /// The local result of a validated publication preparation.
 #[derive(Debug)]
 pub struct PublicationResult {
@@ -150,13 +110,9 @@ pub struct PublicationResult {
     package: String,
     version: String,
     archive: PathBuf,
-    inventory: PathBuf,
-    checksum_file: PathBuf,
     checksum: String,
-    source_provenance: PublicationSourceProvenance,
     registry_kind: String,
     bytes: u64,
-    files: Vec<PublicationFile>,
 }
 
 impl PublicationResult {
@@ -191,34 +147,16 @@ impl PublicationResult {
         &self.version
     }
 
-    /// Returns the verified `.crate` archive path.
+    /// Returns the `.crate` archive path.
     #[must_use]
     pub fn archive(&self) -> &Path {
         &self.archive
-    }
-
-    /// Returns the JSON review inventory path.
-    #[must_use]
-    pub fn inventory(&self) -> &Path {
-        &self.inventory
-    }
-
-    /// Returns the SHA-256 sidecar path.
-    #[must_use]
-    pub fn checksum_file(&self) -> &Path {
-        &self.checksum_file
     }
 
     /// Returns the verified archive SHA-256 digest.
     #[must_use]
     pub fn checksum(&self) -> &str {
         &self.checksum
-    }
-
-    /// Returns the authored source and derived-carrier provenance.
-    #[must_use]
-    pub fn source_provenance(&self) -> &PublicationSourceProvenance {
-        &self.source_provenance
     }
 
     /// Returns the registry's exact content role for this archive.
@@ -232,22 +170,14 @@ impl PublicationResult {
     pub const fn bytes(&self) -> u64 {
         self.bytes
     }
-
-    /// Returns the sorted verified archive file inventory.
-    #[must_use]
-    pub fn files(&self) -> &[PublicationFile] {
-        &self.files
-    }
 }
 
-/// Prepares and verifies one local package publication.
+/// Prepares one local package archive for registry submission.
 ///
 /// This function only prepares immutable local bytes. The caller decides
-/// whether those bytes remain a dry run or are submitted for review.
+/// whether those bytes remain a dry run or are submitted.
 pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationResult, Error> {
     let selected = select_package(options)?;
-    let source_digest = digest_source_tree(&selected.source_root)?;
-    let mut source_provenance = authored_source_provenance(&selected, &source_digest)?;
     let staging = tempfile::Builder::new()
         .prefix("phoxal-publication-")
         .tempdir()
@@ -256,11 +186,6 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
 
     let captured = capture_source(&selected, &staging_root)?;
     let expected_assets = stage_package(&selected, &captured)?;
-    source_provenance.staged_files = staged_context_files(&staging_root)?;
-    if selected.role == PackageRole::PassiveComponent || selected.role == PackageRole::Preset {
-        source_provenance.preparation = "targetless-cargo-carrier/v0".to_owned();
-        source_provenance.derived_files = carrier_files(&captured)?;
-    }
     let archive = package_with_cargo(&selected.package, &captured)?;
     let archive_bytes = fs::metadata(&archive)
         .map_err(|source| PublicationError::CaptureSource {
@@ -283,51 +208,15 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
         &expected_assets,
     )?;
 
-    let inventory_path = staging_root.join(INVENTORY_FILE);
-    let inventory = InventoryDocument::V0 {
-        kind: selected.role.publication_kind(),
-        package: selected.package.clone(),
-        version: selected.version.clone(),
-        source_root: "authored".to_owned(),
-        archive: archive.display().to_string(),
-        checksum: verified.checksum.clone(),
-        bytes: verified.bytes,
-        files: verified.files.clone(),
-        source: source_provenance.clone(),
-    };
-    let inventory_json = serde_json::to_vec_pretty(&inventory).map_err(|source| {
-        PublicationError::WriteInventory {
-            path: inventory_path.clone(),
-            source: io::Error::other(source),
-        }
-    })?;
-    fs::write(&inventory_path, inventory_json).map_err(|source| {
-        PublicationError::WriteInventory {
-            path: inventory_path.clone(),
-            source,
-        }
-    })?;
-
-    let checksum_file = staging_root.join(CHECKSUM_FILE);
-    let checksum_text = format!("{}  {}\n", verified.checksum, file_name(&archive)?);
-    fs::write(&checksum_file, checksum_text).map_err(|source| PublicationError::WriteChecksum {
-        path: checksum_file.clone(),
-        source,
-    })?;
-
     Ok(PublicationResult {
         staging: Some(staging),
         kind: selected.role.publication_kind(),
         package: selected.package,
         version: selected.version,
         archive,
-        inventory: inventory_path,
-        checksum_file,
         checksum: verified.checksum,
-        source_provenance,
         registry_kind: selected.role.registry_kind().to_owned(),
         bytes: verified.bytes,
-        files: verified.files,
     })
 }
 
@@ -1694,13 +1583,23 @@ fn stage_targetless_carriers(captured: &CapturedSource) -> Result<(), Error> {
 struct CaptureState {
     /// Canonical authored source roots and their staged counterparts.
     locations: BTreeMap<PathBuf, PathBuf>,
-    /// Content identities already assigned a staged external location.
-    digests: BTreeMap<String, PathBuf>,
+    /// Next unique directory within this one temporary capture.
+    next_external_id: usize,
     /// External staged roots that must not become selected-package archive
     /// content.
     excluded_paths: BTreeSet<PathBuf>,
     /// External owning workspaces already captured into the staging tree.
     workspaces: BTreeMap<PathBuf, ExternalWorkspace>,
+}
+
+impl CaptureState {
+    fn external_root(&mut self, staging_root: &Path) -> PathBuf {
+        let id = self.next_external_id;
+        self.next_external_id += 1;
+        staging_root
+            .join("_phoxal_path_dependencies")
+            .join(format!("external-{id}"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2011,18 +1910,7 @@ fn capture_external_workspace(
     let (staged_root, manifest) = if let Some(workspace) = state.workspaces.get(&workspace_root) {
         (workspace.staged_root.clone(), workspace.manifest.clone())
     } else {
-        let digest = digest_source_tree(&workspace_root)?;
-        let staged_root = staging_root.join("_phoxal_path_dependencies").join(digest);
-        if staged_root.exists() {
-            return Err(PublicationError::CaptureSource {
-                path: staged_root,
-                source: io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "staged workspace content identity collides",
-                ),
-            }
-            .into());
-        }
+        let staged_root = state.external_root(staging_root);
         let mut manifest = read_manifest(&workspace_root.join("Cargo.toml"))?;
         let relative = package_root
             .strip_prefix(&workspace_root)
@@ -2260,28 +2148,11 @@ fn capture_path_dependencies(
                         copy_tree(&canonical, &staged, false)?;
                         staged
                     } else {
-                        let digest = digest_source_tree(&canonical)?;
-                        if let Some(existing) = state.digests.get(&digest) {
-                            existing.clone()
-                        } else {
-                            let destination =
-                                staging_root.join("_phoxal_path_dependencies").join(&digest);
-                            if destination.exists() {
-                                return Err(PublicationError::CaptureSource {
-                                    path: destination,
-                                    source: io::Error::new(
-                                        io::ErrorKind::AlreadyExists,
-                                        "staged path dependency content identity collides",
-                                    ),
-                                }
-                                .into());
-                            }
-                            validate_cargo_config(&canonical.join(".cargo"))?;
-                            copy_tree(&canonical, &destination, false)?;
-                            state.digests.insert(digest, destination.clone());
-                            state.excluded_paths.insert(destination.clone());
-                            destination
-                        }
+                        let destination = state.external_root(staging_root);
+                        validate_cargo_config(&canonical.join(".cargo"))?;
+                        copy_tree(&canonical, &destination, false)?;
+                        state.excluded_paths.insert(destination.clone());
+                        destination
                     };
                     state.locations.insert(canonical.clone(), staged.clone());
                     if !staged.exists() {
@@ -3024,255 +2895,6 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(files)
 }
 
-fn digest_source_tree(root: &Path) -> Result<String, Error> {
-    let mut files = walk_files(root)?;
-    files.sort();
-    let mut tree = Sha256::new();
-    for path in files {
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|_| PublicationError::CaptureSource {
-                path: path.clone(),
-                source: io::Error::other("source file escaped its selected root"),
-            })?;
-        let relative = path_string(relative);
-        tree.update((relative.len() as u64).to_be_bytes());
-        tree.update(relative.as_bytes());
-        let mut file = File::open(&path).map_err(|source| PublicationError::CaptureSource {
-            path: path.clone(),
-            source,
-        })?;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read =
-                file.read(&mut buffer)
-                    .map_err(|source| PublicationError::CaptureSource {
-                        path: path.clone(),
-                        source,
-                    })?;
-            if read == 0 {
-                break;
-            }
-            tree.update((read as u64).to_be_bytes());
-            tree.update(&buffer[..read]);
-        }
-    }
-    Ok(format!("{:x}", tree.finalize()))
-}
-
-fn authored_source_provenance(
-    selected: &SelectedPackage,
-    digest: &str,
-) -> Result<PublicationSourceProvenance, Error> {
-    let Some((repository, revision, subdirectory)) = git_identity(&selected.source_root)? else {
-        return Ok(PublicationSourceProvenance {
-            origin: "local".to_owned(),
-            path: ".".to_owned(),
-            digest: digest.to_owned(),
-            preparation: "none".to_owned(),
-            repository: None,
-            revision: None,
-            subdirectory: None,
-            derived_files: Vec::new(),
-            staged_files: Vec::new(),
-        });
-    };
-    Ok(PublicationSourceProvenance {
-        origin: "git".to_owned(),
-        path: ".".to_owned(),
-        digest: digest.to_owned(),
-        preparation: "none".to_owned(),
-        repository,
-        revision: Some(revision),
-        subdirectory: Some(subdirectory),
-        derived_files: Vec::new(),
-        staged_files: Vec::new(),
-    })
-}
-
-fn git_identity(package_root: &Path) -> Result<Option<(Option<String>, String, String)>, Error> {
-    let Some(git_root) = git_output(package_root, &["rev-parse", "--show-toplevel"]) else {
-        return Ok(None);
-    };
-    let git_root = PathBuf::from(git_root).canonicalize().map_err(|source| {
-        PublicationError::CaptureSource {
-            path: package_root.to_owned(),
-            source,
-        }
-    })?;
-    let package_root =
-        package_root
-            .canonicalize()
-            .map_err(|source| PublicationError::CaptureSource {
-                path: package_root.to_owned(),
-                source,
-            })?;
-    let Some(subdirectory) = package_root.strip_prefix(&git_root).ok() else {
-        return Ok(None);
-    };
-    let Some(revision) = git_output(&package_root, &["rev-parse", "HEAD"]) else {
-        return Ok(None);
-    };
-    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Ok(None);
-    }
-    let status = git_status(&git_root)?;
-    if !status.is_empty() {
-        return Ok(None);
-    }
-    let repository = git_output(&git_root, &["config", "--get", "remote.origin.url"])
-        .map(|repository| safe_git_repository(&repository, &package_root));
-    let repository = match repository {
-        Some(Ok(repository)) => repository,
-        Some(Err(error)) => return Err(error),
-        None => None,
-    };
-    Ok(Some((repository, revision, path_string(subdirectory))))
-}
-
-fn safe_git_repository(repository: &str, path: &Path) -> Result<Option<String>, Error> {
-    let repository = repository
-        .split_once('?')
-        .map_or(repository, |(repository, _)| repository);
-    if let Some(authority) = repository.split_once("://").map(|(_, rest)| rest)
-        && authority
-            .split_once('/')
-            .map_or(authority, |(authority, _)| authority)
-            .contains('@')
-    {
-        return Err(PublicationError::UnsafeGitIdentity {
-            path: path.to_owned(),
-            message: "Git remote URL contains credentials".to_owned(),
-        }
-        .into());
-    }
-    if repository.starts_with("file:") || repository.starts_with('/') {
-        return Ok(None);
-    }
-    Ok(Some(repository.to_owned()))
-}
-
-fn git_output(directory: &Path, arguments: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(arguments)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (!value.is_empty()).then_some(value)
-}
-
-fn git_status(directory: &Path) -> Result<Vec<String>, Error> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(["status", "--porcelain", "--untracked-files=all"])
-        .output()
-        .map_err(|source| PublicationError::CaptureSource {
-            path: directory.to_owned(),
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(PublicationError::CaptureSource {
-            path: directory.to_owned(),
-            source: io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-        }
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let path = line.get(3..)?.trim();
-            let path = path.rsplit_once(" -> ").map_or(path, |(_, path)| path);
-            let file_name = Path::new(path).file_name().and_then(|name| name.to_str());
-            (!matches!(file_name, Some(".cargo-ok" | ".cargo_vcs_info.json")))
-                .then_some(line.to_owned())
-        })
-        .collect())
-}
-
-fn carrier_files(captured: &CapturedSource) -> Result<Vec<PublicationFile>, Error> {
-    let root =
-        captured
-            .manifest
-            .parent()
-            .ok_or_else(|| PublicationError::MissingPackageManifest {
-                path: captured.manifest.clone(),
-            })?;
-    let path = root.join(GENERATED_LIB);
-    let bytes = fs::metadata(&path)
-        .map_err(|source| PublicationError::CaptureSource {
-            path: path.clone(),
-            source,
-        })?
-        .len();
-    Ok(vec![PublicationFile {
-        path: GENERATED_LIB.to_owned(),
-        bytes,
-        sha256: archive_checksum(&path)?,
-    }])
-}
-
-fn staged_context_files(staging_root: &Path) -> Result<Vec<PublicationFile>, Error> {
-    let mut paths = walk_files(staging_root)?;
-    paths.retain(|path| {
-        let relative = path.strip_prefix(staging_root).unwrap_or(path);
-        let relative = path_string(relative);
-        relative == "Cargo.toml"
-            || relative == "Cargo.lock"
-            || relative.ends_with("/Cargo.toml")
-            || relative.ends_with("/Cargo.lock")
-            || relative.starts_with(".cargo/")
-            || relative == GENERATED_LIB
-    });
-    paths.sort();
-    paths
-        .into_iter()
-        .map(|path| {
-            let relative =
-                path.strip_prefix(staging_root)
-                    .map_err(|_| PublicationError::CaptureSource {
-                        path: path.clone(),
-                        source: io::Error::other("staged context file escaped staging root"),
-                    })?;
-            let digest = digest_publication_file(&path)?;
-            Ok(PublicationFile {
-                path: path_string(relative),
-                bytes: digest.0,
-                sha256: digest.1,
-            })
-        })
-        .collect()
-}
-
-fn digest_publication_file(path: &Path) -> Result<(u64, String), Error> {
-    let mut file = File::open(path).map_err(|source| PublicationError::CaptureSource {
-        path: path.to_owned(),
-        source,
-    })?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|source| PublicationError::CaptureSource {
-                path: path.to_owned(),
-                source,
-            })?;
-        if read == 0 {
-            break;
-        }
-        bytes += read as u64;
-        hasher.update(&buffer[..read]);
-    }
-    Ok((bytes, format!("{:x}", hasher.finalize())))
-}
-
 fn package_with_cargo(package: &str, captured: &CapturedSource) -> Result<PathBuf, Error> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let target = captured.workspace_root.join("target");
@@ -3343,24 +2965,6 @@ fn package_version(manifest: &Path) -> Result<String, Error> {
 struct VerifiedArchive {
     checksum: String,
     bytes: u64,
-    files: Vec<PublicationFile>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "schema")]
-enum InventoryDocument {
-    #[serde(rename = "phoxal/publication/v0")]
-    V0 {
-        kind: PublicationKind,
-        package: String,
-        version: String,
-        source_root: String,
-        archive: String,
-        checksum: String,
-        bytes: u64,
-        files: Vec<PublicationFile>,
-        source: PublicationSourceProvenance,
-    },
 }
 
 fn verify_archive(
@@ -3392,7 +2996,6 @@ fn verify_archive(
     let decoder = GzDecoder::new(file);
     let mut archive = Archive::new(decoder);
     let mut paths = BTreeSet::new();
-    let mut files = Vec::new();
     let mut cargo_manifest = None;
     let mut total = 0_u64;
     let entries = archive
@@ -3411,7 +3014,7 @@ fn verify_archive(
             }
         })?;
         let relative_string = path_string(&relative);
-        if !paths.insert(path.clone()) {
+        if !paths.insert(relative_string.clone()) {
             return Err(PublicationError::InvalidArchive {
                 path: archive_path.to_owned(),
                 message: format!("duplicate archive path {relative_string}"),
@@ -3444,7 +3047,6 @@ fn verify_archive(
             }
             .into());
         }
-        let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 64 * 1024];
         let mut read_bytes = 0_u64;
         let mut manifest_bytes = Vec::new();
@@ -3463,7 +3065,6 @@ fn verify_archive(
                 }
                 .into());
             }
-            hasher.update(&buffer[..count]);
             if relative_string == "Cargo.toml" {
                 if manifest_bytes.len() + count > MAX_MANIFEST_BYTES as usize {
                     return Err(PublicationError::InvalidArchive {
@@ -3486,13 +3087,7 @@ fn verify_archive(
         if relative_string == "Cargo.toml" {
             cargo_manifest = Some(manifest_bytes);
         }
-        files.push(PublicationFile {
-            path: relative_string,
-            bytes: read_bytes,
-            sha256: format!("{:x}", hasher.finalize()),
-        });
     }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
     let Some(cargo_manifest) = cargo_manifest else {
         return Err(PublicationError::InvalidArchive {
             path: archive_path.to_owned(),
@@ -3526,10 +3121,7 @@ fn verify_archive(
         }
         .into());
     }
-    let archived_paths = files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect::<BTreeSet<_>>();
+    let archived_paths = paths.iter().map(String::as_str).collect::<BTreeSet<_>>();
     for expected in expected_assets {
         if !archived_paths.contains(expected.as_str()) {
             return Err(PublicationError::MissingArchivedAsset {
@@ -3551,7 +3143,6 @@ fn verify_archive(
     Ok(VerifiedArchive {
         checksum,
         bytes: archive_bytes,
-        files,
     })
 }
 
@@ -3613,21 +3204,34 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn file_name(path: &Path) -> Result<String, Error> {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .ok_or_else(|| {
-            PublicationError::InvalidArchive {
-                path: path.to_owned(),
-                message: "archive path has no file name".to_owned(),
-            }
-            .into()
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn archive_paths(result: &PublicationResult) -> Result<BTreeSet<String>, Error> {
+        let file =
+            File::open(result.archive()).map_err(|source| PublicationError::CaptureSource {
+                path: result.archive().to_owned(),
+                source,
+            })?;
+        let mut archive = Archive::new(GzDecoder::new(file));
+        let root = format!("{}-{}/", result.package(), result.version());
+        let mut paths = BTreeSet::new();
+        for entry in archive
+            .entries()
+            .map_err(|source| invalid_archive(result.archive(), source))?
+        {
+            let entry = entry.map_err(|source| invalid_archive(result.archive(), source))?;
+            let path = entry
+                .path()
+                .map_err(|source| invalid_archive(result.archive(), source))?;
+            let path = path_string(&path);
+            if let Some(relative) = path.strip_prefix(&root) {
+                paths.insert(relative.to_owned());
+            }
+        }
+        Ok(paths)
+    }
 
     fn write(path: &Path, text: &str) -> io::Result<()> {
         if let Some(parent) = path.parent() {
@@ -3686,31 +3290,6 @@ mod tests {
     }
 
     #[test]
-    fn staged_context_provenance_captures_manifests_configuration_and_carrier()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        write(&root.path().join("Cargo.toml"), "[package]\nname = \"x\"\n")?;
-        write(&root.path().join("Cargo.lock"), "version = 4\n")?;
-        write(
-            &root.path().join(".cargo/config.toml"),
-            "[build]\ntarget = \"host\"\n",
-        )?;
-        write(&root.path().join(GENERATED_LIB), "#![no_std]\n")?;
-        write(&root.path().join("src/lib.rs"), "pub struct Authored;\n")?;
-        let files = staged_context_files(root.path())?;
-        let paths = files
-            .iter()
-            .map(|file| file.path.as_str())
-            .collect::<BTreeSet<_>>();
-        assert!(paths.contains("Cargo.toml"));
-        assert!(paths.contains("Cargo.lock"));
-        assert!(paths.contains(".cargo/config.toml"));
-        assert!(paths.contains(GENERATED_LIB));
-        assert!(!paths.contains("src/lib.rs"));
-        Ok(())
-    }
-
-    #[test]
     fn root_package_workspace_publication_is_packaged_as_one_member()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -3729,64 +3308,10 @@ mod tests {
             dry_run: true,
         })?;
         assert!(result.archive().is_file());
-        assert!(
-            result
-                .source_provenance()
-                .staged_files
-                .iter()
-                .any(|file| file.path == "Cargo.toml")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn git_remote_identity_rejects_credentials_and_hides_local_paths()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let init = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(root.path())
-            .output()?;
-        assert!(init.status.success());
-        for arguments in [
-            vec!["config", "user.name", "Phoxal Test"],
-            vec!["config", "user.email", "phoxal@example.invalid"],
-            vec!["remote", "add", "origin", "file:///private/local"],
-        ] {
-            let output = Command::new("git")
-                .args(arguments)
-                .current_dir(root.path())
-                .output()?;
-            assert!(output.status.success());
-        }
-        let manifest = root.path().join("Cargo.toml");
-        write(
-            &manifest,
-            "[package]\nname = \"git-source\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        for arguments in [vec!["add", "."], vec!["commit", "--quiet", "-m", "fixture"]] {
-            let output = Command::new("git")
-                .args(arguments)
-                .current_dir(root.path())
-                .output()?;
-            assert!(output.status.success());
-        }
-        let identity = git_identity(root.path())?.ok_or("Git identity missing")?;
-        assert_eq!(identity.0, None);
-        Command::new("git")
-            .args([
-                "config",
-                "remote.origin.url",
-                "https://user:secret@example.invalid/repo",
-            ])
-            .current_dir(root.path())
-            .output()?;
-        let error = git_identity(root.path()).expect_err("credential URL must be rejected");
-        assert!(matches!(
-            error,
-            Error::Publication(PublicationError::UnsafeGitIdentity { message, .. })
-                if message.contains("credentials")
-        ));
+        assert!(archive_paths(&result)?.contains("Cargo.toml"));
+        let staging = result.staging.as_ref().unwrap().path();
+        assert!(!staging.join("review-inventory.json").exists());
+        assert!(!staging.join("archive.sha256").exists());
         Ok(())
     }
 
@@ -3959,100 +3484,11 @@ mod tests {
         let after = snapshot_tree(directory.path())?;
         assert_eq!(before, after);
         assert!(result.archive().is_file());
-        assert!(result.inventory().is_file());
-        assert!(result.checksum_file().is_file());
-        assert!(result.files().iter().any(|file| file.path == GENERATED_LIB));
-        assert!(
-            result
-                .files()
-                .iter()
-                .any(|file| file.path == "component.yaml")
-        );
-        assert!(
-            result
-                .files()
-                .iter()
-                .any(|file| file.path == "assets/model.txt")
-        );
-        assert!(
-            !result
-                .files()
-                .iter()
-                .any(|file| file.path == "unrelated.txt")
-        );
-        let inventory: serde_json::Value = serde_json::from_slice(&fs::read(result.inventory())?)?;
-        assert_eq!(inventory["checksum"].as_str(), Some(result.checksum()));
-        Ok(())
-    }
-
-    #[test]
-    fn targetless_git_carrier_records_commit_and_derived_bytes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let repository = tempfile::tempdir()?;
-        let package_root = repository.path().join("components/passive");
-        write(
-            &package_root.join("Cargo.toml"),
-            "[package]\nname = \"git-passive\"\nversion = \"0.1.0\"\nedition = \"2024\"\ndescription = \"Git passive component\"\nlicense = \"MIT\"\n",
-        )?;
-        write(
-            &package_root.join("component.yaml"),
-            "schema: phoxal/component/v0\n",
-        )?;
-        let init = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(repository.path())
-            .output()?;
-        assert!(init.status.success());
-        for arguments in [
-            vec!["config", "user.name", "Phoxal Test"],
-            vec!["config", "user.email", "phoxal@example.invalid"],
-            vec!["add", "."],
-            vec!["commit", "--quiet", "-m", "fixture"],
-        ] {
-            let output = Command::new("git")
-                .args(arguments)
-                .current_dir(repository.path())
-                .output()?;
-            assert!(
-                output.status.success(),
-                "git command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let revision = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(repository.path())
-                .output()?
-                .stdout,
-        )?
-        .trim()
-        .to_owned();
-        let before = snapshot_tree(&package_root)?;
-        let result = prepare_publication(&PublicationOptions {
-            kind: PublicationKind::Component,
-            name: "git-passive".to_owned(),
-            path: Some(package_root.clone()),
-            dry_run: true,
-        })?;
-        assert_eq!(snapshot_tree(&package_root)?, before);
-        let provenance = result.source_provenance();
-        assert_eq!(provenance.origin, "git");
-        assert_eq!(provenance.revision.as_deref(), Some(revision.as_str()));
-        assert_eq!(
-            provenance.subdirectory.as_deref(),
-            Some("components/passive")
-        );
-        assert_eq!(provenance.preparation, "targetless-cargo-carrier/v0");
-        assert_eq!(provenance.derived_files.len(), 1);
-        assert_eq!(provenance.derived_files[0].path, GENERATED_LIB);
-        assert!(result.files().iter().any(|file| file.path == GENERATED_LIB));
-        let inventory: serde_json::Value = serde_json::from_slice(&fs::read(result.inventory())?)?;
-        assert_eq!(inventory["source"]["origin"].as_str(), Some("git"));
-        assert_eq!(
-            inventory["source"]["revision"].as_str(),
-            Some(revision.as_str())
-        );
+        let paths = archive_paths(&result)?;
+        assert!(paths.contains(GENERATED_LIB));
+        assert!(paths.contains("component.yaml"));
+        assert!(paths.contains("assets/model.txt"));
+        assert!(!paths.contains("unrelated.txt"));
         Ok(())
     }
 
@@ -4077,14 +3513,10 @@ mod tests {
             dry_run: true,
         })?;
         assert_eq!(result.kind(), PublicationKind::Service);
-        assert!(
-            result
-                .files()
-                .iter()
-                .any(|file| file.path == "api/example.proto")
-        );
-        assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
-        assert!(!result.files().iter().any(|file| file.path == GENERATED_LIB));
+        let paths = archive_paths(&result)?;
+        assert!(paths.contains("api/example.proto"));
+        assert!(paths.contains("src/main.rs"));
+        assert!(!paths.contains(GENERATED_LIB));
         Ok(())
     }
 
@@ -4115,8 +3547,9 @@ mod tests {
             path: Some(directory.path().join("services/example")),
             dry_run: true,
         })?;
-        assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
-        assert!(result.files().iter().any(|file| file.path == "LICENSE"));
+        let paths = archive_paths(&result)?;
+        assert!(paths.contains("src/main.rs"));
+        assert!(paths.contains("LICENSE"));
         Ok(())
     }
 
@@ -4146,7 +3579,7 @@ mod tests {
             path: Some(directory.path().join("cargo")),
             dry_run: true,
         })?;
-        assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
+        assert!(archive_paths(&result)?.contains("src/main.rs"));
         Ok(())
     }
 

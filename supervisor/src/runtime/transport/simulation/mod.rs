@@ -19,7 +19,7 @@ use phoxal::communication::simulation::{
 use phoxal::communication::{PublicOperation, PublicRoute};
 use prost::Message;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -48,40 +48,23 @@ pub(crate) struct SimulationAuthority {
     quantum_ns: u64,
     boundary: u64,
     lease_deadline: Instant,
-    /// Retained phase receipts, bounded by the negotiated byte cap.
-    phase_receipts: VecDeque<RetainedSimulationPhase>,
     /// The currently executing transition, if a phase is awaiting a backend
     /// result.  A second transition cannot overtake it.
     in_flight: Option<TransitionKey>,
-    /// Highest accepted transition sequence, retained after receipt eviction.
+    /// Highest completed transition sequence.
     accepted_sequence_watermark: u64,
     max_product_bytes: usize,
     max_cut_bytes: usize,
-    receipt_byte_cap: usize,
     active_phase: Option<PublicOperation>,
     failure: Option<String>,
     resetting: bool,
-    retained_reset: Option<(ResetRequest, ResetResponse)>,
-}
-
-#[derive(Clone, Debug)]
-struct RetainedSimulationPhase {
-    operation: PublicOperation,
-    transition_key: TransitionKey,
-    correlation_id: Vec<u8>,
-    request_digest: [u8; 32],
-    response: Vec<u8>,
-    status: phoxal::communication::simulation::PhaseStatus,
-    bytes: usize,
 }
 
 const SIMULATION_AUTHORITY_LEASE: Duration = Duration::from_secs(30);
 const SIMULATION_GRANT_BYTES: usize = 32;
 const MAX_SIMULATION_CORRELATION_BYTES: usize = 64;
-const MAX_RETAINED_SIMULATION_PHASES: usize = 64;
 const MAX_SIMULATION_PRODUCT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_SIMULATION_CUT_BYTES: usize = 8 * 1024 * 1024;
-const DEFAULT_SIMULATION_RECEIPT_BYTE_CAP: usize = 512 * 1024;
 #[derive(Clone, Debug)]
 struct SimulationPhaseAdmission {
     adapter: Arc<Mutex<SupervisorAdapter>>,
@@ -90,7 +73,6 @@ struct SimulationPhaseAdmission {
     started: Instant,
     context: PublicSimulationContext,
     transition_key: TransitionKey,
-    request_digest: [u8; 32],
     definition: crate::runtime::adapter::SimulationDefinition,
     operation: PublicOperation,
 }
