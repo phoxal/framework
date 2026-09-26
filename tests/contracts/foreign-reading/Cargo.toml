@@ -1,0 +1,23 @@
+[package]
+name = "phoxal-foreign-reading-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Foreign-vocabulary observation source for the projection proof."
+include = ["api/**", "service.yaml", "build.rs", "src/**", "Cargo.toml", "Cargo.lock"]
+
+[[bin]]
+name = "phoxal-foreign-reading-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["contract", "runtime", "robotics"] }
+serde = { workspace = true }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[lints]
+workspace = true

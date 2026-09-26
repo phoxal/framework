@@ -1173,9 +1173,9 @@ where
             &resolve_input_port,
             self.instance.as_deref().unwrap_or_default(),
         )?;
-        let mut generated_correlations = Vec::new();
+        let mut generated_correlations: Vec<(u64, GeneratedCorrelation)> = Vec::new();
         for record in &mut transient {
-            let Some((target, signature, ticket, payload_bytes, request)) =
+            let Some((staged_target, signature, ticket, payload_bytes, request)) =
                 record.generated_identity()
             else {
                 continue;
@@ -1185,6 +1185,20 @@ where
                     detail: "generated operation has no admitted launch manifest".to_owned(),
                 })
             })?;
+            let (target, signature) = if staged_target.is_empty() {
+                // A local requirement handle: composition resolves the
+                // destination and the provider's actual endpoint identity
+                // through this runtime's own connection.  The request is
+                // re-signed so keys and replies use the provider's spelling
+                // while the ticket stays the consumer's own.
+                let (resolved, provider_signature) =
+                    manifest.resolve_requirement_destination(&signature)?;
+                record.retarget_instance(&resolved);
+                record.retarget_signature(provider_signature);
+                (resolved, provider_signature)
+            } else {
+                (staged_target, signature)
+            };
             let route = manifest.generated_call_route(&target, signature)?;
             if payload_bytes as u64 > route.request_max_bytes {
                 return Err(anyhow::anyhow!(TransportError::BodyTooLarge {
@@ -1204,6 +1218,32 @@ where
                             signature.service, signature.method
                         ),
                     }));
+                }
+                // Sender-side flow control: a caller that outpaces its
+                // receiver's completions fails visibly here, at its own
+                // reservation, instead of overflowing the receiver's declared
+                // ingress bound in a distant process.  Outstanding counts the
+                // provider's still-unreplied requests plus everything staged
+                // earlier in this same reservation.
+                if let Some(correlations) = &self.generated_correlations {
+                    let outstanding = correlations
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .values()
+                        .filter(|pending| pending.endpoint == signature.name)
+                        .count()
+                        + generated_correlations
+                            .iter()
+                            .filter(|(_, pending)| pending.endpoint == signature.name)
+                            .count();
+                    if outstanding as u64 >= route.max_outstanding {
+                        return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                            port: signature.name.to_owned(),
+                            what: "outstanding generated calls",
+                            actual: outstanding as u64 + 1,
+                            maximum: route.max_outstanding,
+                        }));
+                    }
                 }
                 let caller_rank = route.caller_rank.ok_or_else(|| {
                     anyhow::anyhow!(TransportError::InvalidMetadata {

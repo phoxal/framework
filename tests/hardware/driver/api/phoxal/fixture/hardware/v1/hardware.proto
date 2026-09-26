@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package phoxal.fixture.hardware.v1;
 
-import "google/protobuf/empty.proto";
-import "phoxal/api.proto";
 
 message FixtureObservation {
   uint64 acquisition_sequence = 1;
@@ -12,13 +10,4 @@ message FixtureObservation {
 
 message FixtureSetpoint {
   double velocity_radps = 1;
-}
-
-service HardwareFixture {
-  rpc Observations(google.protobuf.Empty) returns (stream FixtureObservation) {
-  }
-
-  rpc Actuator(google.protobuf.Empty) returns (stream FixtureSetpoint) {
-    option (phoxal.api.lease) = { valid_for_ms: 100 };
-  }
 }

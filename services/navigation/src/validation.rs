@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
-use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
-use crate::api::__contracts::phoxal::world::v1::WorldRevision;
-use crate::api::navigation::v1::{
+use crate::api::types::phoxal::kinematics::v1::OdometryState;
+use crate::api::types::phoxal::navigation::v1::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
     UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
 };
+use crate::api::types::phoxal::world::v1::WorldRevision;
 
 pub const MAX_ID_BYTES: usize = 64;
 pub const TERMINAL_RESULT_RETENTION: usize = 256;

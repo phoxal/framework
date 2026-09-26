@@ -3,6 +3,7 @@
 use super::{ArtifactContract, Error, InputRole, MethodShape};
 use crate::project::document::{PortReference, RobotDocument};
 use phoxal::artifact::RuntimeRecord;
+use phoxal::artifact::document::ConnectionSources;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -67,6 +68,12 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                 producer: String::new(),
                 message: "consumer input is absent from the runtime artifact".to_owned(),
             })?;
+        if matches!(sources, ConnectionSources::Projection(_)) {
+            // The foreign message identity deliberately differs; the
+            // declaration check and the compiled bundle projection carry the
+            // validated mapping and its descriptor closures instead.
+            continue;
+        }
         if sources.as_slice().is_empty()
             || (matches!(
                 input.role,
@@ -74,6 +81,7 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     | InputRole::LeasedValue
                     | InputRole::CallResult
                     | InputRole::CallTarget
+                    | InputRole::CallCompletions
             ) && sources.as_slice().len() != 1)
         {
             return Err(Error::InvalidConnection {
@@ -110,7 +118,10 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                 transient_outputs,
                 ..
             } = &producer_contract.runtime;
-            let signature = if input.role == InputRole::CallTarget {
+            let signature = if matches!(
+                input.role,
+                InputRole::CallTarget | InputRole::CallCompletions
+            ) {
                 producer_inputs
                     .iter()
                     .find(|input| {
@@ -143,26 +154,69 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     ),
                 });
             }
-            if input
-                .request_fqn
-                .as_ref()
-                .is_some_and(|request| request != &signature.request)
-                || input
-                    .response_fqn
+            let payload_matches = if input.role == InputRole::LeasedValue {
+                // A leased setpoint flows producer -> consumer; its payload
+                // rides the request side of a call-shaped signature and the
+                // response side of an observation-shaped one.
+                let consumer_payload =
+                    [input.request_fqn.as_deref(), input.response_fqn.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .find(|fqn| *fqn != "google.protobuf.Empty");
+                let producer_payload = if signature.shape == MethodShape::Call {
+                    &signature.request
+                } else {
+                    &signature.response
+                };
+                consumer_payload == Some(producer_payload.as_str())
+            } else {
+                input
+                    .request_fqn
                     .as_ref()
-                    .is_some_and(|response| response != &signature.response)
-            {
+                    .is_none_or(|request| request == &signature.request)
+                    && input
+                        .response_fqn
+                        .as_ref()
+                        .is_none_or(|response| response == &signature.response)
+            };
+            if !payload_matches {
                 return Err(Error::InvalidConnection { consumer: consumer_text.clone(), producer: producer_text.clone(),
                     message: "generated Protobuf request or response type differs from the consumer input".into() });
             }
-            if let Some(input_signature) = &input.signature
-                && input_signature != signature
-            {
-                return Err(Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: "request, response, service, or method identity differs".to_owned(),
-                });
+            if let Some(input_signature) = &input.signature {
+                // A required operation compares its declared contract identity
+                // and exchange messages; the enclosing services and the local
+                // endpoint spellings may differ on either side of the binding.
+                // A leased setpoint compares its payload identity and lease
+                // interval across the shape difference.  Every other role
+                // keeps the full-signature comparison.
+                let compatible = if input.role == InputRole::CallCompletions {
+                    input_signature.service == signature.service
+                        && input_signature.request == signature.request
+                        && input_signature.response == signature.response
+                        && input_signature.shape == signature.shape
+                } else if input.role == InputRole::LeasedValue {
+                    input_signature.lease_valid_for_ms == signature.lease_valid_for_ms
+                        && [
+                            input_signature.request.as_str(),
+                            input_signature.response.as_str(),
+                        ]
+                        .contains(&if signature.shape == MethodShape::Call {
+                            signature.request.as_str()
+                        } else {
+                            signature.response.as_str()
+                        })
+                } else {
+                    *input_signature == *signature
+                };
+                if !compatible {
+                    return Err(Error::InvalidConnection {
+                        consumer: consumer_text.clone(),
+                        producer: producer_text.clone(),
+                        message: "request, response, service, or method identity differs"
+                            .to_owned(),
+                    });
+                }
             }
         }
     }
@@ -174,11 +228,12 @@ fn input_method_shape(role: InputRole) -> Option<MethodShape> {
         InputRole::ObservationLatest | InputRole::ObservationHistory => {
             Some(MethodShape::Observation)
         }
-        InputRole::CallIngress | InputRole::CallTarget | InputRole::CallResult => {
-            Some(MethodShape::Call)
-        }
+        InputRole::CallIngress
+        | InputRole::CallTarget
+        | InputRole::CallResult
+        | InputRole::CallCompletions => Some(MethodShape::Call),
         InputRole::LeasedValue => None,
-        InputRole::OperationResult | InputRole::CallCompletions => None,
+        InputRole::OperationResult => None,
     }
 }
 

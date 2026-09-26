@@ -10,3 +10,10 @@ capabilities:
     target:
       kind: site
       id: sensor_site
+
+outputs:
+  range:
+    delivery: queue
+    max_bytes: 512
+    max_items: 16
+    type: phoxal.robotics.v1.RangeSample

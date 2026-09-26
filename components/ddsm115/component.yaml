@@ -23,3 +23,19 @@ capabilities:
     target:
       kind: joint
       id: motor_joint
+
+inputs:
+  actuator:
+    delivery: latest
+    lease:
+      valid_for_ms: 100
+    max_bytes: 1024
+    required: true
+    type: phoxal.motion.v1.ActuatorSetpoint
+
+outputs:
+  encoder:
+    delivery: queue
+    max_bytes: 8192
+    max_items: 16
+    type: phoxal.robotics.v1.EncoderSample

@@ -10,9 +10,7 @@ use phoxal::runtime::{
 };
 
 use super::*;
-use crate::api::__contracts::phoxal::fixture::hardware::v1::{
-    FixtureObservation, FixtureSetpoint, hardware_fixture,
-};
+use crate::api::types::phoxal::fixture::hardware::v1::{FixtureObservation, FixtureSetpoint};
 use phoxal::contract::{MethodDescriptor, MethodShape};
 use phoxal::runtime::{
     Sample,
@@ -219,9 +217,12 @@ struct FixtureInputSource {
 }
 
 impl InputSource<HardwareFixtureDriver> for FixtureInputSource {
-    fn freeze(&mut self, _candidate: &HardwareInvocation) -> phoxal::Result<HardwareFixtureInputs> {
-        Ok(HardwareFixtureInputs {
-            observations: self.device.drain_observations(),
+    fn freeze(
+        &mut self,
+        _candidate: &HardwareInvocation,
+    ) -> phoxal::Result<super::phoxal_provider::Inputs> {
+        Ok(super::phoxal_provider::Inputs {
+            acquired: self.device.drain_observations(),
             actuator: self.device.input_setpoint(),
         })
     }
@@ -237,10 +238,15 @@ struct FixtureOutputSink {
     stopped: bool,
 }
 
-impl OutputAdmission<HardwareFixtureOutputs> for FixtureOutputSink {
+impl OutputAdmission<<HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs>
+    for FixtureOutputSink
+{
     type Reservation = usize;
 
-    fn reserve(&mut self, outputs: &HardwareFixtureOutputs) -> phoxal::Result<Self::Reservation> {
+    fn reserve(
+        &mut self,
+        outputs: &<HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs,
+    ) -> phoxal::Result<Self::Reservation> {
         if outputs.observations.len() > 16 {
             anyhow::bail!("fixture output capacity exhausted");
         }
@@ -251,7 +257,10 @@ impl OutputAdmission<HardwareFixtureOutputs> for FixtureOutputSink {
 impl OutputSink<HardwareFixtureDriver> for FixtureOutputSink {
     fn publish(
         &mut self,
-        accepted: AcceptedInvocation<HardwareFixtureOutputs, Self::Reservation>,
+        accepted: AcceptedInvocation<
+            <HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs,
+            Self::Reservation,
+        >,
     ) -> phoxal::Result<()> {
         self.device.published_observations.fetch_add(
             accepted.outputs().observations.len() as u64,
@@ -291,27 +300,35 @@ fn runner(
 #[test]
 fn generated_contract_owns_the_fixture_methods() {
     assert_eq!(
-        hardware_fixture::methods::OBSERVATIONS.signature().endpoint,
+        crate::api::service_methods::u0::OBSERVATIONS
+            .signature()
+            .endpoint,
         "observations"
     );
     assert_eq!(
-        hardware_fixture::methods::ACTUATOR.signature().endpoint,
+        crate::api::service_methods::u0::ACTUATOR
+            .signature()
+            .endpoint,
         "actuator"
     );
     assert_eq!(
-        hardware_fixture::methods::OBSERVATIONS.signature().service,
-        "phoxal.fixture.hardware.v1.HardwareFixture"
+        crate::api::service_methods::u0::OBSERVATIONS
+            .signature()
+            .service,
+        "phoxal.fixture.hardware.v1.FixtureObservation"
     );
     assert_eq!(
-        hardware_fixture::methods::OBSERVATIONS.signature().shape,
+        crate::api::service_methods::u0::OBSERVATIONS
+            .signature()
+            .shape,
         MethodShape::Observation
     );
     assert_eq!(
-        hardware_fixture::methods::ACTUATOR.signature().shape,
-        MethodShape::Observation
+        crate::api::service_methods::u0::ACTUATOR.signature().shape,
+        MethodShape::Call
     );
     assert_eq!(
-        hardware_fixture::methods::ACTUATOR
+        crate::api::service_methods::u0::ACTUATOR
             .signature()
             .lease
             .expect("actuator lease")
@@ -319,13 +336,13 @@ fn generated_contract_owns_the_fixture_methods() {
         100
     );
     assert!(
-        !hardware_fixture::methods::OBSERVATIONS
+        !crate::api::service_methods::u0::OBSERVATIONS
             .signature()
             .descriptor_set()
             .is_empty()
     );
     assert!(
-        !hardware_fixture::methods::OBSERVATIONS
+        !crate::api::service_methods::u0::OBSERVATIONS
             .signature()
             .descriptor_set()
             .is_empty()

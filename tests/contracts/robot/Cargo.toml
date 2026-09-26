@@ -1,0 +1,28 @@
+[package]
+name = "phoxal-contract-robot-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Composed robot fixture for the manifest service evaluation."
+
+[[bin]]
+name = "contract-robot-brain"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["contract", "runtime", "robotics"] }
+phoxal-supervisor = { path = "../../../supervisor" }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[dev-dependencies]
+phoxal = { workspace = true, features = ["session"] }
+tokio = { workspace = true }
+libc = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

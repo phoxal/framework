@@ -1,0 +1,54 @@
+[package]
+name = "phoxal-supervisor-runtime-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Compiled Runtime and supervisor acceptance suites for the process boundary."
+include = [
+    "api/**",
+    "service.yaml",
+    "build.rs",
+    "src/**",
+    "tests/**",
+    "Cargo.toml",
+    "Cargo.lock",
+]
+
+[[bin]]
+name = "supervisor-test-runtime"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["contract", "runtime"] }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[dev-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["session"] }
+anyhow.workspace = true
+libc.workspace = true
+prost-reflect.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
+
+[features]
+test-fixtures = []
+
+[[test]]
+name = "runtime_process"
+path = "tests/runtime_process.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "public_session"
+path = "tests/public_session.rs"
+required-features = ["test-fixtures"]

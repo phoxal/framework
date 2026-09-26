@@ -1,0 +1,21 @@
+[package]
+name = "phoxal-contract-client-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Contract-only client of the manifest-authored consumer service."
+
+[[bin]]
+name = "phoxal-contract-client-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["contract", "robotics"] }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[lints]
+workspace = true

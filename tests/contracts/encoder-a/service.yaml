@@ -1,0 +1,21 @@
+schema: phoxal/service/v0
+
+outputs:
+  encoder:
+    type: phoxal.robotics.v1.EncoderSample
+    delivery: latest
+    retained_latest: true
+    max_bytes: 1024
+  ticks:
+    type: phoxal.robotics.v1.EncoderSample
+    delivery: queue
+    max_items: 4
+    max_bytes: 4096
+
+operations:
+  read_encoder:
+    contract: example.contract_evaluation.v1.ReadEncoder
+    request: google.protobuf.Empty
+    response: phoxal.robotics.v1.EncoderSample
+    max_items: 8
+    max_bytes: 1024

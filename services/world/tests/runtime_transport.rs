@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use phoxal::contract::MethodDescriptor;
 use phoxal::identity::ExecutionId;
@@ -17,8 +17,8 @@ use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireSample};
 use phoxal::runtime::{ExecutionTime, ObservationStamp};
 phoxal::api!();
 
-use api::__contracts::phoxal::kinematics::v1::OdometryState;
-use api::world::v1::{Bounds, WindowRequest, WindowResponse, window_response, world};
+use api::types::phoxal::kinematics::v1::OdometryState;
+use api::types::phoxal::world::v1::{Bounds, WindowRequest, WindowResponse, window_response};
 use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -159,8 +159,15 @@ async fn admit_world(
     panic!("world runtime did not answer admission");
 }
 
-async fn publish_odometry(bus: &Connection, sequence: u64, elapsed: Duration) {
-    let capture = ExecutionTime::from(elapsed);
+async fn publish_odometry(bus: &Connection, sequence: u64) {
+    // A real provider runtime stamps captures with its wall-anchored clock;
+    // the synthetic publisher mirrors that so freshness compares against the
+    // world runtime's wall-anchored now within the bounded-skew policy.
+    let capture = ExecutionTime::from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock is after the epoch"),
+    );
     let value = OdometryState {
         x_m: 0.2,
         y_m: 0.2,
@@ -206,7 +213,7 @@ async fn query_window(bus: &Connection, replies: &Subscriber, command_id: u64) -
         .put(
             bus.full_key(&transport::port_key(
                 "world",
-                world::methods::WINDOW.signature().endpoint,
+                api::service_methods::u0::WINDOW.signature().endpoint,
                 "request",
             )),
             transport::encode_prost(&request).expect("window request encodes"),
@@ -247,7 +254,7 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
         .expect("session is open")
         .declare_subscriber(bus.full_key(&transport::port_key(
             "world",
-            world::methods::WINDOW.signature().endpoint,
+            api::service_methods::u0::WINDOW.signature().endpoint,
             "reply",
         )))
         .with(zenoh::handlers::FifoChannel::new(8))
@@ -278,10 +285,9 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
     let provider_running = Arc::clone(&running);
     let provider_bus = bus.clone();
     let provider = tokio::spawn(async move {
-        let origin = Instant::now();
         let mut sequence = 1;
         while provider_running.load(Ordering::Acquire) {
-            publish_odometry(&provider_bus, sequence, origin.elapsed()).await;
+            publish_odometry(&provider_bus, sequence).await;
             sequence += 1;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

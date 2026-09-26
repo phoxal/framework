@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package example.foreign.v1;
+
+// Test-only foreign vocabulary: same physical quantities with different
+// names and wire numbers than phoxal.robotics.v1.EncoderSample, plus a
+// harmless extra diagnostics field the mapping deliberately omits.
+message ForeignReading {
+  optional double shaft_rate_radps = 2;
+  optional double shaft_position_rad = 5;
+  optional string diagnostics = 9;
+}

@@ -1,18 +1,17 @@
 mod assessment;
 use assessment::{assess_motion, assess_ranges, assess_world, is_stop_reason, observed_constraint};
 
+use self::phoxal_provider::Inputs as SafetyInputs;
 #[cfg(test)]
 #[cfg(test)]
-use crate::api::__contracts::phoxal::motion::v1::MotionStatus;
-use crate::api::__contracts::phoxal::motion::v1::{
+use crate::api::types::phoxal::motion::v1::MotionStatus;
+use crate::api::types::phoxal::motion::v1::{
     Constraint, ConstraintReason, MotionConstraints, Permission,
 };
+use crate::api::types::phoxal::safety::v1::SafetyStatus;
 #[cfg(test)]
-use crate::api::__contracts::phoxal::world::v1::{WorldBelief, WorldRevision};
-use crate::api::safety::v1::{SafetyStatus, safety};
+use crate::api::types::phoxal::world::v1::{WorldBelief, WorldRevision};
 use crate::config::{SafetyConfig, validate_config};
-use crate::inputs::SafetyInputs;
-use crate::outputs::SafetyOutputs;
 use crate::validation;
 use phoxal::robotics::RangeSample;
 use phoxal::runtime::input::Latest;
@@ -65,8 +64,6 @@ pub struct Safety;
 impl Runtime for Safety {
     type Config = SafetyConfig;
     type State = SafetyState;
-    type Inputs = SafetyInputs;
-    type Outputs = SafetyOutputs;
 
     fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
         validate_config(config)
@@ -125,35 +122,20 @@ impl Runtime for Safety {
             reasons,
         };
         validation::status(&state.status).map_err(|error| anyhow::anyhow!(error))?;
-        Ok((state, ()))
+        Ok((state, Self::Outputs::default()))
     }
 }
 
-#[phoxal::runtime::outputs]
-#[allow(
-    dead_code,
-    reason = "the collected projections are invoked by the transport runner"
-)]
-impl Safety {
+impl crate::api::projections::Projections for Safety {
+    type State = SafetyState;
+
     /// Projects the expiring protective constraints consumed by Motion.
-    #[phoxal::runtime::outputs::state(
-        port = safety::methods::CONSTRAINTS.__state_port(),
-        max_bytes = 4_096,
-        bootstrap,
-        on_change
-    )]
     fn constraints(&self, state: &SafetyState) -> MotionConstraints {
         state.constraints.clone()
     }
 
     /// Projects safety availability and the reasons currently preventing a
     /// clear permission.
-    #[phoxal::runtime::outputs::state(
-        port = safety::methods::STATUS.__state_port(),
-        max_bytes = 1_024,
-        bootstrap,
-        on_change
-    )]
     fn status(&self, state: &SafetyState) -> SafetyStatus {
         state.status.clone()
     }

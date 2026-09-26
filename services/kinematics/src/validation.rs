@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::api::kinematics::v1::{
+use crate::api::types::phoxal::kinematics::v1::{
     FrameTransform, FrameTree, JointState, KinematicsStatus, LookupFrameRequest,
     LookupFrameResponse, OdometryState, UnavailableReason,
 };

@@ -1,0 +1,32 @@
+schema: phoxal/robot/v0
+robot:
+  id: contract-robot
+brain:
+  calls:
+    inspect:
+      contract: example.contract_evaluation.v1.InspectConsumer
+      request: google.protobuf.Empty
+      response: example.contract_evaluation.v1.ConsumerStatus
+      required: true
+      max_items: 8
+      max_bytes: 4096
+  operations:
+    report:
+      contract: example.probe.v1.ProbeReport
+      request: google.protobuf.Empty
+      response: example.probe.v1.ProbeReport
+      max_items: 8
+      max_bytes: 4096
+services:
+  consumer:
+    source: { path: ../consumer }
+  encoder_source:
+    source: { path: ../encoder-a }
+  backup_source:
+    source: { path: ../encoder-b }
+connections:
+  brain.inspect: consumer.inspect
+  consumer.encoder: encoder_source.encoder
+  consumer.ticks: encoder_source.ticks
+  consumer.read_encoder: encoder_source.read_encoder
+  consumer.read_backup: backup_source.measure_encoder

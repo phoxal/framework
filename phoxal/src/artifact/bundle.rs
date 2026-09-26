@@ -41,7 +41,41 @@ pub enum BundleManifest {
         /// assembled for an independent simulator run.
         #[serde(default)]
         simulation: Option<BundleSimulation>,
+        /// Explicit receiver-side observation projections compiled against
+        /// both declarations' descriptors.  Each record carries the two
+        /// descriptor closures the receiving runtime needs to convert the
+        /// foreign payload; observation metadata is preserved untouched.
+        #[serde(default)]
+        projections: Vec<ConnectionProjection>,
     },
+}
+
+/// One compiled explicit observation projection between differently named
+/// message contracts.
+///
+/// The project compiler validates the mapping against both declarations and
+/// stores this self-contained form; the receiving runtime applies it at the
+/// delivery admission boundary without rebuilding the consumer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionProjection {
+    /// Consumer instance whose declared input receives the mapped payload.
+    pub consumer_instance: String,
+    /// Consumer's local input field/endpoint name.
+    pub consumer_field: String,
+    /// Producing instance named by the connection's `from`.
+    pub source_instance: String,
+    /// Producer's local output endpoint name.
+    pub source_port: String,
+    /// Fully-qualified foreign source message.
+    pub source_message: String,
+    /// Fully-qualified declared destination message.
+    pub destination_message: String,
+    /// Destination field path to source field path (top-level scalars).
+    pub map: std::collections::BTreeMap<String, String>,
+    /// Serialized `FileDescriptorSet` closure defining the source message.
+    pub source_descriptors: Vec<u8>,
+    /// Serialized `FileDescriptorSet` closure defining the destination message.
+    pub destination_descriptors: Vec<u8>,
 }
 
 /// The simulator-facing facts selected while assembling one robot bundle.
@@ -241,6 +275,7 @@ mod tests {
             component_sources: std::collections::BTreeMap::new(),
             model: None,
             simulation: None,
+            projections: Vec::new(),
         }
     }
 

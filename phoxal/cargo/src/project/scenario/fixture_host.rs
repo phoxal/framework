@@ -236,7 +236,7 @@ fn serve_request(
             format!("execute request id `{execute_id}` does not match open request"),
         );
     }
-    let program = match phoxal::scenario::__internal::Program::decode(&program) {
+    let program = match phoxal::scenario::plan_support::Program::decode(&program) {
         Ok(program) => program,
         Err(error) => return send_failure(stream, &request_id, "program", error.to_string()),
     };

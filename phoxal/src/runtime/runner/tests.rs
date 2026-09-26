@@ -281,7 +281,7 @@ impl Runtime for TestRuntime {
 impl RegisteredRuntime for TestRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 10, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 impl super::super::outputs::OutputBindings for TestRuntime {
@@ -298,6 +298,8 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
         executable_sha256: "00".repeat(32),
         config: Value::Null,
         connections: BTreeMap::new(),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -903,7 +905,7 @@ impl Runtime for TransportRuntime {
 impl RegisteredRuntime for TransportRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 impl crate::runtime::outputs::OutputBindings for TransportRuntime {
@@ -1302,7 +1304,7 @@ impl Runtime for RequestClientRuntime {
 impl RegisteredRuntime for RequestClientRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -1338,6 +1340,8 @@ fn request_client_manifest() -> RuntimeLaunchManifest {
             "request-client.request".to_owned(),
             vec!["server.transport-commands".to_owned()],
         )]),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::from([(
             "server".to_owned(),
             SourceRuntimeRecord {
@@ -1637,7 +1641,7 @@ impl Runtime for GeneratedCallRuntime {
 impl RegisteredRuntime for GeneratedCallRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 impl crate::runtime::outputs::OutputBindings for GeneratedCallRuntime {
@@ -1702,6 +1706,8 @@ fn generated_call_manifest() -> RuntimeLaunchManifest {
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::from([("caller".to_owned(), caller), ("server".to_owned(), server)]),
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -1895,6 +1901,212 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
 }
 
 #[crate::runtime::inputs]
+struct OutstandingCallInputs {
+    completions: crate::runtime::Completions,
+}
+
+#[derive(Default)]
+struct OutstandingCallState {
+    tickets: Vec<crate::runtime::outputs::CallTicket<TransportResponse>>,
+}
+
+struct OutstandingCallRuntime {
+    responses: Arc<Mutex<Vec<u32>>>,
+    stage: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Runtime for OutstandingCallRuntime {
+    type Config = ();
+    type State = OutstandingCallState;
+    type Inputs = OutstandingCallInputs;
+    type Outputs = crate::runtime::Outputs;
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(OutstandingCallState::default())
+    }
+
+    fn step(
+        &self,
+        ctx: &StepContext,
+        mut state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        let mut outputs = crate::runtime::Outputs::default();
+        state
+            .tickets
+            .retain(|ticket| match inputs.completions.get(ticket) {
+                Some(completion) => {
+                    if let Ok(response) = completion.response() {
+                        self.responses.lock().unwrap().push(response.value);
+                    }
+                    false
+                }
+                None => true,
+            });
+        if self.stage.load(std::sync::atomic::Ordering::Relaxed) {
+            state.tickets.push(outputs.send(
+                ctx,
+                GENERATED_TRANSPORT_METHOD.bind("server", TransportRequest { value: 7 }),
+            )?);
+        }
+        Ok((state, outputs))
+    }
+}
+
+impl RegisteredRuntime for OutstandingCallRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn retain_artifact_metadata() {}
+}
+
+impl crate::runtime::outputs::OutputBindings for OutstandingCallRuntime {
+    const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+}
+
+/// Cross-runtime flow control: the sender refuses to stage more calls than
+/// the provider's declared ingress bound while earlier calls are still
+/// outstanding, and recovers once their completions retire the reservations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_call_outstanding_cap_enforces_provider_ingress_bound() -> crate::Result<()> {
+    use std::sync::atomic::Ordering;
+
+    use zenoh::bytes::Encoding;
+
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("outstanding-call-client")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let manifest = generated_call_manifest();
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let mut input = ExecutionInputAdapter::<OutstandingCallRuntime>::unbound()
+        .with_generated_calls(
+            Arc::clone(&generated_correlations),
+            Arc::clone(&generated_completions),
+        );
+    input.bind(bus.clone(), &manifest).await?;
+    let mut output = ExecutionOutputAdapter::<OutstandingCallRuntime>::unbound()
+        .with_generated_calls(generated_correlations, generated_completions);
+    output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let requests = bus
+        .session()?
+        .declare_subscriber(bus.full_key(&transport::port_key(
+            "server",
+            TRANSPORT_PORT.name,
+            "request",
+        )))
+        .with(zenoh::handlers::FifoChannel::new(8))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let responses: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let stage = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut runner = RuntimeRunner::new(
+        OutstandingCallRuntime {
+            responses: Arc::clone(&responses),
+            stage: Arc::clone(&stage),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+
+    // The provider declares max_items = 4: four polls stage four calls that
+    // all reach the wire while nothing has replied yet.
+    let mut request_metadata = Vec::new();
+    for index in 0..4_u64 {
+        let now = ExecutionTime::from_nanos((index + 1) * 1_000_000);
+        runner.poll(now)?;
+        let request = WireSample::from_zenoh(
+            tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+                .await?
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        )?;
+        request_metadata.push(request.metadata().clone());
+    }
+
+    // Retire the first two reservations with real replies.  Each reply
+    // carries a distinct server boundary so per-rank fencing keeps both.
+    for (index, metadata) in request_metadata.iter().take(2).enumerate() {
+        bus.session()?
+            .put(
+                bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+                transport::encode_prost(&TransportResponse {
+                    value: 100 + index as u32,
+                })?,
+            )
+            .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+            .attachment(
+                transport::reply_metadata(
+                    "server",
+                    StepContext::first(
+                        ExecutionTime::from_nanos((5 + index as u64) * 1_000_000),
+                        ExecutionDuration::from_millis(1),
+                    ),
+                    metadata.command_id(),
+                    metadata.eligible_boundary(),
+                    metadata.caller_rank.expect("outstanding caller rank"),
+                )
+                .with_caller(metadata.caller.clone().expect("outstanding caller"))
+                .encode_bounded()?,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    stage.store(false, Ordering::Relaxed);
+    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    assert_eq!(
+        responses.lock().unwrap().as_slice(),
+        &[100, 101],
+        "the two retired calls deliver completions"
+    );
+
+    // The cap counts outstanding calls, not lifetime sends: with two retired,
+    // two more calls must be admitted without touching the provider.
+    stage.store(true, Ordering::Relaxed);
+    for index in 0..2_u64 {
+        let now = ExecutionTime::from_nanos((8 + index) * 1_000_000);
+        runner.poll(now)?;
+        let request = WireSample::from_zenoh(
+            tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+                .await?
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        )?;
+        request_metadata.push(request.metadata().clone());
+    }
+
+    // A fifth outstanding call must be rejected at the sender before it
+    // reaches the transport, naming the ingress bound.  The violation is
+    // fatal for the runtime, which is the observable flow-control contract.
+    let capped = runner.poll(ExecutionTime::from_nanos(10_000_000));
+    assert!(
+        capped
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("outstanding generated calls")),
+        "the fifth outstanding call must be rejected at the sender, got {capped:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        requests
+            .try_recv()
+            .expect("request queue remains readable")
+            .is_none(),
+        "the capped call must not reach the wire"
+    );
+
+    let _ = runner.stop();
+    owner.close().await;
+    Ok(())
+}
+
+#[crate::runtime::inputs]
 struct OperationInputs {
     operation: crate::runtime::Operation<u64, u32>,
 }
@@ -1937,7 +2149,7 @@ impl Runtime for OperationRuntime {
 impl RegisteredRuntime for OperationRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -2086,7 +2298,7 @@ impl Runtime for ReplacementOperationRuntime {
 impl RegisteredRuntime for ReplacementOperationRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -2234,7 +2446,7 @@ impl Runtime for UnresponsiveOperationRuntime {
 impl RegisteredRuntime for UnresponsiveOperationRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -2401,7 +2613,7 @@ impl Runtime for PublicReadRuntime {
 impl RegisteredRuntime for PublicReadRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 1000, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -2489,7 +2701,7 @@ impl Runtime for ReadClientRuntime {
 impl RegisteredRuntime for ReadClientRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 #[crate::runtime::outputs]
@@ -2614,6 +2826,8 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts,
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -2889,6 +3103,8 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -3079,7 +3295,7 @@ impl Runtime for TypedStateRuntime {
 impl RegisteredRuntime for TypedStateRuntime {
     const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 100, 100);
 
-    fn __retain_artifact_metadata() {}
+    fn retain_artifact_metadata() {}
 }
 
 impl crate::runtime::outputs::OutputBindings for TypedStateRuntime {
@@ -3141,6 +3357,8 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts,
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -3266,6 +3484,7 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             ack_leg: "delivery-ack".to_owned(),
             cancel: cancel.clone(),
             reply_admission: None,
+            projection: None,
         })));
     }
     for boundary in [1, 2] {
@@ -3319,6 +3538,8 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::from([("caller.read".to_owned(), vec!["reader.read".to_owned()])]),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -3551,6 +3772,8 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
+        projections: BTreeMap::new(),
+        requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),

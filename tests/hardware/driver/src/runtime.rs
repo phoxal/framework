@@ -1,8 +1,6 @@
-use crate::{
-    config::HardwareFixtureConfig, inputs::HardwareFixtureInputs, outputs::HardwareFixtureOutputs,
-};
+use crate::config::HardwareFixtureConfig;
 use anyhow::Result;
-use phoxal::runtime::{InitContext, Runtime, Sample, StepContext};
+use phoxal::runtime::{InitContext, Runtime, StepContext};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -39,15 +37,10 @@ impl HardwareFixtureDriver {
     }
 }
 
-#[phoxal::runtime::outputs]
-impl HardwareFixtureDriver {}
-
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for HardwareFixtureDriver {
     type Config = HardwareFixtureConfig;
     type State = HardwareFixtureState;
-    type Inputs = HardwareFixtureInputs;
-    type Outputs = HardwareFixtureOutputs;
 
     fn init(&self, _ctx: &InitContext, config: Self::Config) -> Result<Self::State> {
         if config.device_id.trim().is_empty() {
@@ -78,13 +71,15 @@ impl Runtime for HardwareFixtureDriver {
             .value()
             .filter(|_| inputs.actuator.is_valid_at(ctx.now()))
             .map_or(0.0, |setpoint| setpoint.velocity_radps);
-        let observations = inputs
-            .observations
+        let measurements = inputs
+            .acquired
             .items()
             .iter()
-            .map(|sample| Sample::new(*sample.payload(), sample.stamp().clone()))
+            .map(|sample| *sample.payload())
             .collect();
-        Ok((state, HardwareFixtureOutputs { observations }))
+        let mut outputs = Self::Outputs::default();
+        outputs.observations(measurements)?;
+        Ok((state, outputs))
     }
 }
 

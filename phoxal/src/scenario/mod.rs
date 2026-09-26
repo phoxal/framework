@@ -5,7 +5,6 @@
 //! evidence.
 
 mod fixture;
-#[doc(hidden)]
 pub mod fixture_protocol;
 mod plan;
 mod program;
@@ -26,8 +25,7 @@ pub(crate) use results::{
 // Re-export the canonical native-body wire type so scenario authors can read
 // simulator terminal evidence without importing the tool-facing module.
 pub use crate::artifact::simulation::NativeBodySample;
-#[doc(hidden)]
-pub mod __internal {
+pub mod plan_support {
     pub use super::plan::{Action, Capture, Step, Validity};
     pub use super::program::{Program, Quantum};
     pub use super::results::{

@@ -5,12 +5,12 @@ use phoxal::runtime::{
     StepContext, initialize, invoke,
 };
 
-const COUNTER_STATUS: phoxal::__private::State<CounterStatus> =
-    phoxal::__private::State::new("counter-status");
-const COUNTER_READ: phoxal::__private::Read<CounterReadRequest, CounterReadResponse> =
-    phoxal::__private::Read::new("counter-read");
-const READER_STATUS: phoxal::__private::State<ReaderStatus> =
-    phoxal::__private::State::new("reader-status");
+const COUNTER_STATUS: phoxal::macro_support::State<CounterStatus> =
+    phoxal::macro_support::State::new("counter-status");
+const COUNTER_READ: phoxal::macro_support::Read<CounterReadRequest, CounterReadResponse> =
+    phoxal::macro_support::Read::new("counter-read");
+const READER_STATUS: phoxal::macro_support::State<ReaderStatus> =
+    phoxal::macro_support::State::new("reader-status");
 
 #[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct CounterStatus {
@@ -296,7 +296,8 @@ impl OnceReader {
 }
 
 const VALUES: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-const SUM_STATUS: phoxal::__private::State<SumStatus> = phoxal::__private::State::new("sum-status");
+const SUM_STATUS: phoxal::macro_support::State<SumStatus> =
+    phoxal::macro_support::State::new("sum-status");
 
 #[derive(Clone, Copy, PartialEq, prost::Message)]
 struct SumStatus {
@@ -523,7 +524,7 @@ fn read_status_distinguishes_pending_and_completed_inputs() {
 
 #[test]
 fn compiled_input_records_retain_concrete_owner_message_names() {
-    let bytes = __PHOXAL_RUNTIME_ARTIFACT_periodic_reader.as_bytes();
+    let bytes = phoxal_runtime_periodic_reader::ARTIFACT.as_bytes();
     let record: RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
     let RuntimeRecord::V0 { inputs, .. } = &record;
     let input = &inputs[0];
@@ -536,7 +537,7 @@ fn compiled_input_records_retain_concrete_owner_message_names() {
         Some("phoxal.tests.runtime.CounterReadResponse")
     );
     let counter: RuntimeRecord =
-        serde_json::from_slice(&__PHOXAL_RUNTIME_ARTIFACT_counter.as_bytes()[12..]).unwrap();
+        serde_json::from_slice(&phoxal_runtime_counter::ARTIFACT.as_bytes()[12..]).unwrap();
     let RuntimeRecord::V0 { inputs, .. } = &counter;
     assert_eq!(
         inputs[0].response_fqn.as_deref(),

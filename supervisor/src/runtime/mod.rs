@@ -52,7 +52,7 @@ struct ExecutionLaunch {
     scenario_result: Option<PathBuf>,
     simulation_run: Option<PathBuf>,
     shutdown: CancellationToken,
-    scenario_program: Option<phoxal::scenario::__internal::Program>,
+    scenario_program: Option<phoxal::scenario::plan_support::Program>,
 }
 
 pub(super) struct RunRequest<'a> {
@@ -163,7 +163,7 @@ fn process_is_alive(_pid: u32) -> bool {
 fn admit_run_specification(
     runtime: &mut Bundle,
     path: &Path,
-) -> Result<phoxal::scenario::__internal::Program> {
+) -> Result<phoxal::scenario::plan_support::Program> {
     const MAX_RUN_SPECIFICATION_BYTES: u64 = 16 * 1024 * 1024;
     let metadata = fs::symlink_metadata(path).with_context(|| {
         format!(
@@ -238,7 +238,7 @@ fn admit_run_specification(
             program.sha256
         );
     }
-    let decoded = phoxal::scenario::__internal::Program::decode(&program.bytes)
+    let decoded = phoxal::scenario::plan_support::Program::decode(&program.bytes)
         .map_err(|error| anyhow::anyhow!("simulation program decode failed: {error}"))?;
     decoded
         .verify_identity()
@@ -296,14 +296,14 @@ fn admit_run_specification(
 }
 
 fn validate_program_contract(
-    program: &phoxal::scenario::__internal::Program,
+    program: &phoxal::scenario::plan_support::Program,
     bindings: &[phoxal::artifact::simulation_run::SimulationBinding],
     captures: &[phoxal::artifact::simulation_run::SimulationCaptureRequirement],
 ) -> Result<()> {
     use phoxal::artifact::simulation_run::{
         SimulationBinding, SimulationCapturePolicy, SimulationCaptureRequirement,
     };
-    use phoxal::scenario::__internal::{Action, Capture};
+    use phoxal::scenario::plan_support::{Action, Capture};
 
     let mut expected = std::collections::BTreeMap::<(String, String), SimulationBinding>::new();
     for step in program.steps() {
@@ -420,7 +420,7 @@ fn validate_program_contract(
 }
 
 fn artifact_signature(
-    signature: phoxal::__private::PortSignature,
+    signature: phoxal::macro_support::PortSignature,
 ) -> phoxal::artifact::MethodSignature {
     phoxal::artifact::MethodSignature {
         endpoint: signature.name.to_owned(),

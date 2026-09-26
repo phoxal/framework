@@ -64,7 +64,6 @@ impl<Response> CallTicket<Response> {
 }
 
 /// Generated operation that can enter a runtime output transaction.
-#[doc(hidden)]
 pub trait GeneratedSend {
     type Response;
 
@@ -401,7 +400,6 @@ pub trait OutputBindings: super::Runtime + 'static {
 // Attribute macros share the Rust module namespace with this metadata.  The
 // re-exports are intentionally nested so authors can spell the normative
 // `#[phoxal::runtime::outputs::state(...)]` path.
-#[doc(hidden)]
 pub use phoxal_macros::{
     activate, event, operation, outputs, read, reply, sample, setpoint, state, stream,
 };

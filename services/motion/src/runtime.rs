@@ -1,20 +1,19 @@
-use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
+use self::phoxal_provider::Inputs as MotionInputs;
+use crate::api::types::phoxal::kinematics::v1::OdometryState;
 #[cfg(test)]
-use crate::api::motion::v1::actuator_target;
-use crate::api::motion::v1::{
+use crate::api::types::phoxal::motion::v1::actuator_target;
+use crate::api::types::phoxal::motion::v1::{
     ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyAccepted,
     EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus, ReleaseEmergencyRequest,
-    apply_emergency_response, motion,
+    apply_emergency_response,
 };
 #[cfg(test)]
-use crate::api::motion::v1::{Constraint, ConstraintReason};
-use crate::api::motion::v1::{MotionConstraints, Permission};
+use crate::api::types::phoxal::motion::v1::{Constraint, ConstraintReason};
+use crate::api::types::phoxal::motion::v1::{MotionConstraints, Permission};
 use crate::config::{MotionConfig, validate_motion_config};
 #[cfg(test)]
 use crate::drive::setpoint_from_twist;
 use crate::drive::{setpoint_from_intent, stopped_setpoint};
-use crate::inputs::MotionInputs;
-use crate::outputs::MotionOutputs;
 use crate::validation;
 use phoxal::contract::Empty;
 #[cfg(test)]
@@ -83,8 +82,6 @@ pub struct Motion;
 impl Runtime for Motion {
     type Config = MotionConfig;
     type State = ArbiterState;
-    type Inputs = MotionInputs;
-    type Outputs = MotionOutputs;
 
     fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
         validate_motion_config(config)
@@ -122,7 +119,7 @@ impl Runtime for Motion {
             .is_some_and(|safety| safety_is_clear(safety, ctx.now()));
         state.measurement_available = fresh_measurement(inputs, ctx.now())
             .is_some_and(|measurement| measurement.available && valid_measurement(measurement));
-        let mut outputs = MotionOutputs::default();
+        let mut outputs = Self::Outputs::default();
         let protective_state_clear = state.protective_state_clear;
         let measurement_available = state.measurement_available;
 
@@ -204,29 +201,16 @@ impl Runtime for Motion {
     }
 }
 
-#[phoxal::runtime::outputs]
-#[allow(
-    dead_code,
-    reason = "the collected projections are invoked by the transport runner"
-)]
-impl Motion {
+impl crate::api::projections::Projections for Motion {
+    type State = ArbiterState;
+
     /// Projects the final actuator intent with an independent validity bound.
-    #[phoxal::runtime::outputs::setpoint(
-        port = motion::methods::ACTUATORS.__setpoint_port(),
-        max_bytes = 1_024,
-        valid_for_ms = 100
-    )]
     fn actuators(&self, state: &ArbiterState) -> Option<ActuatorSetpoint> {
         Some(state.actuator_setpoint.clone())
     }
 
     /// Renews authority and protective status at each invocation so Safety
     /// can apply its freshness bound even while the robot remains disarmed.
-    #[phoxal::runtime::outputs::state(
-        port = motion::methods::STATUS.__state_port(),
-        max_bytes = 512,
-        bootstrap
-    )]
     fn status(&self, state: &ArbiterState) -> MotionStatus {
         MotionStatus {
             mode: state

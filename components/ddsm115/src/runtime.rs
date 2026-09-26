@@ -1,8 +1,4 @@
-#[cfg(test)]
-use crate::api::ddsm115::v1::ddsm115;
 use crate::config::Ddsm115Config;
-use crate::inputs::Ddsm115Inputs;
-use crate::outputs::Ddsm115Outputs;
 use anyhow::Result;
 use anyhow::anyhow;
 use phoxal::runtime::InitContext;
@@ -18,17 +14,12 @@ pub struct Ddsm115State;
 /// The DDSM115 hardware component driver.
 pub struct Ddsm115;
 
-#[phoxal::runtime::outputs]
-impl Ddsm115 {}
-
 /// The hardware backend is intentionally unavailable until a real RS-485
 /// transport can deliver commands, measure encoder state, and stop safely.
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Ddsm115 {
     type Config = Ddsm115Config;
     type State = Ddsm115State;
-    type Inputs = Ddsm115Inputs;
-    type Outputs = Ddsm115Outputs;
 
     fn init(&self, _ctx: &InitContext, config: Self::Config) -> Result<Self::State> {
         Err(anyhow!("{BACKEND_UNAVAILABLE} (motor ID {})", config.id))
@@ -46,42 +37,53 @@ impl Runtime for Ddsm115 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, Ddsm115Inputs, Ddsm115Outputs, ddsm115,
-    };
+    use super::{BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, phoxal_provider::Inputs};
     use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::runtime::Runtime;
     use phoxal::runtime::input::InputSet;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
     fn generated_encoder_method_uses_the_shared_robotics_payload() {
-        assert_eq!(ddsm115::methods::ENCODER.signature().endpoint, "encoder");
         assert_eq!(
-            ddsm115::methods::ENCODER.signature().service,
-            "phoxal.component.ddsm115.v1.Ddsm115"
+            crate::api::service_methods::u0::ENCODER
+                .signature()
+                .endpoint,
+            "encoder"
         );
         assert_eq!(
-            ddsm115::methods::ENCODER.signature().shape,
+            crate::api::service_methods::u0::ENCODER.signature().service,
+            "phoxal.robotics.v1.EncoderSample"
+        );
+        assert_eq!(
+            crate::api::service_methods::u0::ENCODER.signature().shape,
             MethodShape::Observation
         );
         assert!(
-            !ddsm115::methods::ENCODER
+            !crate::api::service_methods::u0::ENCODER
                 .signature()
                 .descriptor_set()
                 .is_empty()
         );
-        let actuator = &Ddsm115Inputs::FIELDS[0];
+        let actuator = &Inputs::FIELDS[0];
         assert_eq!(actuator.name, "actuator");
         assert_eq!(
-            Ddsm115Outputs::FIELDS
+            <Ddsm115 as Runtime>::Outputs::FIELDS
                 .iter()
                 .map(|field| field.name)
                 .collect::<Vec<_>>(),
             ["encoder"]
         );
-        assert_eq!(Ddsm115Outputs::FIELDS[0].port, Some("encoder"));
-        assert!(Ddsm115Outputs::FIELDS[0].port_signature.is_some());
+        assert_eq!(
+            <Ddsm115 as Runtime>::Outputs::FIELDS[0].port,
+            Some("encoder")
+        );
+        assert!(
+            <Ddsm115 as Runtime>::Outputs::FIELDS[0]
+                .port_signature
+                .is_some()
+        );
     }
 
     #[test]

@@ -1,0 +1,50 @@
+schema: phoxal/service/v0
+
+inputs:
+  encoder:
+    type: phoxal.robotics.v1.EncoderSample
+    delivery: latest
+    required: true
+    # Cross-process age bound: hardware-local clocks share the wall-clock
+    # epoch, so a foreign stamp is comparable to the receiver's now within
+    # the bounded-skew policy.  The consumer's freshness helper drives the
+    # deliberate waiting/running phase response.
+    max_age_ms: 100
+    max_bytes: 1024
+  ticks:
+    type: phoxal.robotics.v1.EncoderSample
+    delivery: queue
+    required: true
+    max_items: 4
+    max_bytes: 4096
+
+outputs:
+  status:
+    type: example.contract_evaluation.v1.ConsumerStatus
+    delivery: latest
+    retained_latest: true
+    max_bytes: 4096
+
+operations:
+  inspect:
+    contract: example.contract_evaluation.v1.InspectConsumer
+    request: google.protobuf.Empty
+    response: example.contract_evaluation.v1.ConsumerStatus
+    max_items: 8
+    max_bytes: 4096
+
+calls:
+  read_encoder:
+    contract: example.contract_evaluation.v1.ReadEncoder
+    request: google.protobuf.Empty
+    response: phoxal.robotics.v1.EncoderSample
+    required: true
+    max_items: 8
+    max_bytes: 1024
+  read_backup:
+    contract: example.contract_evaluation.v1.ReadEncoder
+    request: google.protobuf.Empty
+    response: phoxal.robotics.v1.EncoderSample
+    required: true
+    max_items: 8
+    max_bytes: 1024

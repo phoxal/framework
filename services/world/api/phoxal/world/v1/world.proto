@@ -5,23 +5,3 @@ package phoxal.world.v1;
 import "google/protobuf/empty.proto";
 import "phoxal/kinematics/v1/odometry.proto";
 import "phoxal/world/v1/types.proto";
-import "phoxal/api.proto";
-
-service World {
-  rpc Pose(google.protobuf.Empty) returns (stream phoxal.kinematics.v1.OdometryState) {
-  }
-
-  rpc Belief(google.protobuf.Empty) returns (stream WorldBelief) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc Revision(google.protobuf.Empty) returns (stream WorldRevision) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc Window(WindowRequest) returns (WindowResponse);
-
-  rpc Status(google.protobuf.Empty) returns (stream WorldStatus) {
-    option (phoxal.api.retained_latest) = true;
-  }
-}

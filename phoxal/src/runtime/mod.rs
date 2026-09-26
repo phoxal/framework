@@ -13,15 +13,17 @@ mod operation;
 pub mod outputs;
 pub mod runner;
 mod schedule;
-#[doc(hidden)]
+/// Generated-code transport adapters shared by runtime decoders, the
+/// supervisor, and session clients.  Not a public transport handle.
 pub mod transport;
 
-// The collector attributes live in the runtime namespace so authors can use
-// the exact `#[phoxal::runtime::inputs]` and `#[phoxal::runtime::input(...)]`
-// spellings without importing a second macro crate.
-#[doc(hidden)]
+// The collector attributes live in the runtime namespace so the generated
+// provider glue (and the SDK's own machinery tests) can use the exact
+// `#[phoxal::runtime::inputs]` and `#[phoxal::runtime::input(...)]`
+// spellings.  A package's endpoint authority is its authored service
+// declaration; these attributes are the expansion layer that declaration
+// lowers to, not a hand-authoring path.
 pub use phoxal_macros::outputs;
-#[doc(hidden)]
 pub use phoxal_macros::{input, inputs};
 
 pub use core::{
@@ -55,8 +57,7 @@ pub use input::{
 /// is still the source of truth for its endpoint identity; the traits only make
 /// the descriptor's typed payload available to compile-time checks in a
 /// downstream service crate.
-#[doc(hidden)]
-pub mod __private {
+pub mod macro_support {
     pub use crate::port::{PortDescriptor, PortKind};
 
     /// A state projection has a payload matching the served state descriptor.

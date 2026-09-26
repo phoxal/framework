@@ -1,0 +1,42 @@
+schema: phoxal/service/v0
+
+inputs:
+  localization:
+    type: phoxal.kinematics.v1.OdometryState
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+  map:
+    type: phoxal.world.v1.WorldRevision
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+
+outputs:
+  finished:
+    type: phoxal.navigation.v1.GoalFinished
+    delivery: queue
+    max_items: 64
+    max_bytes: 16384
+  status:
+    type: phoxal.navigation.v1.NavigationState
+    delivery: latest
+    projection: state
+    bootstrap: true
+    max_bytes: 1024
+
+operations:
+  apply_command:
+    contract: phoxal.navigation.v1.ApplyCommand
+    request: phoxal.navigation.v1.ApplyCommandRequest
+    response: phoxal.navigation.v1.ApplyCommandResponse
+    max_items: 32
+    max_bytes: 16384
+  get_goal_status:
+    contract: phoxal.navigation.v1.GetGoalStatus
+    request: phoxal.navigation.v1.GetGoalStatusRequest
+    response: phoxal.navigation.v1.GetGoalStatusResponse
+    max_items: 32
+    max_bytes: 16384

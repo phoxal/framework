@@ -1,12 +1,10 @@
 mod measurements;
 
-use crate::api::kinematics::v1::{
+use crate::api::types::phoxal::kinematics::v1::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
-    OdometryState, UnavailableReason, kinematics,
+    OdometryState, UnavailableReason,
 };
 use crate::config::{KinematicsConfig, validate_config};
-use crate::inputs::KinematicsInputs;
-use crate::outputs::KinematicsOutputs;
 use crate::validation;
 #[cfg(test)]
 use phoxal::robotics::EncoderSample;
@@ -108,12 +106,26 @@ impl KinematicsState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kinematics;
 
+impl crate::api::projections::Projections for Kinematics {
+    type State = KinematicsState;
+
+    fn odometry(&self, state: &KinematicsState) -> OdometryState {
+        state.odometry()
+    }
+
+    fn frames(&self, state: &KinematicsState) -> FrameTree {
+        state.frames()
+    }
+
+    fn status(&self, state: &KinematicsState) -> KinematicsStatus {
+        state.status()
+    }
+}
+
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Kinematics {
     type Config = KinematicsConfig;
     type State = KinematicsState;
-    type Inputs = KinematicsInputs;
-    type Outputs = KinematicsOutputs;
 
     fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
         validate_config(config)
@@ -130,11 +142,16 @@ impl Runtime for Kinematics {
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
         inputs
-            .frame_lookups
+            .lookup_frame
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
-        let mut outputs = KinematicsOutputs::default();
-        match measurements::collect(&state.config, &mut state.encoders, inputs, ctx.now()) {
+        let mut outputs = Self::Outputs::default();
+        match measurements::collect(
+            &state.config,
+            &mut state.encoders,
+            &inputs.encoders,
+            ctx.now(),
+        ) {
             Ok(cut) => {
                 let dt = ctx.elapsed().as_nanos() as f64 / 1_000_000_000.0;
                 let delta = cut.angular_radps * dt;
@@ -164,7 +181,7 @@ impl Runtime for Kinematics {
                 state.available = true;
                 state.unavailable_reasons.clear();
                 state.retain_frames(state.frames());
-                outputs.joints = cut.joints;
+                outputs.joints(cut.joints)?;
             }
             Err(reason) => {
                 state.available = false;
@@ -176,37 +193,12 @@ impl Runtime for Kinematics {
         validation::odometry(&state.odometry()).map_err(|error| anyhow::anyhow!(error))?;
         validation::frame_tree(&state.frames()).map_err(|error| anyhow::anyhow!(error))?;
         validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
-        for command in inputs.frame_lookups.items() {
+        for command in inputs.lookup_frame.items() {
             let response = lookup_frame(&state, command.request());
             validation::lookup_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-            outputs.frame_lookup_replies.push(command.reply(response));
+            outputs.lookup_frame_reply(command.reply(response))?;
         }
         Ok((state, outputs))
-    }
-}
-
-#[phoxal::runtime::outputs]
-#[allow(
-    dead_code,
-    reason = "the collected projections are invoked by the transport runner"
-)]
-impl Kinematics {
-    /// Projects continuous odometry state.
-    #[phoxal::runtime::outputs::state(port = kinematics::methods::ODOMETRY.__state_port(), max_bytes = 512, bootstrap, on_change)]
-    fn odometry(&self, state: &KinematicsState) -> OdometryState {
-        state.odometry()
-    }
-
-    /// Projects the current model-backed frame tree.
-    #[phoxal::runtime::outputs::state(port = kinematics::methods::FRAMES.__state_port(), max_bytes = 4_096, bootstrap, on_change)]
-    fn frames(&self, state: &KinematicsState) -> FrameTree {
-        state.frames()
-    }
-
-    /// Projects availability and missing-input reasons.
-    #[phoxal::runtime::outputs::state(port = kinematics::methods::STATUS.__state_port(), max_bytes = 512, bootstrap, on_change)]
-    fn status(&self, state: &KinematicsState) -> KinematicsStatus {
-        state.status()
     }
 }
 

@@ -19,5 +19,5 @@ const STATUS: ObservationMethod<Status> = ObservationMethod::new(
 
 fn main() {
     let observation = STATUS.bind("service");
-    let _ = observation.__state_port();
+    let _ = observation.state_port();
 }

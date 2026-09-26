@@ -1,8 +1,4 @@
-#[cfg(test)]
-#[cfg(test)]
-use crate::api::oak_d_lite::v1::oak_d_lite;
 use crate::config::OakDLiteConfig;
-use crate::outputs::OakDLiteOutputs;
 use anyhow::Result;
 use anyhow::anyhow;
 use phoxal::runtime::InitContext;
@@ -18,17 +14,12 @@ pub struct OakDLiteState;
 /// The OAK-D Lite hardware component driver.
 pub struct OakDLite;
 
-#[phoxal::runtime::outputs]
-impl OakDLite {}
-
 /// The hardware backend is intentionally unavailable until a real DepthAI
 /// transport can publish camera, depth, and IMU observations.
 #[phoxal::runtime(period_ms = 10, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for OakDLite {
     type Config = OakDLiteConfig;
     type State = OakDLiteState;
-    type Inputs = ();
-    type Outputs = OakDLiteOutputs;
 
     fn init(&self, _ctx: &InitContext, _config: Self::Config) -> Result<Self::State> {
         Err(anyhow!(BACKEND_UNAVAILABLE))
@@ -46,45 +37,56 @@ impl Runtime for OakDLite {
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKEND_UNAVAILABLE, OakDLite, OakDLiteConfig, OakDLiteOutputs, oak_d_lite};
+    use super::{BACKEND_UNAVAILABLE, OakDLite, OakDLiteConfig};
     use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
     fn generated_methods_cover_every_declared_capability() {
-        fn assert_observation_method<P: MethodDescriptor>(method: P) {
+        fn assert_observation_method<P: MethodDescriptor>(method: P, payload: &str) {
             assert_eq!(method.signature().shape, MethodShape::Observation);
-            assert_eq!(
-                method.signature().service,
-                "phoxal.component.oak_d_lite.v1.OakDLite"
-            );
+            assert_eq!(method.signature().service, payload);
             assert!(!method.signature().descriptor_set().is_empty());
         }
-        assert_observation_method(oak_d_lite::methods::LEFT_MONO);
-        assert_observation_method(oak_d_lite::methods::RGB);
-        assert_observation_method(oak_d_lite::methods::RIGHT_MONO);
-        assert_observation_method(oak_d_lite::methods::DEPTH);
-        assert_observation_method(oak_d_lite::methods::IMU);
-        assert_observation_method(oak_d_lite::methods::ACCELEROMETER);
-        assert_observation_method(oak_d_lite::methods::GYROSCOPE);
+        let camera = "phoxal.component.oak_d_lite.v1.CameraFrame";
+        assert_observation_method(crate::api::service_methods::u0::LEFT_MONO, camera);
+        assert_observation_method(crate::api::service_methods::u0::RGB, camera);
+        assert_observation_method(crate::api::service_methods::u0::RIGHT_MONO, camera);
+        assert_observation_method(
+            crate::api::service_methods::u0::DEPTH,
+            "phoxal.component.oak_d_lite.v1.DepthFrame",
+        );
+        assert_observation_method(
+            crate::api::service_methods::u0::IMU,
+            "phoxal.component.oak_d_lite.v1.ImuSample",
+        );
+        assert_observation_method(
+            crate::api::service_methods::u0::ACCELEROMETER,
+            "phoxal.component.oak_d_lite.v1.AccelerometerSample",
+        );
+        assert_observation_method(
+            crate::api::service_methods::u0::GYROSCOPE,
+            "phoxal.component.oak_d_lite.v1.GyroscopeSample",
+        );
         assert_eq!(
-            OakDLiteOutputs::FIELDS
+            <OakDLite as Runtime>::Outputs::FIELDS
                 .iter()
                 .map(|field| field.name)
                 .collect::<Vec<_>>(),
             [
+                "accelerometer",
+                "depth",
+                "gyroscope",
+                "imu",
                 "left_mono",
                 "rgb",
-                "right_mono",
-                "depth",
-                "imu",
-                "accelerometer",
-                "gyroscope"
+                "right_mono"
             ]
         );
         assert!(
-            OakDLiteOutputs::FIELDS
+            <OakDLite as Runtime>::Outputs::FIELDS
                 .iter()
                 .all(|field| field.port_signature.is_some())
         );

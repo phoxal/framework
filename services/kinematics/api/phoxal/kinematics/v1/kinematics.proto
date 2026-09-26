@@ -3,8 +3,6 @@ syntax = "proto3";
 package phoxal.kinematics.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/api.proto";
-import "phoxal/robotics/v1/robotics.proto";
 import "phoxal/kinematics/v1/odometry.proto";
 
 message JointState {
@@ -49,26 +47,4 @@ message LookupFrameRequest {
 message LookupFrameResponse {
   optional FrameTransform transform = 1;
   uint64 revision = 2;
-}
-
-service Kinematics {
-  rpc EncoderMeasurements(google.protobuf.Empty) returns (stream phoxal.robotics.v1.EncoderSample) {
-  }
-
-  rpc Joints(google.protobuf.Empty) returns (stream JointState) {
-  }
-
-  rpc Odometry(google.protobuf.Empty) returns (stream OdometryState) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc Frames(google.protobuf.Empty) returns (stream FrameTree) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc Status(google.protobuf.Empty) returns (stream KinematicsStatus) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc LookupFrame(LookupFrameRequest) returns (LookupFrameResponse);
 }

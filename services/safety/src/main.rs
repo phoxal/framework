@@ -1,8 +1,6 @@
 phoxal::api!();
 
 mod config;
-mod inputs;
-mod outputs;
 mod runtime;
 mod validation;
 

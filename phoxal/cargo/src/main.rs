@@ -486,6 +486,7 @@ fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
             | crate::project::DiscoveryError::MissingRobot { start: path }
             | crate::project::DiscoveryError::MissingManifest { root: path } => Some(path.clone()),
         },
+        crate::project::Error::DeclarationCheck { .. } => None,
         crate::project::Error::ReadRobot { path, .. }
         | crate::project::Error::ParseRobot { path, .. }
         | crate::project::Error::InvalidRobot { path, .. }

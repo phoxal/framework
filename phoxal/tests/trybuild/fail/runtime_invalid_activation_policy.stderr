@@ -45,22 +45,10 @@ help: the trait `OutputBindings` is not implemented for `Service`
    = note: this error originates in the attribute macro `phoxal::runtime` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
-  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:13:18
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:12:1
    |
-13 | impl Runtime for Service {
-   |                  ^^^^^^^ unsatisfied trait bound
-   |
-help: the trait `OutputBindings` is not implemented for `Service`
-  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
-   |
- 4 | struct Service;
-   | ^^^^^^^^^^^^^^
-
-error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
-  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:13:18
-   |
-13 | impl Runtime for Service {
-   |                  ^^^^^^^ unsatisfied trait bound
+12 | #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 100)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `OutputBindings` is not implemented for `Service`
   --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
@@ -75,3 +63,4 @@ note: required by a bound in `SPEC`
    |     /// The source-authored cadence and deadline metadata.
    |     const SPEC: RuntimeSpec;
    |           ---- required by a bound in this associated constant
+   = note: this error originates in the attribute macro `phoxal::runtime` (in Nightly builds, run with -Z macro-backtrace for more info)

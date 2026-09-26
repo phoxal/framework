@@ -42,7 +42,9 @@ use phoxal::runtime::ExecutionTime;
 use phoxal::runtime::connection::Connection;
 use phoxal::runtime::execution_protocol::{self, wire};
 use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireControl, WireSample};
-use phoxal::scenario::__internal::{Action as ScenarioAction, Capture as ScenarioCapture, Program};
+use phoxal::scenario::plan_support::{
+    Action as ScenarioAction, Capture as ScenarioCapture, Program,
+};
 use serde::Serialize;
 
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
@@ -667,8 +669,8 @@ impl RuntimeExecutionProtocol {
                     )
                     .with_eligible_boundary(eligible_boundary);
                     metadata.expires_at_nanos = Some(match validity {
-                        phoxal::scenario::__internal::Validity::Permanent => run_valid_until_ns,
-                        phoxal::scenario::__internal::Validity::Lease { valid_for_ms } => {
+                        phoxal::scenario::plan_support::Validity::Permanent => run_valid_until_ns,
+                        phoxal::scenario::plan_support::Validity::Lease { valid_for_ms } => {
                             logical_time_ns
                                 .checked_add(valid_for_ms.checked_mul(1_000_000).ok_or_else(
                                     || "scenario lease validity overflowed".to_owned(),
@@ -1394,6 +1396,14 @@ fn input_sources(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            serde_json::Value::Object(mapping) => vec![
+                mapping
+                    .get("from")
+                    .and_then(|source| source.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("projection connection `{consumer}` has no `from` source")
+                    })?,
+            ],
             _ => bail!("connection `{consumer}` must contain a source or source list"),
         };
         for source in source_values {
@@ -1436,6 +1446,15 @@ fn connection_source_values<'a>(
                 })
             })
             .collect(),
+        serde_json::Value::Object(mapping) => {
+            // An explicit projection connection names its foreign source
+            // under `from`; the receiver applies the compiled field mapping.
+            mapping
+                .get("from")
+                .and_then(|source| source.as_str())
+                .map(|source| vec![source])
+                .with_context(|| format!("projection connection `{consumer}` has no `from` source"))
+        }
         _ => bail!("connection `{consumer}` must contain a source or source list"),
     }
 }
@@ -1475,6 +1494,44 @@ fn graph_delivery_routes(
                 bail!("connection source `{source}` has an empty instance or port");
             }
             match role {
+                "call_completions" => {
+                    // A required operation declares its contract on the
+                    // completion field; requests route to the bound provider
+                    // and replies return through the same receiving field.
+                    let target = artifacts.get(source_instance).with_context(|| {
+                        format!("request target `{source}` has no runtime artifact")
+                    })?;
+                    let fields = target
+                        .inputs
+                        .iter()
+                        .filter(|field| {
+                            field.role == "call_ingress"
+                                && field.port.as_deref() == Some(source_port)
+                        })
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>();
+                    let [field] = fields.as_slice() else {
+                        bail!(
+                            "request target `{source}` must resolve to exactly one receiving field"
+                        );
+                    };
+                    request_routes.insert(
+                        (
+                            consumer_instance.to_owned(),
+                            source_instance.to_owned(),
+                            source_port.to_owned(),
+                        ),
+                        format!("{source_instance}.{field}"),
+                    );
+                    routes
+                        .entry((
+                            source_instance.to_owned(),
+                            source_port.to_owned(),
+                            "reply".to_owned(),
+                        ))
+                        .or_default()
+                        .insert(receiving_field.clone());
+                }
                 "call_result" | "call_target" => {
                     let target = artifacts.get(source_instance).with_context(|| {
                         format!("request target `{source}` has no runtime artifact")

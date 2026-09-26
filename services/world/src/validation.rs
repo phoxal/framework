@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
-use crate::api::world::v1::{
+use crate::api::types::phoxal::kinematics::v1::OdometryState;
+use crate::api::types::phoxal::world::v1::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
     WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus, window_response,
 };

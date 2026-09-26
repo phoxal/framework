@@ -18,3 +18,25 @@ capabilities:
       kind: actuator
       id: fixture_motor
     joint: fixture_joint
+
+inputs:
+  acquired:
+    delivery: queue
+    max_bytes: 4096
+    max_items: 16
+    required: true
+    type: phoxal.fixture.hardware.v1.FixtureObservation
+  actuator:
+    delivery: latest
+    lease:
+      valid_for_ms: 100
+    max_bytes: 1024
+    required: true
+    type: phoxal.fixture.hardware.v1.FixtureSetpoint
+
+outputs:
+  observations:
+    delivery: queue
+    max_bytes: 4096
+    max_items: 16
+    type: phoxal.fixture.hardware.v1.FixtureObservation

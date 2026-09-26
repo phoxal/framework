@@ -352,6 +352,12 @@ pub enum Error {
         /// TOML parser failure.
         source: toml::de::Error,
     },
+    /// A declaration-level composition check failed before Cargo ran.
+    #[error("declaration check failed: {message}")]
+    DeclarationCheck {
+        /// Specific connection or requirement diagnostic.
+        message: String,
+    },
     /// The root Cargo.toml is a virtual manifest rather than the robot package.
     #[error(
         "Cargo.toml at {path} is a virtual manifest; the robot root must own an ordinary package for its brain"

@@ -1,0 +1,43 @@
+schema: phoxal/service/v0
+
+inputs:
+  world:
+    type: phoxal.world.v1.WorldBelief
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 16384
+  world_revision:
+    type: phoxal.world.v1.WorldRevision
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+  motion:
+    type: phoxal.motion.v1.MotionStatus
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+  ranges:
+    type: phoxal.robotics.v1.RangeSample
+    delivery: queue
+    required: true
+    max_items: 256
+    max_bytes: 131072
+
+outputs:
+  constraints:
+    type: phoxal.motion.v1.MotionConstraints
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 4096
+  status:
+    type: phoxal.safety.v1.SafetyStatus
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 1024

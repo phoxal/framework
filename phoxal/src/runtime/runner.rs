@@ -42,7 +42,6 @@ use crate::identity::{ExecutionId, ParticipantId};
 /// The supervisor uses these receipts to distinguish a complete output cut
 /// from a runtime that only returned an invocation acknowledgment.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[doc(hidden)]
 pub struct RuntimeProductReceipt {
     /// Runtime-owned output port identity.
     pub port: String,
@@ -60,7 +59,6 @@ pub struct RuntimeProductReceipt {
 /// request already carries its resolved target, while replies are resolved by
 /// the originating graph connection at the supervisor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[doc(hidden)]
 pub struct RuntimeDeliveryReceipt {
     /// Runtime-owned output port identity.
     pub port: String,
@@ -83,7 +81,6 @@ pub struct RuntimeDeliveryReceipt {
 /// intentionally separate from an output product receipt because a runtime
 /// may also freeze authored graph traffic in the same input cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[doc(hidden)]
 pub struct RuntimeInputReceipt {
     /// Consumer input field in the compiled runtime contract.
     pub input: String,
@@ -105,7 +102,6 @@ pub struct RuntimeInputReceipt {
 /// carries the exact generated payload and expiry to the simulation owner;
 /// it never invents a default action when a runtime omits one.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[doc(hidden)]
 pub struct RuntimeActuation {
     /// Runtime-owned actuator port identity.
     pub port: String,
@@ -167,6 +163,11 @@ pub struct RuntimeLaunchManifest {
     executable_sha256: String,
     config: Value,
     connections: BTreeMap<String, Vec<String>>,
+    projections: BTreeMap<(String, String), crate::artifact::bundle::ConnectionProjection>,
+    /// Composition-bound destinations for this runtime's declared call
+    /// requirements, resolved once at admission: requirement endpoint name to
+    /// the provider instance and its served endpoint signature.
+    requirement_destinations: BTreeMap<String, (String, crate::port::PortSignature)>,
     artifacts: BTreeMap<String, SourceRuntimeRecord>,
     observation_providers: BTreeMap<(String, String), SourceObservationProvider>,
     scenario_producers: BTreeMap<(String, String), SourceScenarioProducer>,
@@ -218,6 +219,7 @@ impl RuntimeLaunchManifest {
             robot_id: bundle_robot_id,
             executables: bundle_executables,
             simulation: bundle_simulation,
+            projections: bundle_projections,
             ..
         } = manifest;
         let document_path = root.join("robot.yaml");
@@ -348,6 +350,11 @@ impl RuntimeLaunchManifest {
                     .map(|artifact| (entry.instance.clone(), artifact.runtime.clone()))
             })
             .collect();
+        // Resolve every declared call requirement's provider endpoint once at
+        // admission.  The provider identity strings become static exactly
+        // once per requirement here, never in the per-invocation send path.
+        let requirement_destinations =
+            precompute_requirement_destinations(instance_id, &connections, &artifacts)?;
         Ok(Self {
             root,
             robot_id: bundle_robot_id,
@@ -357,6 +364,19 @@ impl RuntimeLaunchManifest {
             config,
             connections,
             artifacts,
+            requirement_destinations,
+            projections: bundle_projections
+                .into_iter()
+                .map(|projection| {
+                    (
+                        (
+                            projection.consumer_instance.clone(),
+                            projection.consumer_field.clone(),
+                        ),
+                        projection,
+                    )
+                })
+                .collect(),
             observation_providers: bundle_simulation
                 .into_iter()
                 .flat_map(|simulation| simulation.providers)
@@ -369,6 +389,16 @@ impl RuntimeLaunchManifest {
                 .collect(),
             scenario_producers,
         })
+    }
+
+    /// Returns the compiled receiver-side projection for one local input
+    /// field, when this runtime's connection declared an explicit mapping.
+    pub(super) fn projection_for_field(
+        &self,
+        field: &str,
+    ) -> Option<&crate::artifact::bundle::ConnectionProjection> {
+        self.projections
+            .get(&(self.instance_id.clone(), field.to_owned()))
     }
 
     /// Installed bundle root.
@@ -490,6 +520,16 @@ impl RuntimeLaunchManifest {
         field: &super::transport::InputTransportField,
     ) -> crate::Result<Vec<ResolvedInputRoute>> {
         let consumer = format!("{}.{}", self.instance_id, field.name);
+        if field.kind == super::input::InputKind::Completions {
+            // A generated-call requirement declares its contract identity on
+            // the completion field; its connection is validated here, but the
+            // field subscribes to nothing - the exchange delivers completions
+            // for locally staged calls.
+            if let Some(signature) = field.signature {
+                self.validate_call_requirement(&consumer, &signature)?;
+            }
+            return Ok(Vec::new());
+        }
         if field.signature.is_none()
             || (field.kind == super::input::InputKind::Setpoint
                 && self.connections.contains_key(&consumer))
@@ -823,6 +863,7 @@ impl RuntimeLaunchManifest {
                 ),
             })
         })?;
+        let max_outstanding = input.max_items.unwrap_or(1);
         let caller = format!("{}.generated_call", self.instance_id);
         let caller_rank = if signature.kind == crate::port::PortKind::Commands {
             Some(self.caller_rank_for(target_instance, signature.name, &caller)?)
@@ -854,7 +895,79 @@ impl RuntimeLaunchManifest {
             caller_rank,
             request_max_bytes,
             response_max_bytes,
+            max_outstanding,
         })
+    }
+
+    /// Validates that a declared call requirement has one composition-bound
+    /// provider whose served operation carries the same contract identity.
+    fn validate_call_requirement(
+        &self,
+        consumer: &str,
+        signature: &crate::port::PortSignature,
+    ) -> crate::Result<()> {
+        let reject = |message: String| anyhow::anyhow!(RunnerError::BundleInvalid { message });
+        let sources = self.connections.get(consumer).ok_or_else(|| {
+            reject(format!(
+                "required call `{consumer}` has no authored connection"
+            ))
+        })?;
+        if sources.len() != 1 {
+            return Err(reject(format!(
+                "required call `{consumer}` accepts exactly one provider"
+            )));
+        }
+        let (source_instance, source_port) =
+            parse_graph_endpoint(&sources[0]).map_err(|message| {
+                reject(format!(
+                    "connection `{consumer} <- {}` is invalid: {message}",
+                    sources[0]
+                ))
+            })?;
+        let target = self.artifacts.get(&source_instance).ok_or_else(|| {
+            reject(format!(
+                "required call `{consumer}` provider `{source_instance}` has no admitted artifact"
+            ))
+        })?;
+        let served = target.inputs.iter().find(|input| {
+            input.role == "call_ingress"
+                && input.port.as_deref() == Some(source_port.as_str())
+                && input.signature.as_ref().is_some_and(|candidate| {
+                    candidate.service == signature.service
+                        && candidate.request == signature.request
+                        && candidate.response == signature.response
+                })
+        });
+        if served.is_none() {
+            return Err(reject(format!(
+                "required call `{consumer}` contract `{}` is not served by `{source_instance}.{source_port}`",
+                signature.service
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolves the destination of a locally staged generated call whose
+    /// handle bound the empty instance marker.
+    ///
+    /// The requirement's own authored connection names the provider, so a
+    /// reusable service never learns a robot instance name.  Destinations
+    /// were resolved once at admission; this lookup allocates nothing.
+    fn resolve_requirement_destination(
+        &self,
+        signature: &crate::port::PortSignature,
+    ) -> crate::Result<(String, crate::port::PortSignature)> {
+        self.requirement_destinations
+            .get(signature.name)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "required call `{}.{}` has no composition-bound provider",
+                        self.instance_id, signature.name
+                    ),
+                })
+            })
     }
 
     /// Decode the selected configuration into the exact runtime type.
@@ -1011,19 +1124,39 @@ pub trait RuntimeClock {
     fn wait_until(&mut self, release: ExecutionTime) -> crate::Result<()>;
 }
 
-/// A system host clock with one monotonic origin.
+/// A system host clock anchored to the shared wall-clock epoch.
+///
+/// Hardware-local runtimes stamp captures in their execution-time domain.
+/// Anchoring that domain to the UNIX epoch (rather than a per-process
+/// monotonic origin) makes observation stamps comparable across independent
+/// runtime processes, so age bounds and leases evaluate cross-process; the
+/// bounded-skew policy absorbs the residual clock difference between hosts.
+/// Release arithmetic stays relative and therefore unaffected.
 #[derive(Debug)]
 pub struct SystemClock {
     origin: Instant,
+    /// UNIX-epoch nanos at `origin`; the execution domain's shared base.
+    wall_base: u64,
 }
 
 impl SystemClock {
-    /// Start a clock at the current host-monotonic instant.
+    /// Start a clock at the current host-monotonic instant, anchored to the
+    /// current wall-clock reading.
     #[must_use]
     pub fn new() -> Self {
         Self {
             origin: Instant::now(),
+            wall_base: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| {
+                    u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+                }),
         }
+    }
+
+    /// Converts a wall-anchored execution time back to elapsed-since-origin.
+    fn elapsed_at(&self, at: ExecutionTime) -> Duration {
+        Duration::from_nanos(at.as_nanos().saturating_sub(self.wall_base))
     }
 }
 
@@ -1035,11 +1168,14 @@ impl Default for SystemClock {
 
 impl RuntimeClock for SystemClock {
     fn now(&mut self) -> ExecutionTime {
-        ExecutionTime::from(self.origin.elapsed())
+        ExecutionTime::from_nanos(
+            self.wall_base
+                .wrapping_add(u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX)),
+        )
     }
 
     fn wait_until(&mut self, release: ExecutionTime) -> crate::Result<()> {
-        let target = Duration::from(release);
+        let target = self.elapsed_at(release);
         if let Some(remaining) = target.checked_sub(self.origin.elapsed()) {
             std::thread::sleep(remaining);
         }
@@ -1060,7 +1196,7 @@ where
     R: RegisteredRuntime,
     R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
-    R::__retain_artifact_metadata();
+    R::retain_artifact_metadata();
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -2275,6 +2411,8 @@ enum SourceBundleManifest {
         executables: Vec<SourceExecutable>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
+        #[serde(default)]
+        projections: Vec<crate::artifact::bundle::ConnectionProjection>,
     },
 }
 
@@ -2426,12 +2564,18 @@ struct SourceComponent {
 enum SourceConnectionSources {
     One(String),
     Many(Vec<String>),
+    /// An explicit projection names its foreign source under `from`; the
+    /// receiving runtime executes the compiled mapping from the bundle.
+    Projection {
+        from: String,
+    },
 }
 
 impl SourceConnectionSources {
     fn as_slice(&self) -> &[String] {
         match self {
             Self::One(source) => std::slice::from_ref(source),
+            Self::Projection { from } => std::slice::from_ref(from),
             Self::Many(sources) => sources,
         }
     }
@@ -2709,6 +2853,10 @@ struct GeneratedCallRoute {
     caller_rank: Option<u64>,
     request_max_bytes: u64,
     response_max_bytes: u64,
+    /// The provider's declared outstanding-request bound for this ingress;
+    /// a caller that outpaces its receiver's completions fails visibly at
+    /// the sender instead of overflowing the receiver's queue.
+    max_outstanding: u64,
 }
 
 fn parse_graph_endpoint(value: &str) -> Result<(String, String), String> {
@@ -2832,4 +2980,86 @@ fn parse_endpoint(value: &str) -> Result<String, String> {
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// Resolves every declared call requirement of one runtime to its
+/// composition-bound provider endpoint, once per launch admission.
+///
+/// Provider identity strings become static exactly once per requirement
+/// here; the per-invocation send path performs a map lookup and allocates
+/// nothing.  Requirements without exactly one matching provider endpoint
+/// fail admission before any step runs.
+fn precompute_requirement_destinations(
+    instance_id: &str,
+    connections: &BTreeMap<String, Vec<String>>,
+    artifacts: &BTreeMap<String, SourceRuntimeRecord>,
+) -> crate::Result<BTreeMap<String, (String, crate::port::PortSignature)>> {
+    let reject = |message: String| anyhow::anyhow!(RunnerError::BundleInvalid { message });
+    let Some(own) = artifacts.get(instance_id) else {
+        return Ok(BTreeMap::new());
+    };
+    let mut destinations = BTreeMap::new();
+    for input in &own.inputs {
+        if input.role != "call_completions" {
+            continue;
+        }
+        let Some(requirement) = input.port.as_deref() else {
+            continue;
+        };
+        let Some(required) = input.signature.as_ref() else {
+            continue;
+        };
+        let consumer = format!("{instance_id}.{requirement}");
+        let Some(sources) = connections.get(&consumer) else {
+            return Err(reject(format!(
+                "required call `{consumer}` has no authored connection"
+            )));
+        };
+        if sources.len() != 1 {
+            return Err(reject(format!(
+                "required call `{consumer}` accepts exactly one provider"
+            )));
+        }
+        let (source_instance, source_port) =
+            parse_graph_endpoint(&sources[0]).map_err(|message| {
+                reject(format!(
+                    "connection `{consumer} <- {}` is invalid: {message}",
+                    sources[0],
+                ))
+            })?;
+        let provider = artifacts.get(&source_instance).ok_or_else(|| {
+            reject(format!(
+                "required call `{consumer}` provider `{source_instance}` has no admitted artifact"
+            ))
+        })?;
+        let served = provider
+            .inputs
+            .iter()
+            .find(|candidate| {
+                candidate.role == "call_ingress"
+                    && candidate.port.as_deref() == Some(source_port.as_str())
+                    && candidate.signature.as_ref().is_some_and(|signature| {
+                        signature.service == required.service
+                            && signature.request == required.request
+                            && signature.response == required.response
+                    })
+            })
+            .and_then(|candidate| candidate.signature.clone())
+            .ok_or_else(|| {
+                reject(format!(
+                    "required call `{consumer}` contract `{}` is not served by `{source_instance}.{source_port}`",
+                    required.service
+                ))
+            })?;
+        let signature = crate::port::PortSignature::new_owned(
+            served.endpoint.as_str(),
+            served.service.as_str(),
+            served.method.as_str(),
+            crate::port::PortKind::Commands,
+            served.request.as_str(),
+            served.response.as_str(),
+        );
+        destinations.insert(requirement.to_owned(), (source_instance, signature));
+    }
+    Ok(destinations)
 }

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
 
-use super::{ExecutionTime, ObservationStamp, Sample};
+use super::{ExecutionDuration, ExecutionTime, ObservationStamp, Sample};
 use crate::port::PortSignature;
 
 /// The input kind fixed by one runtime input form.
@@ -447,7 +447,7 @@ pub struct SetpointUpdate {
 }
 
 /// One erased generated-call completion admitted into the next input cut.
-#[doc(hidden)]
+#[derive(Clone)]
 pub struct TransportCallCompletion {
     /// Execution-local ticket identity.
     pub ticket: u64,
@@ -476,7 +476,6 @@ pub struct OperationCompletionRecord {
 /// decoder implementation that produces each value.  Every generated input
 /// collector implements the complete set of methods for its declared forms;
 /// an undeclared field or an incorrect Rust payload type is an explicit error.
-#[doc(hidden)]
 pub trait TransportInputSink {
     /// Install a latest value.
     fn set_latest(
@@ -804,14 +803,12 @@ pub enum CapacityError {
 /// The numeric parameter is generated from the authored field identifier by
 /// the `inputs` collector.  It keeps output activation checks type-directed
 /// even when the input and output declarations live in different modules.
-#[doc(hidden)]
 pub trait InputFieldBinding<const ID: u64>: InputSet {
     /// The concrete input form carried by this field.
     type Form: InputSpec;
 }
 
 /// Marks an input form that can be selected by an output activation method.
-#[doc(hidden)]
 pub trait ActivationInput {
     /// The activation key type.
     type Key: 'static;
@@ -834,7 +831,6 @@ impl<Key: 'static, Response: 'static> ActivationInput for Operation<Key, Respons
 }
 
 /// Connects an activation method's return type to its selected input form.
-#[doc(hidden)]
 pub trait ActivationFor<Input>: 'static {}
 
 impl<Key: 'static, Request: 'static, Response: 'static> ActivationFor<Read<Key, Request, Response>>
@@ -853,7 +849,6 @@ impl<Key: 'static, Response: 'static, WorkerInput: 'static> ActivationFor<Operat
 }
 
 /// Connects a synchronous operation worker's return type to its input form.
-#[doc(hidden)]
 pub trait OperationWorkerFor<Input>: 'static {}
 
 impl<Key: 'static, Response: 'static, Error: 'static> OperationWorkerFor<Operation<Key, Response>>
@@ -862,7 +857,6 @@ impl<Key: 'static, Response: 'static, Error: 'static> OperationWorkerFor<Operati
 }
 
 /// The policy requirements implied by one activation input form.
-#[doc(hidden)]
 pub trait ActivationPolicy {
     /// Whether an activation must author a host-monotonic timeout.
     const REQUIRES_TIMEOUT: bool;
@@ -888,6 +882,15 @@ impl<Key: 'static, Response: 'static> ActivationPolicy for Operation<Key, Respon
     const REQUIRES_TIMEOUT: bool = false;
     const ALLOWS_REFRESH: bool = false;
 }
+
+/// Bounded clock-skew policy for cross-process observations.
+///
+/// A capture stamp ahead of the receiving clock by at most this much is
+/// treated as an independent producer clock running slightly ahead and
+/// satisfies freshness with a clamped age of zero.  A stamp further in the
+/// future is invalid evidence: it cannot prove freshness and the observation
+/// is treated as unavailable rather than retained as current.
+pub const MAX_OBSERVATION_FORWARD_SKEW: ExecutionDuration = ExecutionDuration::from_millis(250);
 
 /// A latest snapshot with explicit absence.
 pub struct Latest<T> {
@@ -935,9 +938,15 @@ impl<T> Latest<T> {
         let Some(sample) = &self.value else {
             return false;
         };
-        let Some(age) = now.checked_duration_since(sample.stamp().capture_time()) else {
-            return false;
-        };
+        // A sample stamped slightly after `now` comes from an independent
+        // producer clock running ahead within the bounded skew policy and is
+        // fresh; a stamp further in the future is invalid evidence, never
+        // proof of freshness.
+        let stamp = sample.stamp().capture_time();
+        if let Some(ahead) = stamp.checked_duration_since(now) {
+            return ahead <= MAX_OBSERVATION_FORWARD_SKEW;
+        }
+        let age = now.checked_duration_since(stamp).unwrap_or_default();
         max_age_ms.is_none_or(|limit| age.as_millis() <= limit)
     }
 
@@ -1408,7 +1417,6 @@ impl<Request, Response> Command<Request, Response> {
     }
 
     /// Creates an admitted command retaining its authenticated caller identity.
-    #[doc(hidden)]
     #[must_use]
     pub fn with_source_order(
         order: CommandOrder,
@@ -1778,7 +1786,6 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
         self.retained_success.as_ref()
     }
 
-    #[doc(hidden)]
     pub fn select(&mut self, key: Key, attempt_started: bool)
     where
         Key: Eq,
@@ -1798,7 +1805,6 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
         }
     }
 
-    #[doc(hidden)]
     pub fn admit(
         &mut self,
         key: Key,
@@ -1811,7 +1817,6 @@ impl<Key, Request, Response> Read<Key, Request, Response> {
         self.status = ReadStatus::Completed;
     }
 
-    #[doc(hidden)]
     pub fn finish_invocation(&mut self) {
         if let Some(completion) = self.completion.take() {
             let (key, result) = completion.into_parts();
@@ -1879,7 +1884,6 @@ impl<Response> CallCompletion<Response> {
 }
 
 /// Response decoding supported by generated service calls.
-#[doc(hidden)]
 pub trait CallResponse: Sized {
     fn decode_call_response(bytes: &[u8]) -> Result<Self, RequestError>;
 }
@@ -1919,7 +1923,6 @@ impl Completions {
         })
     }
 
-    #[doc(hidden)]
     pub fn from_transport(values: Vec<TransportCallCompletion>) -> Self {
         Self {
             values: values
@@ -2037,7 +2040,6 @@ impl<Key, RequestBody, Response> Request<Key, RequestBody, Response> {
         self.completion.as_ref()
     }
 
-    #[doc(hidden)]
     pub fn select(&mut self, key: Key, attempt_started: bool)
     where
         Key: Eq,
@@ -2050,14 +2052,12 @@ impl<Key, RequestBody, Response> Request<Key, RequestBody, Response> {
         }
     }
 
-    #[doc(hidden)]
     pub fn admit(&mut self, key: Key, result: Result<Response, RequestError>) {
         self.status = ReadStatus::Completed;
         self.key = None;
         self.completion = Some(RequestCompletion { key, result });
     }
 
-    #[doc(hidden)]
     pub fn finish_invocation(&mut self) {
         if let Some(completion) = self.completion.take() {
             let (key, _) = completion.into_parts();
@@ -2190,7 +2190,6 @@ impl<Key, Response> Operation<Key, Response> {
         self.completion.as_ref()
     }
 
-    #[doc(hidden)]
     pub fn select(&mut self, key: Key, attempt_started: bool)
     where
         Key: Eq,
@@ -2203,14 +2202,12 @@ impl<Key, Response> Operation<Key, Response> {
         }
     }
 
-    #[doc(hidden)]
     pub fn admit(&mut self, key: Key, result: Result<Response, OperationInputError>) {
         self.status = ReadStatus::Completed;
         self.key = None;
         self.completion = Some(OperationCompletion { key, result });
     }
 
-    #[doc(hidden)]
     pub fn finish_invocation(&mut self) {
         if let Some(completion) = self.completion.take() {
             let (key, _) = completion.into_parts();
@@ -2274,7 +2271,7 @@ impl ExecutionTime {
 mod tests {
     use super::{
         Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,
-        Commands, InputKind, InputSpec, Read, ReadError, ReadStatus, Request, Samples,
+        Commands, InputKind, InputSpec, Latest, Read, ReadError, ReadStatus, Request, Samples,
     };
     use crate::runtime::{ExecutionTime, ObservationStamp, Sample};
 
@@ -2286,6 +2283,32 @@ mod tests {
         assert_eq!(reply.id().sequence(), 7);
         assert_eq!(reply.order(), order);
         assert_eq!(*reply.response(), 11);
+    }
+
+    #[test]
+    fn freshness_accepts_only_bounded_forward_skew() {
+        let now = ExecutionTime::from_nanos(1_000_000_000_000_000);
+        let sample_at = |nanos: u64| {
+            Latest::<u8>::new(
+                1,
+                ObservationStamp::new("producer", ExecutionTime::from_nanos(nanos), Some(1)),
+            )
+        };
+        // Ordinary skew: a producer up to the bound ahead stays fresh.
+        let skew = super::MAX_OBSERVATION_FORWARD_SKEW.as_nanos();
+        assert!(sample_at(now.as_nanos() + skew).is_fresh_at(now, Some(100)));
+        // A stamp beyond the bound is invalid evidence, never fresh.
+        assert!(!sample_at(now.as_nanos() + skew + 1).is_fresh_at(now, Some(100)));
+        assert!(!sample_at(now.as_nanos() + skew + 1).is_fresh_at(now, None));
+        // An hour ahead must not satisfy any freshness requirement.
+        let hour = 60 * 60 * 1000 * 1_000_000_000_u64;
+        assert!(!sample_at(now.as_nanos() + hour).is_fresh_at(now, Some(100)));
+        // Stale retained samples stay stale (deltas in nanoseconds: 1 ms =
+        // 1_000_000).
+        assert!(!sample_at(now.as_nanos() - 101 * 1_000_000).is_fresh_at(now, Some(100)));
+        assert!(sample_at(now.as_nanos() - 99 * 1_000_000).is_fresh_at(now, Some(100)));
+        // Absence is never fresh.
+        assert!(!Latest::<u8>::unavailable().is_fresh_at(now, None));
     }
 
     #[test]

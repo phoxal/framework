@@ -1,0 +1,40 @@
+schema: phoxal/service/v0
+
+inputs:
+  pose:
+    type: phoxal.kinematics.v1.OdometryState
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+
+outputs:
+  belief:
+    type: phoxal.world.v1.WorldBelief
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 512
+  revision:
+    type: phoxal.world.v1.WorldRevision
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 128
+  status:
+    type: phoxal.world.v1.WorldStatus
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 512
+
+operations:
+  window:
+    contract: phoxal.world.v1.Window
+    request: phoxal.world.v1.WindowRequest
+    response: phoxal.world.v1.WindowResponse
+    max_items: 32
+    max_bytes: 16384

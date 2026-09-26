@@ -4,7 +4,6 @@ package phoxal.safety.v1;
 
 import "google/protobuf/empty.proto";
 import "phoxal/motion/v1/constraints.proto";
-import "phoxal/api.proto";
 
 // SafetyStatus now references the canonical Motion-owned `ConstraintReason`
 // from `phoxal.motion.v1.constraints` after the protective-constraint payload
@@ -13,16 +12,4 @@ message SafetyStatus {
   bool protective_state_clear = 1;
   uint64 sequence = 2;
   repeated phoxal.motion.v1.ConstraintReason reasons = 3;
-}
-
-service Safety {
-  // The Constraints endpoint publishes the canonical Motion-owned
-  // `MotionConstraints` payload after the protective-constraint ownership move.
-  rpc Constraints(google.protobuf.Empty) returns (stream phoxal.motion.v1.MotionConstraints) {
-    option (phoxal.api.retained_latest) = true;
-  }
-
-  rpc Status(google.protobuf.Empty) returns (stream SafetyStatus) {
-    option (phoxal.api.retained_latest) = true;
-  }
 }

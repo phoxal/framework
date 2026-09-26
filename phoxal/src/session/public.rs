@@ -830,7 +830,6 @@ pub trait PublicMethodDescriptor: MethodDescriptor + private::Sealed {
     /// Handle type returned after remote binding.
     type Handle;
 
-    #[doc(hidden)]
     fn from_core(core: MethodHandleCore) -> Self::Handle;
 }
 

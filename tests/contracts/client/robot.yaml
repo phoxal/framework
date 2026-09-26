@@ -1,0 +1,7 @@
+schema: phoxal/robot/v0
+robot:
+  id: contract-client
+services:
+  consumer:
+    source:
+      path: ../consumer

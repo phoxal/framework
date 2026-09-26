@@ -8,7 +8,7 @@ license.workspace = true
 description = "Internal four-wheel native-motion qualification robot."
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime"] }
+phoxal = { workspace = true, features = ["runtime", "robotics"] }
 phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.3" }
 serde_json.workspace = true
 

@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package example.probe.v1;
+
+message ProbeReport {
+  // Completed inspect calls on the composed consumer.
+  uint64 inspect_completions = 1;
+  // Failed inspect calls on the composed consumer.
+  uint64 inspect_failures = 2;
+  // Last consumer phase observed through a completed inspect call.
+  string last_phase = 3;
+}

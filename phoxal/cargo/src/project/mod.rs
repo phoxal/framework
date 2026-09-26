@@ -12,6 +12,7 @@ mod document;
 #[allow(dead_code)]
 mod error;
 mod file_lock;
+pub(crate) mod manifest_check;
 pub(crate) mod participant;
 #[allow(dead_code)]
 mod preparation;
@@ -152,7 +153,7 @@ impl Project {
         &self,
         options: &CargoOptions,
         request: &SimulationRunOptions,
-        program: &phoxal::scenario::__internal::Program,
+        program: &phoxal::scenario::plan_support::Program,
     ) -> Result<SimulationRunReport, Error> {
         simulation::run(self, options, request, Some(program))
     }
@@ -285,9 +286,19 @@ impl PreparedProject {
         }
     }
 
-    /// Validates the authored project, prepares its selected APIs, and runs
-    /// Cargo check without building runtime executables.
+    /// Validates declared connections, reports deferred edges, runs Cargo
+    /// check without building runtime executables.
     pub fn check(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
+        let report = manifest_check::validate(self)?;
+        for deferred in &report.deferred {
+            eprintln!("cargo phoxal: declaration check: {deferred}");
+        }
+        if report.checked > 0 {
+            eprintln!(
+                "cargo phoxal: declaration check validated {} connection(s) from service.yaml",
+                report.checked
+            );
+        }
         self.run(CargoOperation::Check, options)
     }
 
@@ -363,7 +374,7 @@ impl PreparedProject {
         options: &CargoOptions,
         output: impl AsRef<Path>,
         facts: &SimulationModelFacts,
-        program: &phoxal::scenario::__internal::Program,
+        program: &phoxal::scenario::plan_support::Program,
     ) -> Result<CompiledBundle, Error> {
         bundle::assemble_with_inputs(
             self,
@@ -382,7 +393,7 @@ impl PreparedProject {
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
-        program: &phoxal::scenario::__internal::Program,
+        program: &phoxal::scenario::plan_support::Program,
     ) -> Result<CompiledBundle, Error> {
         bundle::assemble_with_inputs(
             self,

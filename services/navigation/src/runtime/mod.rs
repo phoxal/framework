@@ -1,15 +1,13 @@
-use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
-#[cfg(test)]
-use crate::api::__contracts::phoxal::world::v1::WorldRevision;
-use crate::api::navigation::v1::{
+use self::phoxal_provider::Inputs as NavigationInputs;
+use crate::api::types::phoxal::kinematics::v1::OdometryState;
+use crate::api::types::phoxal::navigation::v1::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
     UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
-    navigation,
 };
+#[cfg(test)]
+use crate::api::types::phoxal::world::v1::WorldRevision;
 use crate::config::{NavigationConfig, validate_navigation_config};
-use crate::inputs::NavigationInputs;
-use crate::outputs::NavigationOutputs;
 use crate::validation;
 #[cfg(test)]
 use phoxal::runtime::Sample;
@@ -55,7 +53,11 @@ impl PlannerState {
         !self.unavailable_reasons.is_empty()
     }
 
-    fn set_active_goal(&mut self, goal: &crate::api::navigation::v1::StartGoal, map_revision: u64) {
+    fn set_active_goal(
+        &mut self,
+        goal: &crate::api::types::phoxal::navigation::v1::StartGoal,
+        map_revision: u64,
+    ) {
         self.phase = Phase::Searching;
         self.active_goal_id = Some(goal.goal_id.clone());
         self.target = goal.target.clone();
@@ -87,8 +89,6 @@ pub struct Navigation;
 impl Runtime for Navigation {
     type Config = NavigationConfig;
     type State = PlannerState;
-    type Inputs = NavigationInputs;
-    type Outputs = NavigationOutputs;
 
     fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
         validate_navigation_config(config)
@@ -105,26 +105,26 @@ impl Runtime for Navigation {
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
         inputs
-            .commands
+            .apply_command
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
         inputs
-            .status_calls
+            .get_goal_status
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
 
         state.unavailable_reasons = unavailable_reasons(inputs, ctx.now());
         state.map_revision = fresh_map_revision(inputs, ctx.now());
-        let mut outputs = NavigationOutputs::default();
+        let mut outputs = Self::Outputs::default();
 
         let mut command_index = 0;
         let mut status_index = 0;
-        while command_index < inputs.commands.items().len()
-            || status_index < inputs.status_calls.items().len()
+        while command_index < inputs.apply_command.items().len()
+            || status_index < inputs.get_goal_status.items().len()
         {
             let next_is_command = match (
-                inputs.commands.items().get(command_index),
-                inputs.status_calls.items().get(status_index),
+                inputs.apply_command.items().get(command_index),
+                inputs.get_goal_status.items().get(status_index),
             ) {
                 (Some(command), Some(status)) => command.order() <= status.order(),
                 (Some(_), None) => true,
@@ -132,22 +132,22 @@ impl Runtime for Navigation {
                 (None, None) => break,
             };
             if next_is_command {
-                let command = &inputs.commands.items()[command_index];
+                let command = &inputs.apply_command.items()[command_index];
                 command_index += 1;
                 let (response, terminal) = apply_command(&mut state, command.request());
                 validation::command_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.replies.push(command.reply(response));
+                outputs.apply_command_replies.push(command.reply(response));
                 if let Some(finished) = terminal {
                     validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
                     state.retain_terminal(finished.clone());
                     outputs.finished.push(finished);
                 }
             } else {
-                let call = &inputs.status_calls.items()[status_index];
+                let call = &inputs.get_goal_status.items()[status_index];
                 status_index += 1;
                 let response = goal_status(&state, call.request());
                 validation::status_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.status_replies.push(call.reply(response));
+                outputs.get_goal_status_replies.push(call.reply(response));
             }
         }
 
@@ -185,18 +185,10 @@ impl Runtime for Navigation {
     }
 }
 
-#[phoxal::runtime::outputs]
-#[allow(
-    dead_code,
-    reason = "the collected projections are invoked by the transport runner"
-)]
-impl Navigation {
+impl crate::api::projections::Projections for Navigation {
+    type State = PlannerState;
+
     /// Projects the private planner state to its public status port.
-    #[phoxal::runtime::outputs::state(
-        port = navigation::methods::STATUS.__state_port(),
-        max_bytes = 1_024,
-        bootstrap
-    )]
     fn status(&self, state: &PlannerState) -> NavigationState {
         public_status(state)
     }
@@ -206,7 +198,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     if validation::status_request(request).is_err() {
         return GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-                crate::api::navigation::v1::GoalUnknownOrNoLongerRetained {
+                crate::api::types::phoxal::navigation::v1::GoalUnknownOrNoLongerRetained {
                     goal_id: request.goal_id.clone(),
                 },
             )),
@@ -215,7 +207,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     if state.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
         return GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::Running(
-                crate::api::navigation::v1::GoalRunning {
+                crate::api::types::phoxal::navigation::v1::GoalRunning {
                     goal_id: request.goal_id.clone(),
                 },
             )),
@@ -232,7 +224,7 @@ fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalS
     }
     GetGoalStatusResponse {
         status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-            crate::api::navigation::v1::GoalUnknownOrNoLongerRetained {
+            crate::api::types::phoxal::navigation::v1::GoalUnknownOrNoLongerRetained {
                 goal_id: request.goal_id.clone(),
             },
         )),
@@ -306,7 +298,7 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
 fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            crate::api::navigation::v1::Refused {
+            crate::api::types::phoxal::navigation::v1::Refused {
                 reason: RefusalReason::Unavailable.into(),
                 unavailable_reasons: reasons.to_vec(),
             },
@@ -317,7 +309,7 @@ fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
 fn refused(reason: RefusalReason) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            crate::api::navigation::v1::Refused {
+            crate::api::types::phoxal::navigation::v1::Refused {
                 reason: reason.into(),
                 unavailable_reasons: Vec::new(),
             },
@@ -328,7 +320,7 @@ fn refused(reason: RefusalReason) -> ApplyCommandResponse {
 fn accepted() -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Accepted(
-            crate::api::navigation::v1::Accepted {},
+            crate::api::types::phoxal::navigation::v1::Accepted {},
         )),
     }
 }
@@ -461,7 +453,7 @@ mod tests {
     fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Start(
-                crate::api::navigation::v1::StartGoal {
+                crate::api::types::phoxal::navigation::v1::StartGoal {
                     goal_id: goal_id.to_owned(),
                     target: Some(GoalTarget {
                         frame_id: "map".to_owned(),
@@ -477,7 +469,7 @@ mod tests {
     fn cancel(goal_id: &str) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Cancel(
-                crate::api::navigation::v1::CancelGoal {
+                crate::api::types::phoxal::navigation::v1::CancelGoal {
                     goal_id: goal_id.to_owned(),
                 },
             )),
@@ -488,8 +480,8 @@ mod tests {
         commands: Vec<Command<ApplyCommandRequest, ApplyCommandResponse>>,
     ) -> NavigationInputs {
         NavigationInputs {
-            commands: Commands::new(commands),
-            status_calls: Default::default(),
+            apply_command: Commands::new(commands),
+            get_goal_status: Default::default(),
             localization: odometry(
                 OdometryState {
                     x_m: 0.0,
@@ -528,7 +520,7 @@ mod tests {
         let accepted = owner
             .accept(&context(0, 0), &inputs(vec![command]))
             .expect("accept start");
-        assert_eq!(accepted.outputs().replies.len(), 1);
+        assert_eq!(accepted.outputs().apply_command_replies.len(), 1);
         assert_eq!(accepted.outputs().finished.len(), 0);
 
         let mut finished = Vec::new();
@@ -580,18 +572,18 @@ mod tests {
         let mut owner =
             RuntimeOwner::new(Navigation, at(0), config()).expect("initialize navigation");
         let unavailable = NavigationInputs {
-            commands: Commands::new(vec![Command::new(
+            apply_command: Commands::new(vec![Command::new(
                 CommandId::new(1),
                 start("goal-a", 1.0, 0.0),
             )]),
-            status_calls: Default::default(),
+            get_goal_status: Default::default(),
             localization: Latest::unavailable(),
             map: Latest::unavailable(),
         };
         let accepted = owner
             .accept(&context(0, 0), &unavailable)
             .expect("unavailability is a typed refusal");
-        let response = accepted.outputs().replies[0].response();
+        let response = accepted.outputs().apply_command_replies[0].response();
         assert!(matches!(
             response.decision.as_ref(),
             Some(apply_command_response::Decision::Refused(refused))

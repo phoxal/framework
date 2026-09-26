@@ -51,9 +51,9 @@ pub mod scenario;
 pub mod session;
 
 /// Public Protobuf transport implementation shared by sessions and the
-/// supervisor host. It is not an SDK transport handle.
+/// supervisor host. It is not an SDK transport handle; sessions and the
+/// supervisor are its consumers.
 #[cfg(feature = "session")]
-#[doc(hidden)]
 pub mod communication_transport;
 
 /// Framework result type backed by `anyhow`.
@@ -76,9 +76,12 @@ macro_rules! api {
 }
 
 /// Implementation dependencies used by generated API code.
+///
+/// Generated bindings reference this module for their Protobuf runtime and
+/// the build-helper version marker; it is not application API.
 #[cfg(feature = "contract")]
-#[doc(hidden)]
-pub mod __generated {
+#[cfg_attr(docsrs, doc(cfg(feature = "contract")))]
+pub mod generated {
     pub use prost;
 
     const fn version_marker(version: &str) -> u64 {
@@ -135,10 +138,11 @@ pub use phoxal_macros::scenario;
 #[cfg(feature = "runtime")]
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
-/// The current runtime attribute namespace.
+/// Macro- and generator-support surface: port descriptors, shared error
+/// plumbing, and the compile-time checks emitted by `#[phoxal::runtime]`
+/// expansions.  Not application API.
 #[cfg(any(feature = "runtime", feature = "scenario"))]
-#[doc(hidden)]
-pub mod __private {
+pub mod macro_support {
     pub use crate::port::*;
     #[cfg(feature = "runtime")]
     pub use anyhow;

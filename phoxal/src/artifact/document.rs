@@ -62,12 +62,28 @@ pub fn is_identifier(value: &str) -> bool {
 }
 
 /// An optional explicit root-package binary selection.
+///
+/// The brain is instructed by `robot.yaml`: its endpoint declaration is the
+/// four embedded service sections here (validated strictly by the build
+/// helper's shared parser), not a standalone `service.yaml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrainSelection {
     /// Binary target name when the root package has multiple eligible binaries.
     #[serde(default)]
     pub binary: Option<String>,
+    /// Brain input endpoints (`phoxal/service/v0` input sections).
+    #[serde(default)]
+    pub inputs: BTreeMap<String, serde_json::Value>,
+    /// Brain output endpoints (`phoxal/service/v0` output sections).
+    #[serde(default)]
+    pub outputs: BTreeMap<String, serde_json::Value>,
+    /// Brain served operations (`phoxal/service/v0` operation sections).
+    #[serde(default)]
+    pub operations: BTreeMap<String, serde_json::Value>,
+    /// Brain required calls (`phoxal/service/v0` call sections).
+    #[serde(default)]
+    pub calls: BTreeMap<String, serde_json::Value>,
 }
 
 /// Robot-level model and component composition.
@@ -104,6 +120,10 @@ pub struct ComponentInstance {
 }
 
 /// A component-owned native model and semantic capability definition.
+///
+/// A component's runtime endpoints are instructed by the same document: the
+/// four embedded service sections are validated strictly by the build
+/// helper's shared parser; a component owns no separate `service.yaml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum ComponentDocument {
@@ -117,6 +137,18 @@ pub enum ComponentDocument {
         /// Explicit additional package assets retained by publication tooling.
         #[serde(default)]
         assets: Vec<PathBuf>,
+        /// Component input endpoints (`phoxal/service/v0` input sections).
+        #[serde(default)]
+        inputs: BTreeMap<String, serde_json::Value>,
+        /// Component output endpoints (`phoxal/service/v0` output sections).
+        #[serde(default)]
+        outputs: BTreeMap<String, serde_json::Value>,
+        /// Component served operations (`phoxal/service/v0` operation sections).
+        #[serde(default)]
+        operations: BTreeMap<String, serde_json::Value>,
+        /// Component required calls (`phoxal/service/v0` call sections).
+        #[serde(default)]
+        calls: BTreeMap<String, serde_json::Value>,
     },
 }
 
@@ -280,6 +312,23 @@ pub enum ConnectionSources {
     One(String),
     /// An ordered set of producer endpoints.
     Many(Vec<String>),
+    /// One producer endpoint behind an explicit field projection.
+    Projection(ProjectionConnection),
+}
+
+/// An explicit receiver-side observation projection: `from` names the foreign
+/// producer endpoint and `map` copies named top-level scalar fields into the
+/// consumer's declared message (destination paths are keys, source paths are
+/// values).
+///
+/// `deny_unknown_fields` cannot combine with the untagged parent enum, so the
+/// declaration check rejects unknown content semantically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionConnection {
+    /// Foreign producer endpoint (`instance.port`).
+    pub from: String,
+    /// Destination field path to source field path.
+    pub map: BTreeMap<String, String>,
 }
 
 impl ConnectionSources {
@@ -289,6 +338,7 @@ impl ConnectionSources {
         match self {
             Self::One(value) => std::slice::from_ref(value),
             Self::Many(values) => values,
+            Self::Projection(projection) => std::slice::from_ref(&projection.from),
         }
     }
 }

@@ -20,13 +20,11 @@ pub trait Config: serde::de::DeserializeOwned + Send + 'static {
 }
 
 /// Const-composable schema emitted by [`crate::Config`].
-#[doc(hidden)]
 pub trait ConfigSchema {
-    #[doc(hidden)]
-    const __SCHEMA: ConfigSchemaValue;
+    const SCHEMA_VALUE: ConfigSchemaValue;
 
     /// A complete schema or subschema for this value.
-    const SCHEMA_JSON: &'static str = Self::__SCHEMA.as_str();
+    const SCHEMA_JSON: &'static str = Self::SCHEMA_VALUE.as_str();
 }
 
 impl<T> Config for T
@@ -38,7 +36,6 @@ where
 
 /// Fixed-capacity const-evaluation string used to compose nested config
 /// schemas without allocating in a downstream crate.
-#[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct ConfigSchemaValue {
     bytes: [u8; 65_536],
@@ -91,32 +88,32 @@ impl Default for ConfigSchemaValue {
 }
 
 impl ConfigSchema for () {
-    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::from_str(r#"{"type":"null"}"#);
+    const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::from_str(r#"{"type":"null"}"#);
 }
 
 impl<T: ConfigSchema> ConfigSchema for Option<T> {
-    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+    const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::new()
         .push_str(r#"{"anyOf":["#)
         .push_str(T::SCHEMA_JSON)
         .push_str(r#",{"type":"null"}]}"#);
 }
 
 impl<T: ConfigSchema> ConfigSchema for Vec<T> {
-    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+    const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::new()
         .push_str(r#"{"type":"array","items":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
 }
 
 impl<T: ConfigSchema> ConfigSchema for std::collections::BTreeMap<String, T> {
-    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+    const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::new()
         .push_str(r#"{"type":"object","additionalProperties":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
 }
 
 impl<T: ConfigSchema> ConfigSchema for std::collections::HashMap<String, T> {
-    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+    const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::new()
         .push_str(r#"{"type":"object","additionalProperties":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
@@ -125,7 +122,7 @@ impl<T: ConfigSchema> ConfigSchema for std::collections::HashMap<String, T> {
 macro_rules! primitive_config_schema {
     ($ty:ty => $schema:literal) => {
         impl ConfigSchema for $ty {
-            const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::from_str($schema);
+            const SCHEMA_VALUE: ConfigSchemaValue = ConfigSchemaValue::from_str($schema);
         }
     };
 }
@@ -519,8 +516,7 @@ pub trait RegisteredRuntime: Runtime + OutputBindings {
     const SPEC: RuntimeSpec;
 
     /// Retains the compile-time artifact record through the final native link.
-    #[doc(hidden)]
-    fn __retain_artifact_metadata();
+    fn retain_artifact_metadata();
 }
 
 /// The direct, synchronous service behavior contract.
@@ -801,7 +797,6 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     /// This remains crate-visible so transport can publish an authored
     /// bootstrap projection without exposing mutable runtime state as part of
     /// the public service API.
-    #[doc(hidden)]
     pub(crate) fn state_ref(&self) -> Option<&R::State> {
         self.state.as_ref()
     }

@@ -40,7 +40,11 @@ fn local_participant_prepares_without_installing_or_building()
     fs::write(provider.join("src/main.rs"), "fn main() {}\n")?;
     fs::write(
         provider.join("api/motion.proto"),
-        "syntax = \"proto3\"; package proof.motion.v1; message Status { bool stopped = 1; } service Motion { rpc Read(Status) returns (Status); }\n",
+        "syntax = \"proto3\"; package proof.motion.v1; message Status { bool stopped = 1; }\n",
+    )?;
+    fs::write(
+        provider.join("service.yaml"),
+        "schema: phoxal/service/v0\noperations:\n  read:\n    contract: proof.motion.v1.Read\n    request: proof.motion.v1.Status\n    response: proof.motion.v1.Status\n    max_items: 4\n    max_bytes: 1024\n",
     )?;
     let lock = Command::new("cargo")
         .args(["generate-lockfile", "--offline", "--manifest-path"])
@@ -116,8 +120,12 @@ fn exact_git_revision_prepares_alternate_binary_and_api() -> Result<(), Box<dyn 
         ),
     )?;
     fs::write(source.join("src/daemon.rs"), "fn main() {}\n")?;
-    let proto = "syntax = \"proto3\"; package proof.git.v1; message Status { bool ready = 1; } service Provider { rpc Read(Status) returns (Status); }\n";
+    let proto = "syntax = \"proto3\"; package proof.git.v1; message Status { bool ready = 1; }\n";
     fs::write(source.join("api/status.proto"), proto)?;
+    fs::write(
+        source.join("service.yaml"),
+        "schema: phoxal/service/v0\noperations:\n  read:\n    contract: proof.git.v1.Read\n    request: proof.git.v1.Status\n    response: proof.git.v1.Status\n    max_items: 4\n    max_bytes: 1024\n",
+    )?;
     let lock = Command::new("cargo")
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(source.join("Cargo.toml"))
@@ -228,8 +236,13 @@ fn exact_registry_participant_recovers_prepared_api_without_cargo_cache()
         format!("[package]\nname = {package:?}\nversion = {version:?}\nedition = \"2024\"\n"),
     )?;
     fs::write(source.join("src/main.rs"), "fn main() {}\n")?;
-    let proto = "syntax = \"proto3\"; package proof.registry.v1; message Status { bool ready = 1; } service Provider { rpc Read(Status) returns (Status); }\n";
+    let proto =
+        "syntax = \"proto3\"; package proof.registry.v1; message Status { bool ready = 1; }\n";
     fs::write(source.join("api/status.proto"), proto)?;
+    fs::write(
+        source.join("service.yaml"),
+        "schema: phoxal/service/v0\noperations:\n  read:\n    contract: proof.registry.v1.Read\n    request: proof.registry.v1.Status\n    response: proof.registry.v1.Status\n    max_items: 4\n    max_bytes: 1024\n",
+    )?;
     fs::write(source.join("LICENSE"), "Test fixture only.\n")?;
     let lock = Command::new("cargo")
         .args(["generate-lockfile", "--offline", "--manifest-path"])
@@ -345,6 +358,147 @@ fn exact_registry_participant_recovers_prepared_api_without_cargo_cache()
         "{}",
         String::from_utf8_lossy(&rejected.stderr)
     );
+    Ok(())
+}
+
+/// A built-in-only package ships `service.yaml` without an `api/` directory;
+/// cold preparation must publish the manifest beside the (empty) prepared
+/// api layout, warm preparation must reuse it exactly, and a robot-local
+/// wipe must recover from the retained store copy without re-downloading.
+#[test]
+fn manifest_only_registry_participant_prepares_cold_warm_and_recovers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let package = "proof-manifest-provider";
+    let version = "0.1.0";
+    let source = directory.path().join("source");
+    let registry = directory.path().join("registry");
+    let robot = directory.path().join("robot");
+    let cargo_home = directory.path().join("cargo-home");
+    let phoxal_home = directory.path().join("phoxal-home");
+    fs::create_dir_all(source.join("src"))?;
+    fs::create_dir_all(&robot)?;
+    fs::create_dir_all(&cargo_home)?;
+    fs::write(
+        source.join("Cargo.toml"),
+        format!("[package]\nname = {package:?}\nversion = {version:?}\nedition = \"2024\"\n"),
+    )?;
+    fs::write(source.join("src/main.rs"), "fn main() {}\n")?;
+    let manifest = "schema: phoxal/service/v0\n\
+                    outputs:\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    delivery: latest\n    retained_latest: true\n    max_bytes: 1024\n";
+    fs::write(source.join("service.yaml"), manifest)?;
+    fs::write(source.join("LICENSE"), "Test fixture only.\n")?;
+    let lock = Command::new("cargo")
+        .args(["generate-lockfile", "--offline", "--manifest-path"])
+        .arg(source.join("Cargo.toml"))
+        .env("CARGO_HOME", &cargo_home)
+        .output()?;
+    assert!(
+        lock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+
+    let archive_dir = registry.join("api/v1/crates").join(package).join(version);
+    fs::create_dir_all(&archive_dir)?;
+    let archive_path = archive_dir.join("download");
+    let archive = GzEncoder::new(fs::File::create(&archive_path)?, Compression::default());
+    let mut archive = tar::Builder::new(archive);
+    archive.append_dir_all(format!("{package}-{version}"), &source)?;
+    archive.into_inner()?.finish()?;
+    let checksum = Sha256::digest(fs::read(&archive_path)?);
+    let checksum = checksum
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let index = registry.join("pr/oo");
+    fs::create_dir_all(&index)?;
+    fs::write(
+        index.join(package),
+        format!(
+            "{}\n",
+            serde_json::json!({"name": package, "vers": version, "deps": [], "cksum": checksum, "features": {}, "yanked": false})
+        ),
+    )?;
+
+    let server = RegistryServer::start(&registry)?;
+    fs::write(
+        registry.join("config.json"),
+        format!(
+            "{{\"dl\":\"http://127.0.0.1:{}/api/v1/crates\"}}",
+            server.port
+        ),
+    )?;
+    fs::write(
+        robot.join("Cargo.toml"),
+        "[package]\nname = \"proof-robot\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    fs::write(
+        robot.join("robot.yaml"),
+        format!(
+            "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    source:\n      package: {{ name: {package}, version: '{version}', registry: proof }}\n"
+        ),
+    )?;
+    let prepared_manifest = robot
+        .join(".phoxal/registry/proof")
+        .join(package)
+        .join(version)
+        .join("service.yaml");
+    let prepare = || -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
+            .arg("prepare")
+            .current_dir(&robot)
+            .env("CARGO_HOME", &cargo_home)
+            .env("PHOXAL_HOME", &phoxal_home)
+            .env(
+                "CARGO_REGISTRIES_PROOF_INDEX",
+                format!("sparse+http://127.0.0.1:{}/", server.port),
+            )
+            .output()?)
+    };
+
+    // Cold: neither the cargo cache nor the phoxal store exists yet.
+    let cold = prepare()?;
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert_eq!(fs::read_to_string(&prepared_manifest)?, manifest);
+    assert!(
+        prepared_manifest
+            .parent()
+            .is_some_and(|prepared| prepared.join("api").is_dir()),
+        "the manifest-only prepared tree keeps the api/ layout shape"
+    );
+    assert!(contains_file(
+        &phoxal_home.join("packages/registry/proof"),
+        "service.yaml"
+    )?);
+
+    // Warm: the retained store copy satisfies the exact package.
+    let warm = prepare()?;
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    assert!(
+        warm.stderr.is_empty(),
+        "warm preparation should reuse the retained manifest-only package"
+    );
+
+    // Recovery: robot-local prepared inputs vanish (and the cargo download
+    // cache with them); the retained store copy restores without network.
+    fs::remove_dir_all(robot.join(".phoxal"))?;
+    fs::remove_dir_all(cargo_home.join("registry"))?;
+    let recovered = prepare()?;
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert_eq!(fs::read_to_string(&prepared_manifest)?, manifest);
     Ok(())
 }
 

@@ -309,10 +309,14 @@ fn prepare_selection(
             ));
         }
         let api_source = layout.root().join(path).join("api");
-        if !api_source.is_dir() {
+        let service_source = layout.root().join(path).join("service.yaml");
+        let component_source = layout.root().join(path).join("component.yaml");
+        if !api_source.is_dir() && !service_source.is_file() && !component_source.is_file() {
             return Err(invalid(
                 &api_source,
-                format!("{instance} has no api/ directory"),
+                format!(
+                    "{instance} has no api/ directory or endpoint declaration (service.yaml or component.yaml)"
+                ),
             ));
         }
         local_selection(layout, path, binary, options)?;
@@ -334,8 +338,7 @@ fn prepare_selection(
                     .join(".phoxal/registry")
                     .join(registry)
                     .join(&package.name)
-                    .join(&package.version)
-                    .join("api"),
+                    .join(&package.version),
             )
         }
         Source::Git(git) => (
@@ -349,19 +352,37 @@ fn prepare_selection(
                 .root()
                 .join(".phoxal/git")
                 .join(&git.name)
-                .join(&git.rev)
-                .join("api"),
+                .join(&git.rev),
         ),
         Source::Path(_) => unreachable!("handled above"),
     };
     let binary = binary.unwrap_or(package);
     let installed = store.join("bin").join(binary);
+    // A built-in-only manifest contract retains service.yaml without an
+    // api/ directory; either layout completes an installation.
     let complete_install = installed.is_file()
         && store.join(".crates.toml").is_file()
-        && store.join("source/api").is_dir()
+        && (store.join("source/api").is_dir() || store.join("source/service.yaml").is_file())
         && store.join("package-id").is_file()
         && store.join("package-version").is_file();
-    if complete_install && prepared.is_dir() {
+    if complete_install
+        && (prepared.join("api").is_dir() || prepared.join("service.yaml").is_file())
+    {
+        let installed_manifest = store.join("source/service.yaml");
+        let prepared_manifest = prepared.join("service.yaml");
+        let manifest_agrees = match (installed_manifest.is_file(), prepared_manifest.is_file()) {
+            (false, false) => true,
+            (true, true) => same_file(&installed_manifest, &prepared_manifest),
+            _ => false,
+        };
+        if !manifest_agrees {
+            return Err(invalid(
+                &prepared,
+                format!(
+                    "prepared contract inputs for {instance} are incomplete; remove this directory and rerun `cargo phoxal prepare`"
+                ),
+            ));
+        }
         return Ok(None);
     }
     let staging = home.join("packages/.staging");
@@ -439,10 +460,12 @@ fn prepare_selection(
         ));
     }
     let api_source = source_root.join("api");
-    if !api_source.is_dir() {
+    // A built-in-only contract ships `service.yaml` without an `api/`
+    // directory; both layouts constitute a runnable contract input set.
+    if !api_source.is_dir() && !source_root.join("service.yaml").is_file() {
         return Err(invalid(
             &api_source,
-            format!("{package} has no packaged api/ directory"),
+            format!("{package} has no packaged api/ directory or service.yaml declaration"),
         ));
     }
     let validation = tempfile::tempdir_in(&staging).map_err(|source| Error::ArtifactFile {
@@ -458,7 +481,7 @@ fn prepare_selection(
             format!("Cargo did not install binary `{binary}`"),
         ));
     }
-    publish_api(&api_source, &prepared)?;
+    publish_api(&source_root, &prepared)?;
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
             path: parent.to_owned(),
@@ -572,8 +595,9 @@ fn captured_source(
     ))
 }
 
-fn publish_api(source: &Path, destination: &Path) -> Result<(), Error> {
-    if let Some(parent) = destination.parent() {
+fn publish_api(source_root: &Path, destination_root: &Path) -> Result<(), Error> {
+    let api_source = source_root.join("api");
+    if let Some(parent) = destination_root.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
             path: parent.to_owned(),
             source,
@@ -582,19 +606,37 @@ fn publish_api(source: &Path, destination: &Path) -> Result<(), Error> {
             path: parent.to_owned(),
             source,
         })?;
-        let candidate = staging.path().join("api");
-        copy_protos(source, &candidate)?;
-        if destination.exists() {
-            if same_tree(&candidate, destination)? {
+        let candidate = staging.path();
+        // A built-in-only manifest contract has no api/ directory to copy;
+        // the prepared tree keeps the api/ layout shape as an empty directory
+        // beside the manifest so consumers never see a partial publication.
+        if api_source.is_dir() {
+            copy_protos(&api_source, &candidate.join("api"))?;
+        } else {
+            fs::create_dir_all(candidate.join("api")).map_err(|source| Error::ArtifactFile {
+                path: candidate.join("api"),
+                source,
+            })?;
+        }
+        let manifest = source_root.join("service.yaml");
+        let manifest_destination = candidate.join("service.yaml");
+        if manifest.is_file() {
+            fs::copy(&manifest, &manifest_destination).map_err(|source| Error::ArtifactFile {
+                path: manifest_destination.clone(),
+                source,
+            })?;
+        }
+        if destination_root.exists() {
+            if same_tree(candidate, destination_root)? {
                 return Ok(());
             }
             return Err(invalid(
-                destination,
+                destination_root,
                 "prepared source differs for the same exact package; remove the corrupted directory before retrying",
             ));
         }
-        fs::rename(&candidate, destination).map_err(|source| Error::ArtifactFile {
-            path: destination.to_owned(),
+        fs::rename(candidate, destination_root).map_err(|source| Error::ArtifactFile {
+            path: destination_root.to_owned(),
             source,
         })?;
     }
@@ -642,6 +684,10 @@ fn copy_protos(source: &Path, destination: &Path) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    fs::read(left).is_ok_and(|left| fs::read(right).is_ok_and(|right| left == right))
 }
 
 fn same_tree(left: &Path, right: &Path) -> Result<bool, Error> {
@@ -692,7 +738,20 @@ fn collect_files(
 
 fn retain_package_files(source: &Path, installed: &Path) -> Result<(), Error> {
     let retained = installed.join("source");
+    // A manifest-only package has no api/ to retain, but the retained
+    // source/ root must still exist for the manifest copy below.
+    fs::create_dir_all(&retained).map_err(|error| Error::ArtifactFile {
+        path: retained.clone(),
+        source: error,
+    })?;
     copy_package_source(&source.join("api"), &retained.join("api"))?;
+    let service = source.join("service.yaml");
+    if service.is_file() {
+        fs::copy(&service, retained.join("service.yaml")).map_err(|error| Error::ArtifactFile {
+            path: service,
+            source: error,
+        })?;
+    }
     let component = source.join("component.yaml");
     if component.is_file() {
         fs::copy(&component, retained.join("component.yaml")).map_err(|error| {
@@ -707,6 +766,10 @@ fn retain_package_files(source: &Path, installed: &Path) -> Result<(), Error> {
 }
 
 fn copy_package_source(source: &Path, retained: &Path) -> Result<(), Error> {
+    // A built-in-only manifest contract has no api/ directory to retain.
+    if !source.exists() {
+        return Ok(());
+    }
     fs::create_dir_all(retained).map_err(|error| Error::ArtifactFile {
         path: retained.to_owned(),
         source: error,

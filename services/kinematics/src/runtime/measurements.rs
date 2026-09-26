@@ -1,16 +1,17 @@
 //! Bounded wheel evidence with source-owned capture time and calibrated SI values.
-use crate::api::kinematics::v1::{JointState, UnavailableReason};
+use crate::api::types::phoxal::kinematics::v1::{JointState, UnavailableReason};
 use crate::config::KinematicsConfig;
-use crate::inputs::KinematicsInputs;
 use crate::validation;
 use phoxal::robotics::EncoderSample;
-use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
+use phoxal::runtime::ExecutionTime;
+use phoxal::runtime::ObservationStamp;
+use phoxal::runtime::input::Samples;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type RetainedEncoders = BTreeMap<String, (EncoderSample, ObservationStamp)>;
 
 pub(super) struct WheelCut {
-    pub joints: Vec<Sample<JointState>>,
+    pub joints: Vec<JointState>,
     pub linear_mps: f64,
     pub angular_radps: f64,
     pub oldest_capture_time_nanos: u64,
@@ -19,11 +20,11 @@ pub(super) struct WheelCut {
 pub(super) fn collect(
     config: &KinematicsConfig,
     retained: &mut RetainedEncoders,
-    inputs: &KinematicsInputs,
+    inputs: &Samples<EncoderSample>,
     now: ExecutionTime,
 ) -> Result<WheelCut, UnavailableReason> {
     let mut updated = BTreeSet::new();
-    for sample in inputs.encoders.items() {
+    for sample in inputs.items() {
         let id = sample.stamp().source();
         if !config
             .left_wheels
@@ -85,7 +86,7 @@ pub(super) fn collect(
             sides[index] += joint.velocity_radps * config.wheel_radius_m / wheels.len() as f64;
             oldest = oldest.min(stamp.capture_time().as_nanos());
             if updated.contains(wheel.encoder_id.as_str()) {
-                joints.push(Sample::new(joint, stamp.clone()));
+                joints.push(joint);
             }
         }
     }

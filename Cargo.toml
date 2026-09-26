@@ -16,11 +16,16 @@ resolver = "3"
 # independent workspace packages.
 members = [
     "phoxal/build",
-    "tests/contracts/producer",
     "tests/contracts/consumer",
+    "tests/contracts/client",
+    "tests/contracts/encoder-a",
+    "tests/contracts/encoder-b",
+    "tests/contracts/foreign-reading",
+    "tests/contracts/robot",
     "tests/hardware/driver",
     "tests/robot",
     "tests/robot/controller",
+    "tests/supervisor-runtime",
     "phoxal",
     "phoxal/macros",
     "supervisor",

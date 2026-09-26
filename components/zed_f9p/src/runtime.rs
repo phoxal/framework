@@ -1,8 +1,4 @@
-#[cfg(test)]
-#[cfg(test)]
-use crate::api::zed_f9p::v1::zed_f9p;
 use crate::config::ZedF9pConfig;
-use crate::outputs::ZedF9pOutputs;
 use anyhow::Result;
 use anyhow::anyhow;
 use phoxal::runtime::InitContext;
@@ -19,17 +15,12 @@ pub struct ZedF9pState;
 /// The ZED-F9P hardware component driver.
 pub struct ZedF9p;
 
-#[phoxal::runtime::outputs]
-impl ZedF9p {}
-
 /// The hardware backend is intentionally unavailable until a real receiver
 /// transport can publish measured fixes and stop safely.
 #[phoxal::runtime(period_ms = 100, timeout_ms = 200, init_timeout_ms = 1_000)]
 impl Runtime for ZedF9p {
     type Config = ZedF9pConfig;
     type State = ZedF9pState;
-    type Inputs = ();
-    type Outputs = ZedF9pOutputs;
 
     fn init(&self, _ctx: &InitContext, _config: Self::Config) -> Result<Self::State> {
         Err(anyhow!(BACKEND_UNAVAILABLE))
@@ -47,31 +38,39 @@ impl Runtime for ZedF9p {
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKEND_UNAVAILABLE, ZedF9p, ZedF9pConfig, ZedF9pOutputs, zed_f9p};
+    use super::{BACKEND_UNAVAILABLE, ZedF9p, ZedF9pConfig};
     use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
 
     #[test]
     fn generated_gnss_method_has_a_retained_descriptor() {
-        assert_eq!(zed_f9p::methods::GNSS.signature().endpoint, "gnss");
         assert_eq!(
-            zed_f9p::methods::GNSS.signature().service,
-            "phoxal.component.zed_f9p.v1.ZedF9p"
+            crate::api::service_methods::u0::GNSS.signature().endpoint,
+            "gnss"
         );
         assert_eq!(
-            zed_f9p::methods::GNSS.signature().shape,
+            crate::api::service_methods::u0::GNSS.signature().service,
+            "phoxal.component.zed_f9p.v1.GnssSample"
+        );
+        assert_eq!(
+            crate::api::service_methods::u0::GNSS.signature().shape,
             MethodShape::Observation
         );
         assert!(
-            !zed_f9p::methods::GNSS
+            !crate::api::service_methods::u0::GNSS
                 .signature()
                 .descriptor_set()
                 .is_empty()
         );
-        assert_eq!(ZedF9pOutputs::FIELDS[0].name, "gnss");
-        assert_eq!(ZedF9pOutputs::FIELDS[0].port, Some("gnss"));
-        assert!(ZedF9pOutputs::FIELDS[0].port_signature.is_some());
+        assert_eq!(<ZedF9p as Runtime>::Outputs::FIELDS[0].name, "gnss");
+        assert_eq!(<ZedF9p as Runtime>::Outputs::FIELDS[0].port, Some("gnss"));
+        assert!(
+            <ZedF9p as Runtime>::Outputs::FIELDS[0]
+                .port_signature
+                .is_some()
+        );
     }
 
     #[test]

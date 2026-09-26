@@ -1,0 +1,23 @@
+schema: phoxal/service/v0
+
+inputs:
+  manual:
+    type: phoxal.motion.v1.MotionIntent
+    delivery: latest
+    required: true
+    lease: { valid_for_ms: 100 }
+    max_bytes: 4096
+  encoders:
+    type: phoxal.robotics.v1.EncoderSample
+    delivery: queue
+    required: true
+    max_items: 32
+    max_bytes: 262144
+
+outputs:
+  actuators:
+    type: phoxal.motion.v1.ActuatorSetpoint
+    delivery: latest
+    lease: { valid_for_ms: 100 }
+    projection: state
+    max_bytes: 1024

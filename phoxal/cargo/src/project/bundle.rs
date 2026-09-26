@@ -21,7 +21,7 @@ use crate::project::selection::PackageSource;
 use crate::project::validation;
 use crate::project::{CargoOptions, Error, PreparedProject, RobotDocument};
 use phoxal::artifact::RuntimeRecord;
-use phoxal::scenario::__internal::{Action, Program};
+use phoxal::scenario::plan_support::{Action, Program};
 
 // Re-exports from the framework artifact module. The module is the source of
 // truth for every record the bundle exchanges; this module
@@ -168,6 +168,11 @@ pub(crate) fn assemble_with_inputs(
                 }
             }
         })?;
+        if let Some(declaration) =
+            super::manifest_check::declaration_for_instance(prepared, &instance)?
+        {
+            super::manifest_check::check_executable_agreement(&instance, &declaration, &contract)?;
+        }
         artifacts.insert(key, (target.clone(), executable, contract));
     }
 
@@ -296,6 +301,7 @@ pub(crate) fn assemble_with_inputs(
         component_sources,
         model: staged_model.as_ref().map(|model| model.closure.clone()),
         simulation,
+        projections: super::manifest_check::compile_projections(prepared)?,
     };
     write_yaml(&staged_root.join("robot.yaml"), &document)?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;
@@ -319,7 +325,8 @@ fn apply_scenario_substitutions(
             "scenario fixture instance id must not be empty",
         ));
     }
-    let mut substitutions = BTreeMap::<String, (String, phoxal::__private::PortSignature)>::new();
+    let mut substitutions =
+        BTreeMap::<String, (String, phoxal::macro_support::PortSignature)>::new();
     for step in program.steps() {
         let (target_instance, signature) = match &step.action {
             Action::Setpoint {
@@ -376,7 +383,7 @@ fn apply_scenario_substitutions(
                 .as_deref()
                 .is_none_or(|request| request == signature.request)
             && input.response_fqn.as_deref() == Some(signature.response)
-            && signature.kind == phoxal::__private::PortKind::Setpoint;
+            && signature.kind == phoxal::macro_support::PortKind::Setpoint;
         if !signature_matches {
             return Err(simulation_error(format!(
                 "scenario substitution `{consumer}` expects {} -> {}, compiled consumer records {:?} -> {:?} on port {:?}",

@@ -112,6 +112,7 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
     let mut metadata = Vec::new();
     let mut checks = Vec::new();
     let mut transport = Vec::new();
+    let mut operations_carrier = false;
     for field in fields.iter_mut() {
         let Some(field_name) = field.ident.clone() else {
             return Err(syn::Error::new_spanned(
@@ -129,6 +130,23 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             }
         }
         field.attrs = retained;
+        if markers.is_empty() && is_operations_carrier(&field.ty) {
+            if operations_carrier {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "one output transaction may carry at most one generated-operations field",
+                ));
+            }
+            operations_carrier = true;
+            transport.push(quote! {
+                records.extend(self.#field_name.encode_transport(
+                    context,
+                    resolve_input_port,
+                    source,
+                )?);
+            });
+            continue;
+        }
         if markers.len() != 1 {
             return Err(syn::Error::new_spanned(
                 field,
@@ -143,18 +161,30 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
         };
         if !matches!(
             role,
-            Role::Reply | Role::Sample | Role::Event | Role::Stream
+            Role::State | Role::Reply | Role::Sample | Role::Event | Role::Stream
         ) {
             return Err(syn::Error::new_spanned(
                 field,
-                "state, setpoint, read, activate, and operation markers belong on methods",
+                "setpoint, read, activate, and operation markers belong on methods",
             ));
         }
         let mut options = Options::default();
         parse_options(&attribute, role, &mut options)?;
         validate_options(role, &options, field)?;
+        if role == Role::State && (options.bootstrap || options.on_change) {
+            return Err(syn::Error::new_spanned(
+                field,
+                "bootstrap and on_change projections belong on state methods",
+            ));
+        }
         let field_type = field.ty.clone();
-        let payload = vector_payload(&field_type, role, field)?;
+        let payload = if role == Role::State {
+            option_inner(&field_type).ok_or_else(|| {
+                syn::Error::new_spanned(&*field, "a staged state output must be Option<Payload>")
+            })?
+        } else {
+            vector_payload(&field_type, role, &*field)?
+        };
         if let Some(port) = options.port.as_ref() {
             let check_name = format_ident!(
                 "__phoxal_{}_port_{}",
@@ -164,17 +194,22 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             let check = match role {
                 Role::Sample => quote! {
                     fn #check_name() {
-                        ::phoxal::runtime::__private::assert_sample_port::<_, #payload>(#port);
+                        ::phoxal::runtime::macro_support::assert_sample_port::<_, #payload>(#port);
                     }
                 },
                 Role::Event => quote! {
                     fn #check_name() {
-                        ::phoxal::runtime::__private::assert_event_port::<_, #payload>(#port);
+                        ::phoxal::runtime::macro_support::assert_event_port::<_, #payload>(#port);
                     }
                 },
                 Role::Stream => quote! {
                     fn #check_name() {
-                        ::phoxal::runtime::__private::assert_stream_port::<_, #payload>(#port);
+                        ::phoxal::runtime::macro_support::assert_stream_port::<_, #payload>(#port);
+                    }
+                },
+                Role::State => quote! {
+                    fn #check_name() {
+                        ::phoxal::runtime::macro_support::assert_state_port::<_, #payload>(#port);
                     }
                 },
                 Role::Reply => quote! {},
@@ -188,7 +223,7 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             role,
             &options,
             &payload,
-            field,
+            &*field,
         )?);
     }
 
@@ -201,7 +236,7 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             fn encode_transport(
                 &self,
                 context: ::phoxal::runtime::StepContext,
-                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::__private::PortSignature>,
+                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::macro_support::PortSignature>,
                 source: &str,
             ) -> ::phoxal::Result<::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>> {
                 let mut records = ::std::vec::Vec::new();
@@ -316,7 +351,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
             };
             checks.push(quote! {
                 fn #check_name() {
-                    ::phoxal::runtime::__private::assert_state_port::<_, #return_type>(#port);
+                    ::phoxal::runtime::macro_support::assert_state_port::<_, #return_type>(#port);
                 }
             });
             transport.push(projection_transport(method, role, &options)?);
@@ -332,7 +367,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
             };
             checks.push(quote! {
                 fn #check_name() {
-                    ::phoxal::runtime::__private::assert_setpoint_port::<_, #return_type>(#port);
+                    ::phoxal::runtime::macro_support::assert_setpoint_port::<_, #return_type>(#port);
                 }
             });
             transport.push(projection_transport(method, role, &options)?);
@@ -349,7 +384,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
             };
             checks.push(quote! {
                 fn #check_name() {
-                    ::phoxal::runtime::__private::assert_read_port::<_, #request, #response>(#port);
+                    ::phoxal::runtime::macro_support::assert_read_port::<_, #request, #response>(#port);
                 }
             });
             reads.push(read_transport(method, &options, &request)?);
@@ -413,7 +448,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                         let worker: ::phoxal::runtime::outputs::OperationWorker =
                             ::std::boxed::Box::new(|input| {
                                 let input = *input.downcast::<#worker_input>().map_err(|_| {
-                                    ::phoxal::__private::anyhow::anyhow!("operation worker received an unexpected input type")
+                                    ::phoxal::macro_support::anyhow::anyhow!("operation worker received an unexpected input type")
                                 })?;
                                 let result = #self_type::#worker_method(input)?;
                                 Ok(::std::boxed::Box::new(result)
@@ -503,7 +538,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 &self,
                 state: &Self::State,
                 context: ::phoxal::runtime::StepContext,
-                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::__private::PortSignature>,
+                resolve_input_port: &dyn Fn(&str) -> Option<::phoxal::macro_support::PortSignature>,
                 source: &str,
             ) -> ::phoxal::Result<::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>> {
                 let mut records = ::std::vec::Vec::new();
@@ -773,6 +808,34 @@ fn output_transport(
         .map(|port| quote!((#port).signature()));
 
     match role {
+        Role::State => {
+            let signature = signature.ok_or_else(|| {
+                syn::Error::new_spanned(item, "state output requires a public port")
+            })?;
+            let max_bytes = max_bytes
+                .ok_or_else(|| syn::Error::new_spanned(item, "state requires max_bytes = ..."))?;
+            Ok(quote! {
+                {
+                    let signature = #signature;
+                    // A staged state publication happens only when this step
+                    // supplied a value; absence keeps the retained value.
+                    if let ::std::option::Option::Some(value) = &#field {
+                        records.push(
+                            ::phoxal::runtime::transport::PreparedOutput::response(
+                                signature,
+                                value,
+                                #max_bytes,
+                                ::phoxal::runtime::transport::publication_metadata(
+                                    source,
+                                    context,
+                                    context.invocation_index(),
+                                ),
+                            )?.for_field(stringify!(#field_name)),
+                        );
+                    }
+                }
+            })
+        }
         Role::Sample => {
             let signature = signature.ok_or_else(|| {
                 syn::Error::new_spanned(item, "sample output requires a public port")
@@ -938,7 +1001,7 @@ fn output_transport(
             Ok(quote! {
                 {
                     let signature = resolve_input_port(stringify!(#selector)).ok_or_else(|| {
-                        ::phoxal::__private::anyhow::anyhow!(
+                        ::phoxal::macro_support::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                                 detail: format!(
                                     "reply selector `{}` has no generated Commands descriptor",
@@ -1167,6 +1230,18 @@ fn strip_reference(ty: &Type) -> Type {
 
 fn option_inner(ty: &Type) -> Option<Type> {
     wrapped_type(ty, "Option")
+}
+
+/// Recognizes the unmarked generated-operations carrier field
+/// (`::phoxal::runtime::outputs::Outputs`) of an output transaction.
+fn is_operations_carrier(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    let segments = &path.path.segments;
+    segments.len() >= 2
+        && segments[segments.len() - 1].ident == "Outputs"
+        && segments[segments.len() - 2].ident == "outputs"
 }
 
 fn wrapped_type(ty: &Type, wrapper: &str) -> Option<Type> {

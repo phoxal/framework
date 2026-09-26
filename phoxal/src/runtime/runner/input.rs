@@ -59,6 +59,9 @@ pub(super) struct BoundSubscription {
     pub(super) direction: InputDirection,
     pub(super) max_items: u64,
     pub(super) max_bytes: u64,
+    /// Compiled receiver-side projection for this field, when the authored
+    /// connection declared one; decode sees the destination binding.
+    pub(super) projection: Option<Arc<ProjectionExecutor>>,
     /// The direct subscriber remains available to the in-process test path.
     /// Process-bound subscriptions are drained by `delivery_receive_loop`
     /// into the receiver-owned bounded queue below.
@@ -217,6 +220,7 @@ impl DeliveryQueue {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn admit(
         &mut self,
         sample: WireSample,
@@ -227,7 +231,22 @@ impl DeliveryQueue {
         let identity = self
             .identity(&sample, target, port, direction)
             .map_err(DeliveryAdmissionError::Malformed)?;
-        let bytes = identity.bytes;
+        self.admit_with_identity(sample, identity)
+    }
+
+    /// Admits one sample under a delivery identity computed from the
+    /// producer's original wire bytes.
+    ///
+    /// A receiver-side projection converts the payload before admission;
+    /// authorization, fencing, deduplication, and the acknowledgement still
+    /// key on the original identity, while queue capacity accounting uses the
+    /// converted body the receiver actually retains.
+    pub(super) fn admit_with_identity(
+        &mut self,
+        sample: WireSample,
+        identity: DeliveryIdentity,
+    ) -> Result<(DeliveryIdentity, bool), DeliveryAdmissionError> {
+        let bytes = sample.payload().len() as u64;
         let route = identity.route_key();
         if let Some(previous) = self.high_watermarks.get(&route) {
             let order = (identity.boundary, identity.sequence, identity.item).cmp(&(
@@ -438,6 +457,118 @@ pub(super) struct DeliveryReceiver {
     pub(super) ack_leg: String,
     pub(super) cancel: CancellationToken,
     pub(super) reply_admission: Option<ReplyAdmission>,
+    /// Compiled receiver-side projection applied to this route's payload at
+    /// the admission boundary; observation metadata is preserved untouched.
+    pub(super) projection: Option<Arc<ProjectionExecutor>>,
+}
+
+/// One compiled explicit observation projection executing in the receiving
+/// process: decode the foreign payload, copy the mapped top-level scalar
+/// fields (absent stays absent), and re-encode the declared destination.
+pub(super) struct ProjectionExecutor {
+    map: Vec<(
+        prost_reflect::FieldDescriptor,
+        prost_reflect::FieldDescriptor,
+    )>,
+    source: prost_reflect::MessageDescriptor,
+    destination: prost_reflect::MessageDescriptor,
+    /// The binding the consumer's generated decoder must see: the local
+    /// destination identity, not the foreign producer's.
+    destination_binding: crate::runtime::transport::PortBinding,
+}
+
+impl ProjectionExecutor {
+    /// Builds the executor from a bundle's compiled projection record.
+    pub(super) fn new(
+        record: &crate::artifact::bundle::ConnectionProjection,
+    ) -> crate::Result<Self> {
+        let reject = |message: String| {
+            crate::anyhow!(
+                "projection {}.{}: {message}",
+                record.consumer_instance,
+                record.consumer_field
+            )
+        };
+        let source_pool =
+            prost_reflect::DescriptorPool::decode(record.source_descriptors.as_slice())
+                .map_err(|error| reject(format!("source descriptors are invalid: {error}")))?;
+        let destination_pool =
+            prost_reflect::DescriptorPool::decode(record.destination_descriptors.as_slice())
+                .map_err(|error| reject(format!("destination descriptors are invalid: {error}")))?;
+        let source = source_pool
+            .get_message_by_name(&record.source_message)
+            .ok_or_else(|| {
+                reject(format!(
+                    "source message {} is missing",
+                    record.source_message
+                ))
+            })?;
+        let destination = destination_pool
+            .get_message_by_name(&record.destination_message)
+            .ok_or_else(|| {
+                reject(format!(
+                    "destination message {} is missing",
+                    record.destination_message
+                ))
+            })?;
+        let mut map = Vec::with_capacity(record.map.len());
+        for (destination_path, source_path) in &record.map {
+            let source_field = source
+                .get_field_by_name(source_path)
+                .ok_or_else(|| reject(format!("source field `{source_path}` is missing")))?;
+            let destination_field =
+                destination
+                    .get_field_by_name(destination_path)
+                    .ok_or_else(|| {
+                        reject(format!("destination field `{destination_path}` is missing"))
+                    })?;
+            map.push((destination_field, source_field));
+        }
+        Ok(Self {
+            map,
+            source,
+            destination,
+            destination_binding: crate::runtime::transport::PortBinding {
+                name: record.consumer_field.clone(),
+                service: record.consumer_instance.clone(),
+                method: record.consumer_field.clone(),
+                kind: crate::port::PortKind::State,
+                request: "google.protobuf.Empty".to_owned(),
+                response: record.destination_message.clone(),
+            },
+        })
+    }
+
+    /// The decode-side binding after conversion.
+    pub(super) fn destination_binding(&self) -> crate::runtime::transport::PortBinding {
+        self.destination_binding.clone()
+    }
+
+    /// Converts one foreign payload into the declared destination message.
+    ///
+    /// Only mapped fields are copied; absent optional values stay absent so
+    /// zero remains distinguishable from absence, and every other
+    /// destination field keeps its default-unset state.
+    fn apply(&self, payload: &[u8]) -> crate::Result<Vec<u8>> {
+        use prost::Message as _;
+        let source = prost_reflect::DynamicMessage::decode(self.source.clone(), payload)
+            .map_err(|error| crate::anyhow!("foreign observation did not decode: {error}"))?;
+        let mut destination = prost_reflect::DynamicMessage::new(self.destination.clone());
+        for (destination_field, source_field) in &self.map {
+            if source.has_field(source_field) {
+                let value = source.get_field(source_field);
+                destination.set_field(destination_field, value.as_ref().clone());
+            }
+        }
+        let encoded = destination.encode_to_vec();
+        if encoded.len() as u64 > super::transport::MAX_PROJECTED_OBSERVATION_BYTES {
+            return Err(crate::anyhow!(
+                "projected observation exceeds the {} byte bound",
+                super::transport::MAX_PROJECTED_OBSERVATION_BYTES
+            ));
+        }
+        Ok(encoded)
+    }
 }
 
 pub(super) struct ReplyAdmission {
@@ -498,6 +629,7 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         ack_leg,
         cancel,
         reply_admission,
+        projection,
     } = receiver;
     loop {
         let sample = tokio::select! {
@@ -553,11 +685,20 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
                     ),
                 }));
             }
+            // Unstamped traffic has no acknowledgement leg; the projection
+            // converts for the queue with the destination bound enforced by
+            // the admission path.
+            let admitted = if let Some(projection) = &projection {
+                let mapped = projection.apply(wire.payload())?;
+                wire.with_payload(mapped)
+            } else {
+                wire
+            };
             let mut queue = match queue.lock() {
                 Ok(queue) => queue,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            if queue.admit_untracked(wire).is_ok()
+            if queue.admit_untracked(admitted).is_ok()
                 && let Some(reply) = &reply_admission
             {
                 reply.admit(reply_identity.0, reply_identity.1);
@@ -577,6 +718,9 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
             }));
         }
 
+        // Authorization, fencing, deduplication, and the acknowledgement all
+        // key on the producer's original wire bytes; a projection converts
+        // only the retained payload after every fence has passed.
         let identity = {
             let queue = match queue.lock() {
                 Ok(queue) => queue,
@@ -615,11 +759,17 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         }
 
         let result = {
+            let admitted = if let Some(projection) = &projection {
+                let mapped = projection.apply(wire.payload())?;
+                wire.with_payload(mapped)
+            } else {
+                wire
+            };
             let mut queue = match queue.lock() {
                 Ok(queue) => queue,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            queue.admit(wire, &target, &port, &direction)
+            queue.admit_with_identity(admitted, identity.clone())
         };
         match result {
             Ok((identity, _inserted)) => {
@@ -641,6 +791,7 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
 async fn generated_reply_receive_loop(
     subscriber: RuntimeSubscription,
     bus: crate::runtime::connection::Connection,
+    instance: String,
     correlations: GeneratedCorrelationMap,
     completions: GeneratedCompletionQueue,
     timeline: Arc<Mutex<Option<String>>>,
@@ -661,6 +812,17 @@ async fn generated_reply_receive_loop(
                 "generated reply is missing command id".to_owned()
             ))
         })?;
+        // The subscription observes every reply on the execution; only the
+        // replies this runtime itself requested correlate here.  Independent
+        // command-id counters must never let another caller's reply match a
+        // pending ticket.
+        if !metadata
+            .caller
+            .as_deref()
+            .is_some_and(|caller| caller.starts_with(&format!("{instance}.")))
+        {
+            continue;
+        }
         let controlled = metadata.execution_id.is_some()
             || metadata.timeline_id.is_some()
             || metadata.boundary.is_some()
@@ -718,7 +880,17 @@ async fn generated_reply_receive_loop(
             || !wire.key().ends_with(&expected_suffix)
         {
             return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                "generated reply identity does not match its admitted call".to_owned()
+                format!(
+                    "generated reply identity does not match its admitted call: \
+                     source {source:?} (expected {:?}), caller {:?} (expected {:?}), \
+                     rank {:?} (expected {:?}), key {:?} (expected suffix {expected_suffix:?})",
+                    correlation.expected_source,
+                    metadata.caller,
+                    correlation.caller,
+                    metadata.caller_rank,
+                    correlation.caller_rank,
+                    wire.key(),
+                )
             )));
         }
         let result = match metadata.wire_control()? {
@@ -980,6 +1152,13 @@ impl<R> ExecutionInputAdapter<R> {
                 } else {
                     None
                 };
+                let worker_projection = manifest
+                    .projection_for_field(route.field)
+                    .filter(|_| route.direction == InputDirection::Publication)
+                    .map(ProjectionExecutor::new)
+                    .transpose()?
+                    .map(Arc::new);
+                let subscription_projection = worker_projection.clone();
                 let worker = tokio::spawn(async move {
                     let result = delivery_receive_loop(DeliveryReceiver {
                         subscriber,
@@ -993,6 +1172,7 @@ impl<R> ExecutionInputAdapter<R> {
                         ack_leg,
                         cancel: worker_cancel,
                         reply_admission,
+                        projection: worker_projection,
                     })
                     .await;
                     if let Err(error) = result {
@@ -1023,6 +1203,7 @@ impl<R> ExecutionInputAdapter<R> {
                     direction: route.direction,
                     max_items: queue_max_items,
                     max_bytes: queue_max_bytes,
+                    projection: subscription_projection,
                     subscriber: None,
                     delivery: Some(DeliverySubscription {
                         queue: Arc::clone(&queue),
@@ -1062,6 +1243,7 @@ impl<R> ExecutionInputAdapter<R> {
             let timeline = Arc::new(Mutex::new(None));
             let worker = tokio::spawn({
                 let bus = bus.clone();
+                let instance = manifest.instance_id.clone();
                 let correlations = Arc::clone(correlations);
                 let completions = Arc::clone(completions);
                 let cancel = cancel.clone();
@@ -1071,6 +1253,7 @@ impl<R> ExecutionInputAdapter<R> {
                     let result = generated_reply_receive_loop(
                         subscriber,
                         bus,
+                        instance,
                         correlations,
                         completions,
                         timeline,
@@ -1151,6 +1334,7 @@ impl<R> ExecutionInputAdapter<R> {
                 direction,
                 max_items,
                 max_bytes,
+                projection: None,
                 subscriber: Some(subscriber),
                 delivery: None,
             });
@@ -1647,13 +1831,15 @@ where
             if samples.is_empty() && !has_retained_commands {
                 continue;
             }
+            let effective_binding = subscription.projection.as_ref().map_or_else(
+                || subscription.binding.clone(),
+                |projection| projection.destination_binding(),
+            );
             if let Some(batch) = batches
                 .iter_mut()
                 .find(|batch| batch.field == subscription.field)
             {
-                if batch.binding != subscription.binding
-                    || batch.direction != subscription.direction
-                {
+                if batch.binding != effective_binding || batch.direction != subscription.direction {
                     return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
                         detail: format!(
                             "input field `{}` received conflicting source bindings",
@@ -1665,7 +1851,7 @@ where
             } else {
                 batches.push(CollectedInput {
                     field: subscription.field,
-                    binding: subscription.binding.clone(),
+                    binding: effective_binding,
                     direction: subscription.direction,
                     max_items: subscription.max_items,
                     max_bytes: subscription.max_bytes,
@@ -2084,3 +2270,224 @@ where
 pub(super) const MAX_COMMAND_HIGH_WATERMARKS: usize = 4096;
 
 pub(super) const MAX_EXTERNAL_COMMANDS_PER_CUT: usize = 64;
+
+#[cfg(test)]
+mod projection_tests {
+    use super::ProjectionExecutor;
+    use crate::artifact::bundle::ConnectionProjection;
+    use prost::Message as _;
+
+    fn field(name: &str, number: i32, optional: bool) -> prost_types::FieldDescriptorProto {
+        prost_types::FieldDescriptorProto {
+            name: Some(name.to_owned()),
+            number: Some(number),
+            label: Some(prost_types::field_descriptor_proto::Label::Optional as i32),
+            r#type: Some(prost_types::field_descriptor_proto::Type::Double as i32),
+            proto3_optional: Some(optional),
+            ..Default::default()
+        }
+    }
+
+    fn descriptor_set(message: &str, fields: Vec<prost_types::FieldDescriptorProto>) -> Vec<u8> {
+        let file = prost_types::FileDescriptorProto {
+            name: Some(format!("{message}.proto")),
+            package: Some("t".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![prost_types::DescriptorProto {
+                name: Some(message.to_owned()),
+                field: fields,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        prost_types::FileDescriptorSet { file: vec![file] }.encode_to_vec()
+    }
+
+    fn executor() -> ConnectionProjection {
+        ConnectionProjection {
+            consumer_instance: "consumer".to_owned(),
+            consumer_field: "encoder".to_owned(),
+            source_instance: "foreign".to_owned(),
+            source_port: "reading".to_owned(),
+            source_message: "t.Foreign".to_owned(),
+            destination_message: "t.Standard".to_owned(),
+            map: [("rate".to_owned(), "shaft_rate".to_owned())]
+                .into_iter()
+                .collect(),
+            source_descriptors: descriptor_set(
+                "Foreign",
+                vec![field("shaft_rate", 7, true), field("extra", 9, true)],
+            ),
+            destination_descriptors: descriptor_set("Standard", vec![field("rate", 2, true)]),
+        }
+    }
+
+    #[test]
+    fn projection_maps_differently_numbered_fields_and_keeps_absence() {
+        use prost_reflect::DynamicMessage;
+        let record = executor();
+        let executor = ProjectionExecutor::new(&record).expect("executor builds");
+        let source_pool =
+            prost_reflect::DescriptorPool::decode(record.source_descriptors.as_slice())
+                .expect("source pool");
+        let source = source_pool
+            .get_message_by_name("t.Foreign")
+            .expect("foreign");
+        let destination_pool =
+            prost_reflect::DescriptorPool::decode(record.destination_descriptors.as_slice())
+                .expect("destination pool");
+        let destination = destination_pool
+            .get_message_by_name("t.Standard")
+            .expect("standard");
+
+        // Absent optional stays absent after the mapping.
+        let absent = DynamicMessage::new(source.clone());
+        let mapped = executor
+            .apply(&absent.encode_to_vec())
+            .expect("absent maps");
+        let mut decoded = DynamicMessage::decode(destination.clone(), mapped.as_slice())
+            .expect("destination decodes");
+        assert!(!decoded.has_field(&destination.get_field_by_name("rate").expect("field")));
+
+        // An explicit zero on a different wire number becomes an explicit
+        // zero on the destination number.
+        let mut zero = DynamicMessage::new(source.clone());
+        zero.set_field(
+            &source.get_field_by_name("shaft_rate").expect("field"),
+            prost_reflect::Value::F64(0.0),
+        );
+        let mapped = executor.apply(&zero.encode_to_vec()).expect("zero maps");
+        decoded = DynamicMessage::decode(destination.clone(), mapped.as_slice())
+            .expect("destination decodes");
+        assert!(decoded.has_field(&destination.get_field_by_name("rate").expect("field")));
+        assert_eq!(
+            decoded
+                .get_field(&destination.get_field_by_name("rate").expect("field"))
+                .as_ref(),
+            &prost_reflect::Value::F64(0.0)
+        );
+
+        // A present value converts across the different wire numbers.
+        let mut present = DynamicMessage::new(source.clone());
+        present.set_field(
+            &source.get_field_by_name("shaft_rate").expect("field"),
+            prost_reflect::Value::F64(1.5),
+        );
+        let mapped = executor
+            .apply(&present.encode_to_vec())
+            .expect("value maps");
+        decoded = DynamicMessage::decode(destination.clone(), mapped.as_slice())
+            .expect("destination decodes");
+        assert_eq!(
+            decoded
+                .get_field(&destination.get_field_by_name("rate").expect("field"))
+                .as_ref(),
+            &prost_reflect::Value::F64(1.5)
+        );
+    }
+
+    #[test]
+    fn projection_rejects_malformed_foreign_payloads() {
+        let record = executor();
+        let executor = ProjectionExecutor::new(&record).expect("executor builds");
+        // Truncated varint payload for a double field cannot decode.
+        assert!(executor.apply(&[0x3A, 0xFF]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod projected_admission_tests {
+    use super::DeliveryQueue;
+    use crate::runtime::input::InputKind;
+    use crate::runtime::transport::WireSample;
+
+    fn controlled_sample(payload: &[u8], sequence: u64) -> WireSample {
+        let metadata = crate::runtime::transport::RuntimeWireMetadata::data(
+            "foreign",
+            crate::runtime::ExecutionTime::from_nanos(1_000),
+            sequence,
+        )
+        .with_delivery_identity("exec-1", "timeline-1", 4, 0);
+        WireSample::from_parts(payload.to_vec(), metadata, "key")
+    }
+
+    #[test]
+    fn projected_admission_keys_ack_on_original_and_accounts_converted() {
+        let mut queue = DeliveryQueue::new(1, 64, InputKind::Latest);
+        // The foreign body carries an extra diagnostics string the mapping
+        // drops, so the converted body is shorter than the original.
+        let original = controlled_sample(b"foreign-body-with-diagnostics", 7);
+        let identity = queue
+            .identity(&original, "consumer.encoder", "encoder", "publish")
+            .expect("original identity");
+        assert_eq!(identity.bytes, 29);
+        assert_eq!(identity.sequence, 7);
+
+        // The receiver retains the converted body.
+        let converted = original.with_payload(b"mapped".to_vec());
+        let (admitted, inserted) = queue
+            .admit_with_identity(converted, identity.clone())
+            .expect("admits");
+        assert!(inserted);
+        // The acknowledgement identity still describes the producer's
+        // original bytes: byte count and digest must match the receipt the
+        // supervisor holds for this delivery.
+        assert_eq!(admitted.bytes, 29);
+        assert_eq!(admitted.payload_digest, identity.payload_digest);
+        // Queue accounting uses the converted body the receiver retains.
+        assert_eq!(queue.bytes, 6);
+        assert_eq!(queue.items[0].payload(), b"mapped");
+
+        // Deduplication keys on the original identity: replaying the same
+        // original delivery with different original bytes is malformed, even
+        // when both map to the same converted value.
+        let conflicting = controlled_sample(b"different-original-body.......", 7);
+        let conflict_identity = queue
+            .identity(&conflicting, "consumer.encoder", "encoder", "publish")
+            .expect("identity");
+        let converted_conflict = conflicting.with_payload(b"mapped".to_vec());
+        let error = queue
+            .admit_with_identity(converted_conflict, conflict_identity)
+            .expect_err("identity reuse with different original bytes");
+        assert!(
+            matches!(
+                &error,
+                super::DeliveryAdmissionError::Malformed(
+                    crate::runtime::transport::TransportError::InvalidMetadata { detail }
+                ) if detail.contains("reused with different payload bytes")
+            ),
+            "unexpected error: {error:?}"
+        );
+        // A byte-identical replay of the original is idempotently
+        // acknowledged and never re-exposed to the decoder.
+        let replay = controlled_sample(b"foreign-body-with-diagnostics", 7);
+        let replay_identity = queue
+            .identity(&replay, "consumer.encoder", "encoder", "publish")
+            .expect("identity");
+        let (_, inserted_again) = queue
+            .admit_with_identity(replay.with_payload(b"mapped".to_vec()), replay_identity)
+            .expect("idempotent replay");
+        assert!(!inserted_again);
+        assert_eq!(queue.items.len(), 1);
+    }
+
+    #[test]
+    fn projected_replaceable_admission_enforces_converted_bound() {
+        let mut queue = DeliveryQueue::new(1, 8, InputKind::Latest);
+        let original = controlled_sample(b"a-very-long-foreign-body", 1);
+        let identity = queue
+            .identity(&original, "consumer.encoder", "encoder", "publish")
+            .expect("identity");
+        // The original is 25 bytes; the destination bound of 8 must govern
+        // the converted body, not the original length.
+        let converted = original.with_payload(b"0123456789ABCDEFG".to_vec());
+        let error = queue
+            .admit_with_identity(converted, identity)
+            .expect_err("converted body exceeds the destination bound");
+        assert!(
+            matches!(&error, super::DeliveryAdmissionError::Saturated(detail) if detail
+                .contains("byte capacity")),
+            "unexpected error: {error:?}"
+        );
+    }
+}

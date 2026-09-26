@@ -1,5 +1,5 @@
-error[E0599]: no method named `__state_port` found for struct `phoxal::contract::Observation<Value>` in the current scope
+error[E0599]: no method named `state_port` found for struct `phoxal::contract::Observation<Value>` in the current scope
   --> tests/trybuild/fail/contract_publish_consumer_handle.rs:22:25
    |
-22 |     let _ = observation.__state_port();
-   |                         ^^^^^^^^^^^^ method not found in `phoxal::contract::Observation<Status>`
+22 |     let _ = observation.state_port();
+   |                         ^^^^^^^^^^ method not found in `phoxal::contract::Observation<Status>`

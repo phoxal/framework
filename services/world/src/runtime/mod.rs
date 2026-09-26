@@ -1,13 +1,13 @@
 #[cfg(test)]
-use crate::api::__contracts::phoxal::kinematics::v1::OdometryState;
-use crate::api::world::v1::{
+use self::phoxal_provider::Inputs as WorldInputs;
+#[cfg(test)]
+use crate::api::types::phoxal::kinematics::v1::OdometryState;
+use crate::api::types::phoxal::world::v1::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
     WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
-    window_response, world,
+    window_response,
 };
 use crate::config::{WorldConfig, validate_config};
-use crate::inputs::WorldInputs;
-use crate::outputs::WorldOutputs;
 use crate::validation;
 #[cfg(test)]
 use phoxal::runtime::input::Latest;
@@ -113,8 +113,6 @@ pub struct World;
 impl Runtime for World {
     type Config = WorldConfig;
     type State = WorldState;
-    type Inputs = WorldInputs;
-    type Outputs = WorldOutputs;
 
     fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
         validate_config(config)
@@ -131,7 +129,7 @@ impl Runtime for World {
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
         inputs
-            .windows
+            .window
             .validate_order()
             .map_err(|error| anyhow::anyhow!(error))?;
         let pose = inputs
@@ -180,8 +178,8 @@ impl Runtime for World {
         validation::belief(&state.belief).map_err(|error| anyhow::anyhow!(error))?;
         validation::revision(&state.revision_marker()).map_err(|error| anyhow::anyhow!(error))?;
         validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
-        let mut outputs = WorldOutputs::default();
-        for command in inputs.windows.items() {
+        let mut outputs = Self::Outputs::default();
+        for command in inputs.window.items() {
             let response = window_for(&state, command.request());
             validation::window_response(&response).map_err(|error| anyhow::anyhow!(error))?;
             outputs.window_replies.push(command.reply(response));
@@ -190,26 +188,20 @@ impl Runtime for World {
     }
 }
 
-#[phoxal::runtime::outputs]
-#[allow(
-    dead_code,
-    reason = "the collected projections are invoked by the transport runner"
-)]
-impl World {
+impl crate::api::projections::Projections for World {
+    type State = WorldState;
+
     /// Projects the current estimated spatial belief.
-    #[phoxal::runtime::outputs::state(port = world::methods::BELIEF.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn belief(&self, state: &WorldState) -> WorldBelief {
         state.belief.clone()
     }
 
     /// Projects the coherent current revision marker.
-    #[phoxal::runtime::outputs::state(port = world::methods::REVISION.__state_port(), max_bytes = 128, bootstrap, on_change)]
     fn revision(&self, state: &WorldState) -> WorldRevision {
         state.revision_marker()
     }
 
     /// Projects availability separately from the belief payload.
-    #[phoxal::runtime::outputs::state(port = world::methods::STATUS.__state_port(), max_bytes = 512, bootstrap, on_change)]
     fn status(&self, state: &WorldState) -> WorldStatus {
         state.status()
     }
@@ -307,7 +299,7 @@ mod tests {
                 state,
                 &WorldInputs {
                     pose: pose(20, 7),
-                    windows: Default::default(),
+                    window: Default::default(),
                 },
             )
             .expect("fresh pose");
@@ -354,7 +346,7 @@ mod tests {
                                 None,
                             ),
                         )),
-                        windows: Default::default(),
+                        window: Default::default(),
                     },
                 )
                 .unwrap();
@@ -378,7 +370,7 @@ mod tests {
                             None,
                         ),
                     )),
-                    windows: Default::default(),
+                    window: Default::default(),
                 },
             )
             .unwrap();
@@ -399,7 +391,7 @@ mod tests {
                 state,
                 &WorldInputs {
                     pose: pose(20, 7),
-                    windows: Default::default(),
+                    window: Default::default(),
                 },
             )
             .expect("stale pose is a valid transition");

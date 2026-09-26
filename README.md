@@ -15,7 +15,10 @@ This repository and its source are the authority for current framework implement
 - `phoxal/cargo/` - the registry-aware project and publication command
 - `tests/` - internal compile-contract fixtures and one four-wheel native qualification robot
 
-Each runnable service and driver package owns one Protobuf service in its `api/` tree and builds one executable with an ordinary Cargo build script.
+Each runnable package authors its endpoints once in a service declaration: services in `service.yaml`, components in the endpoint sections of their `component.yaml`, and a robot's brain in the `brain` section of `robot.yaml`.
+The owning document is decided by package role — building a robot reads its brain contract from `robot.yaml`, an adjacent `service.yaml` or `component.yaml` is unrelated to that build and is never a fallback source, and an empty brain section declares an empty contract.
+Protobuf files in the `api/` tree carry message definitions only; the declaration generates the provider inputs/outputs, requirement handles, projections, and robot instance APIs.
+Each package builds one executable with an ordinary Cargo build script.
 Robot projects select each participant with a local path, exact registry package version, or pinned Git revision in `robot.yaml` and use `cargo phoxal prepare` to install remote binaries and prepare registry or Git API sources.
 The robot's `build.rs` calls `phoxal::build::api`, and `phoxal::api!();` attaches the generated instance-first API to its crate root.
 No selected service or component library is added to the robot's Cargo dependencies for communication.

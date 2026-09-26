@@ -9,7 +9,6 @@ use crate::runtime::{
 ///
 /// The closure may capture the immutable service and its owned view, but cannot
 /// borrow the runtime's State. The runner owns admission and worker lifetime.
-#[doc(hidden)]
 pub struct ReadView {
     pub(crate) field: &'static str,
     handler: Box<ReadHandler>,

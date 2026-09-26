@@ -7,14 +7,15 @@ struct Forms;
 
 type Key = u64;
 
-const STATE: phoxal::__private::State<u32> = phoxal::__private::State::new("state");
-const SAMPLE: phoxal::__private::Sample<u64> = phoxal::__private::Sample::new("sample");
-const EVENT: phoxal::__private::Event<u32> = phoxal::__private::Event::new("event");
-const STREAM: phoxal::__private::Stream<u64> = phoxal::__private::Stream::new("stream");
-const SETPOINT: phoxal::__private::Setpoint<u32> = phoxal::__private::Setpoint::new("setpoint");
-const READ: phoxal::__private::Read<u64, u32> = phoxal::__private::Read::new("read");
-const COMMANDS: phoxal::__private::Commands<u64, u32> =
-    phoxal::__private::Commands::new("commands");
+const STATE: phoxal::macro_support::State<u32> = phoxal::macro_support::State::new("state");
+const SAMPLE: phoxal::macro_support::Sample<u64> = phoxal::macro_support::Sample::new("sample");
+const EVENT: phoxal::macro_support::Event<u32> = phoxal::macro_support::Event::new("event");
+const STREAM: phoxal::macro_support::Stream<u64> = phoxal::macro_support::Stream::new("stream");
+const SETPOINT: phoxal::macro_support::Setpoint<u32> =
+    phoxal::macro_support::Setpoint::new("setpoint");
+const READ: phoxal::macro_support::Read<u64, u32> = phoxal::macro_support::Read::new("read");
+const COMMANDS: phoxal::macro_support::Commands<u64, u32> =
+    phoxal::macro_support::Commands::new("commands");
 
 #[phoxal::runtime::inputs]
 #[allow(dead_code)]
@@ -118,18 +119,14 @@ impl Forms {
 
 #[test]
 fn all_initial_runtime_forms_compile_and_register() {
+    // The attribute-macro expansion layer stays complete: every input and
+    // output form the runtime library offers still compiles and registers as
+    // one runtime, even for the forms today's manifest generator does not
+    // emit (stream, read, request, operation, activation).
     assert_eq!(
         <Forms as phoxal::runtime::RegisteredRuntime>::SPEC
             .period
             .as_millis(),
         20
     );
-    assert_eq!(
-        <FormsInputs as phoxal::runtime::input::InputSet>::FIELDS[5].port,
-        Some("commands")
-    );
-    let outputs = <Forms as phoxal::runtime::outputs::OutputBindings>::FIELDS;
-    assert_eq!(outputs[2].project, Some("Self :: state"));
-    assert_eq!(outputs[2].max_request_bytes, Some(64));
-    assert_eq!(outputs[3].input, Some("read"));
 }

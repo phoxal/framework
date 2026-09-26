@@ -1,11 +1,10 @@
+//! Robot-local controller for the internal qualification fixture, authored
+//! from `service.yaml`: the endpoint surface is generated; this file owns
+//! only the wheel math, validation, and the actuator projection.
+
 phoxal::api!();
 
-use crate::api::__contracts::phoxal::motion::v1::{
-    ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target,
-};
-use crate::api::controller::v1::controller;
-use phoxal::robotics::EncoderSample;
-use phoxal::runtime::input::{Samples, Setpoint};
+use crate::api::types::phoxal::motion::v1::{ActuatorSetpoint, ActuatorTarget, actuator_target};
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 const WHEEL_RADIUS_M: f64 = 0.11;
@@ -22,68 +21,6 @@ const ACTUATORS: [(&str, f64, f64); 4] = [
 #[derive(Clone, Copy, Debug, Default)]
 struct Controller;
 
-#[phoxal::runtime::inputs]
-struct Inputs {
-    #[phoxal::runtime::input(port = controller::methods::MANUAL.__setpoint_port(), max_bytes = 4096)]
-    manual: Setpoint<MotionIntent>,
-    #[phoxal::runtime::input(max_items = 32, max_bytes = 262_144)]
-    encoders: Samples<EncoderSample>,
-}
-
-#[phoxal::runtime::outputs]
-#[derive(Default)]
-struct Outputs {}
-
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Controller {
-    type Config = ();
-    type State = ActuatorSetpoint;
-    type Inputs = Inputs;
-    type Outputs = Outputs;
-
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(setpoint(0.0, 0.0))
-    }
-
-    fn step(
-        &self,
-        ctx: &StepContext,
-        _state: Self::State,
-        inputs: &Inputs,
-    ) -> phoxal::Result<(Self::State, Outputs)> {
-        for sample in inputs.encoders.items() {
-            sample
-                .payload()
-                .validate()
-                .map_err(|error| anyhow::anyhow!(error))?;
-        }
-
-        let next = match inputs
-            .manual
-            .is_valid_at(ctx.now())
-            .then(|| inputs.manual.value())
-            .flatten()
-        {
-            Some(intent) => setpoint(intent.linear_x_mps, intent.angular_z_radps),
-            None => setpoint(0.0, 0.0),
-        };
-        Ok((next, Outputs::default()))
-    }
-}
-
-#[phoxal::runtime::outputs]
-#[allow(dead_code, reason = "the transport runner invokes output projections")]
-impl Controller {
-    #[phoxal::runtime::outputs::setpoint(
-        port = controller::methods::ACTUATORS.__setpoint_port(),
-        max_bytes = 1_024,
-        valid_for_ms = 100
-    )]
-    fn actuators(&self, state: &ActuatorSetpoint) -> Option<ActuatorSetpoint> {
-        Some(state.clone())
-    }
-}
-
 fn setpoint(linear_mps: f64, angular_radps: f64) -> ActuatorSetpoint {
     let linear = linear_mps.clamp(-MAX_LINEAR_MPS, MAX_LINEAR_MPS);
     let angular = angular_radps.clamp(-MAX_ANGULAR_RADPS, MAX_ANGULAR_RADPS);
@@ -99,6 +36,50 @@ fn setpoint(linear_mps: f64, angular_radps: f64) -> ActuatorSetpoint {
         })
         .collect();
     ActuatorSetpoint { targets }
+}
+
+impl crate::api::projections::Projections for Controller {
+    type State = ActuatorSetpoint;
+
+    fn actuators(&self, state: &ActuatorSetpoint) -> Option<ActuatorSetpoint> {
+        Some(state.clone())
+    }
+}
+
+#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+impl Runtime for Controller {
+    type Config = ();
+    type State = ActuatorSetpoint;
+
+    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
+        Ok(setpoint(0.0, 0.0))
+    }
+
+    fn step(
+        &self,
+        ctx: &StepContext,
+        _state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
+        for sample in inputs.encoders.items() {
+            sample
+                .payload()
+                .validate()
+                .map_err(|error| phoxal::anyhow!(error))?;
+        }
+
+        let next = match inputs
+            .manual
+            .is_valid_at(ctx.now())
+            .then(|| inputs.manual.value())
+            .flatten()
+        {
+            Some(intent) => setpoint(intent.linear_x_mps, intent.angular_z_radps),
+            None => setpoint(0.0, 0.0),
+        };
+        let outputs = Self::Outputs::default();
+        Ok((next, outputs))
+    }
 }
 
 fn main() -> phoxal::Result<()> {

@@ -23,13 +23,12 @@ impl Simulation {
     /// Construct a fixture for an ordinary `#[test]` without using the
     /// `#[phoxal::scenario]` convenience attribute.
     pub fn from_context(test_identity: impl Into<String>) -> crate::Result<Self> {
-        Self::__from_context(test_identity)
+        Self::from_host_context(test_identity)
     }
 
     /// Construct the fixture from the immutable context installed by
     /// `cargo phoxal test`.
-    #[doc(hidden)]
-    pub fn __from_context(test_identity: impl Into<String>) -> crate::Result<Self> {
+    pub fn from_host_context(test_identity: impl Into<String>) -> crate::Result<Self> {
         let test_identity = test_identity.into();
         if test_identity.trim().is_empty() {
             return Err(crate::anyhow!("simulation test identity must not be empty"));
@@ -300,7 +299,6 @@ pub trait SendOperation {
     type Response: ScenarioValue;
 
     /// Convert generated operation metadata into the finite execution action.
-    #[doc(hidden)]
     fn into_action(self, label: &str) -> crate::Result<Action>;
 }
 
@@ -310,7 +308,6 @@ pub trait ObservationOperation {
     type Value: ScenarioValue;
 
     /// Convert generated observation metadata into a capture declaration.
-    #[doc(hidden)]
     fn into_capture(self, name: &str, policy: CapturePolicy) -> crate::Result<super::Capture>;
 }
 
@@ -393,7 +390,6 @@ fn contract_port_signature(
 }
 
 /// Value that can be decoded from completed simulation evidence.
-#[doc(hidden)]
 pub trait ScenarioValue: Sized {
     fn decode(bytes: &[u8]) -> crate::Result<Self>;
 }
@@ -720,7 +716,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::scenario::__internal::{CapturedObservation, Quantum, ScenarioRun};
+    use crate::scenario::plan_support::{CapturedObservation, Quantum, ScenarioRun};
 
     #[derive(Clone, PartialEq, Message)]
     struct TestValue {

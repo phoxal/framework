@@ -1,0 +1,30 @@
+schema: phoxal/service/v0
+
+outputs:
+  status:
+    type: example.inspection.v1.InspectionState
+    delivery: latest
+    projection: state
+    bootstrap: true
+    on_change: true
+    max_bytes: 4096
+  constraints:
+    type: phoxal.motion.v1.MotionConstraints
+    delivery: latest
+    projection: state
+    bootstrap: true
+    max_bytes: 4096
+  odometry:
+    type: phoxal.kinematics.v1.OdometryState
+    delivery: latest
+    projection: state
+    bootstrap: true
+    max_bytes: 512
+
+operations:
+  read:
+    contract: example.inspection.v1.Read
+    request: example.inspection.v1.InspectionReadRequest
+    response: example.inspection.v1.InspectionReadResponse
+    max_items: 8
+    max_bytes: 4096

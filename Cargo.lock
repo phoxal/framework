@@ -2242,6 +2242,8 @@ dependencies = [
  "phoxal-build",
  "phoxal-macros",
  "prost",
+ "prost-reflect",
+ "prost-types",
  "schemars 1.2.1",
  "serde",
  "serde_bytes",
@@ -2327,17 +2329,53 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-contract-consumer-fixture"
+name = "phoxal-contract-client-fixture"
 version = "0.1.0"
 dependencies = [
  "phoxal",
 ]
 
 [[package]]
-name = "phoxal-contract-owner-fixture"
+name = "phoxal-contract-consumer-fixture"
 version = "0.1.0"
 dependencies = [
  "phoxal",
+ "serde",
+]
+
+[[package]]
+name = "phoxal-contract-robot-fixture"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "phoxal",
+ "phoxal-supervisor",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "phoxal-encoder-a-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "serde",
+]
+
+[[package]]
+name = "phoxal-encoder-b-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "serde",
+]
+
+[[package]]
+name = "phoxal-foreign-reading-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "serde",
 ]
 
 [[package]]
@@ -2428,7 +2466,6 @@ dependencies = [
  "libc",
  "phoxal",
  "prost",
- "prost-reflect",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2441,6 +2478,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zenoh",
+]
+
+[[package]]
+name = "phoxal-supervisor-runtime-fixture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "phoxal",
+ "prost-reflect",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

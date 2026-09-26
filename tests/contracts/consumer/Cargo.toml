@@ -5,14 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Independent consumer of an owner-generated Phoxal contract."
+description = "Manifest-authored consumer of the standard encoder contract."
+include = ["api/**", "service.yaml", "build.rs", "src/**", "Cargo.toml", "Cargo.lock"]
 
 [[bin]]
 name = "phoxal-contract-consumer-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["contract"] }
+phoxal = { workspace = true, default-features = false, features = ["contract", "runtime", "robotics"] }
+serde = { workspace = true }
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }

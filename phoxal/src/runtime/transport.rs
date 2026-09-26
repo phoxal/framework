@@ -41,6 +41,11 @@ pub fn decode_prost<T: ProstPayload>(bytes: &[u8]) -> Result<T, prost::DecodeErr
 /// Zenoh's standard encoding identifier for Runtime port payloads.
 pub const PROTOBUF_ENCODING: &str = "application/protobuf";
 
+/// Maximum encoded size of one projected observation body produced by a
+/// receiver-side field mapping; the declared input bound still governs
+/// admission after the conversion.
+pub(crate) const MAX_PROJECTED_OBSERVATION_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Maximum attachment size accepted by one Runtime port sample.
 const MAX_METADATA_BYTES: usize = 1024;
 
@@ -383,6 +388,16 @@ impl WireSample {
         }
     }
 
+    /// Returns the same observation with a converted payload body.
+    ///
+    /// Used by the receiver-side projection at the admission boundary; every
+    /// metadata field — capture identity, sequence, producer, boundary — is
+    /// preserved exactly as published.
+    pub(crate) fn with_payload(mut self, payload: Vec<u8>) -> Self {
+        self.payload = payload;
+        self
+    }
+
     /// Converts one Zenoh sample after validating encoding, attachment, and
     /// bounded metadata.  The payload remains the exact generated message body.
     pub fn from_zenoh(sample: zenoh::sample::Sample) -> Result<Self, TransportError> {
@@ -547,7 +562,6 @@ pub struct PreparedOutput {
 
 impl PreparedOutput {
     /// Stage an already encoded ordinary publication.
-    #[doc(hidden)]
     pub fn encoded_response(
         signature: PortSignature,
         payload: Vec<u8>,
@@ -558,7 +572,6 @@ impl PreparedOutput {
     }
 
     /// Stage an already encoded request.
-    #[doc(hidden)]
     pub fn encoded_request(
         signature: PortSignature,
         payload: Vec<u8>,
@@ -794,11 +807,25 @@ impl PreparedOutput {
     }
 
     /// Mark a record as originating from the generated robot API.
-    #[doc(hidden)]
     #[must_use]
     pub fn generated_operation(mut self) -> Self {
         self.generated_operation = true;
         self
+    }
+
+    /// Redirect a locally staged generated operation to its composition-bound
+    /// destination after the graph resolved the requirement's provider.
+    pub(crate) fn retarget_instance(&mut self, instance: &str) {
+        self.target_instance = Some(instance.to_owned());
+    }
+
+    /// Re-sign a locally staged generated operation with the provider's
+    /// served endpoint identity when composition selected an endpoint whose
+    /// local spelling differs from the consumer's requirement.
+    pub(crate) fn retarget_signature(&mut self, signature: PortSignature) {
+        if let PreparedEndpoint::Signature(current) = &mut self.endpoint {
+            *current = signature;
+        }
     }
 
     pub(crate) fn generated_identity(&self) -> Option<(String, PortSignature, u64, usize, bool)> {

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::api::motion::v1::{
+use crate::api::types::phoxal::motion::v1::{
     ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, Constraint, ConstraintReason,
     ControlMode, MotionConstraints, MotionIntent, Permission, ReleaseEmergencyRequest,
     actuator_target, apply_emergency_response,
@@ -67,10 +67,10 @@ pub fn emergency_response(value: &ApplyEmergencyResponse) -> Result<(), Validati
     {
         apply_emergency_response::Decision::Accepted(_) => Ok(()),
         apply_emergency_response::Decision::Refused(refused) => {
-            crate::api::motion::v1::EmergencyRefusalReason::try_from(refused.reason)
+            crate::api::types::phoxal::motion::v1::EmergencyRefusalReason::try_from(refused.reason)
                 .ok()
                 .filter(|reason| {
-                    *reason != crate::api::motion::v1::EmergencyRefusalReason::Unspecified
+                    *reason != crate::api::types::phoxal::motion::v1::EmergencyRefusalReason::Unspecified
                 })
                 .ok_or(ValidationError::InvalidEmergencyValue)?;
             Ok(())

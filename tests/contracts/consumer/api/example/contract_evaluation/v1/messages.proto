@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package example.contract_evaluation.v1;
+
+message ConsumerStatus {
+  // Lifecycle phase reported by the consumer.
+  string phase = 1;
+  // Count of accepted encoder observations since initialization.
+  uint64 observed = 2;
+  // Count of completed read_encoder calls since initialization.
+  uint64 readings = 3;
+  // Last encoder position reported by the current provider, if any.
+  optional double position_rad = 4;
+  // Count of accepted queued tick batches since initialization.
+  uint64 ticks = 5;
+  // Count of completed read_backup calls since initialization.
+  uint64 backups = 6;
+  // Last encoder position reported by the backup provider, if any.
+  optional double backup_position_rad = 7;
+}

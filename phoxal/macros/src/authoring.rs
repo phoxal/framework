@@ -80,7 +80,7 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #phoxal::runtime::ConfigSchema for #struct_name {
-            const __SCHEMA: #phoxal::runtime::ConfigSchemaValue =
+            const SCHEMA_VALUE: #phoxal::runtime::ConfigSchemaValue =
                 #phoxal::runtime::ConfigSchemaValue::new()
                     #(.push_str(#schema_args))*;
         }

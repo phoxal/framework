@@ -44,7 +44,14 @@ robot:
           port: /dev/ttyUSB0
           baud: 115200
         config: { id: 4 }
-brain: {}
+brain:
+  outputs:
+    manual:
+      type: phoxal.motion.v1.MotionIntent
+      delivery: latest
+      lease: { valid_for_ms: 100 }
+      projection: state
+      max_bytes: 256
 
 services:
   controller:

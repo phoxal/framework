@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use crate::api::__contracts::phoxal::motion::v1::{
+use crate::api::types::phoxal::motion::v1::{
     Constraint, ConstraintReason, ControlMode, MotionConstraints, MotionStatus, Permission,
 };
-use crate::api::__contracts::phoxal::world::v1::{WorldBelief, WorldRevision};
-use crate::api::safety::v1::SafetyStatus;
+use crate::api::types::phoxal::safety::v1::SafetyStatus;
+use crate::api::types::phoxal::world::v1::{WorldBelief, WorldRevision};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ValidationError {

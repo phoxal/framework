@@ -1,5 +1,6 @@
 use phoxal::runtime::{ExecutionDuration, ExecutionTime, ObservationStamp, StepContext};
 
+use super::phoxal_provider::Inputs as ServiceInputs;
 use super::*;
 
 fn config() -> KinematicsConfig {
@@ -38,20 +39,23 @@ fn context(index: u64, now_ms: u64, previous_ms: Option<u64>) -> StepContext {
 #[test]
 fn one_encoder_batch_produces_joints_odometry_and_frames() {
     let state = KinematicsState::new(config());
-    let inputs = KinematicsInputs {
+    let inputs = ServiceInputs {
         encoders: Samples::new(vec![
             sample("left_encoder", 2.0, 4.0, 20),
             sample("right_encoder", 2.0, 4.0, 20),
         ]),
-        frame_lookups: Default::default(),
+        lookup_frame: Default::default(),
     };
     let (state, outputs) = Kinematics
         .step(&context(0, 20, None), state, &inputs)
         .expect("complete wheel batch");
     assert_eq!(outputs.joints.len(), 2);
-    assert!(outputs.joints.iter().any(|sample| {
-        sample.payload().joint_id == "left_wheel" && sample.payload().position_rad == 2.0
-    }));
+    assert!(
+        outputs
+            .joints
+            .iter()
+            .any(|joint| joint.joint_id == "left_wheel" && joint.position_rad == 2.0)
+    );
     assert!(state.available);
     assert_eq!(state.revision, 1);
     assert!(validation::frame_tree(&state.frames()).is_ok());
@@ -64,12 +68,12 @@ fn expired_wheel_is_explicitly_unavailable_and_does_not_integrate() {
         .step(
             &context(0, 20, None),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![
                     sample("left_encoder", 0.0, 4.0, 20),
                     sample("right_encoder", 0.0, 4.0, 20),
                 ]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .expect("complete wheel batch");
@@ -77,9 +81,9 @@ fn expired_wheel_is_explicitly_unavailable_and_does_not_integrate() {
         .step(
             &context(1, 140, Some(20)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![sample("left_encoder", 0.0, 4.0, 140)]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .expect("partial input is a valid transition");
@@ -96,12 +100,12 @@ fn stale_measurements_are_not_reused_as_fresh_motion() {
         .step(
             &context(0, 200, None),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![
                     sample("left_encoder", 0.0, 4.0, 20),
                     sample("right_encoder", 0.0, 4.0, 20),
                 ]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .expect("stale input is a valid transition");
@@ -133,14 +137,14 @@ fn four_wheels_use_every_calibration_and_preserve_the_oldest_capture() {
         .step(
             &context(0, 20, Some(0)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![
                     sample("left_encoder", 0.0, 2.0, 20),
                     sample("left_rear", 0.0, -8.0, 10),
                     sample("right_encoder", 0.0, 4.0, 20),
                     sample("right_rear", 0.0, -12.0, 20),
                 ]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -164,9 +168,9 @@ fn four_wheels_use_every_calibration_and_preserve_the_oldest_capture() {
         .step(
             &context(1, 40, Some(20)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::default(),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -183,9 +187,9 @@ fn four_wheels_use_every_calibration_and_preserve_the_oldest_capture() {
         .step(
             &context(2, 111, Some(40)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::default(),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -202,12 +206,12 @@ fn invalid_new_encoder_replaces_old_evidence_until_a_new_valid_capture() {
         .step(
             &context(0, 20, None),
             initial,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![
                     sample("left_encoder", 0.0, 1.0, 20),
                     sample("right_encoder", 0.0, 1.0, 20),
                 ]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -215,9 +219,9 @@ fn invalid_new_encoder_replaces_old_evidence_until_a_new_valid_capture() {
         .step(
             &context(1, 40, Some(20)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![sample("left_encoder", 0.0, f64::NAN, 40)]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -226,9 +230,9 @@ fn invalid_new_encoder_replaces_old_evidence_until_a_new_valid_capture() {
         .step(
             &context(2, 60, Some(40)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::default(),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();
@@ -240,9 +244,9 @@ fn invalid_new_encoder_replaces_old_evidence_until_a_new_valid_capture() {
         .step(
             &context(3, 80, Some(60)),
             state,
-            &KinematicsInputs {
+            &ServiceInputs {
                 encoders: Samples::new(vec![sample("left_encoder", 0.0, 1.0, 80)]),
-                frame_lookups: Default::default(),
+                lookup_frame: Default::default(),
             },
         )
         .unwrap();

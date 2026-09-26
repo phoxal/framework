@@ -30,8 +30,8 @@ use phoxal::artifact::simulation_run::{
     SimulationCapturePolicy, SimulationCaptureRequirement, SimulationExecutionBounds,
     SimulationModelReference, SimulationProgram, SimulationRunSpecification,
 };
-use phoxal::scenario::__internal::{Action, Capture, Program};
 use phoxal::scenario::CapturePolicy;
+use phoxal::scenario::plan_support::{Action, Capture, Program};
 
 /// The official independently installed native simulation application.
 pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator";
@@ -1691,7 +1691,7 @@ fn build_run_specification(
 }
 
 fn method_signature(
-    signature: phoxal::__private::PortSignature,
+    signature: phoxal::macro_support::PortSignature,
 ) -> phoxal::artifact::MethodSignature {
     phoxal::artifact::MethodSignature {
         endpoint: signature.name.to_owned(),

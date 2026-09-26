@@ -45,35 +45,8 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zenoh = { workspace = true, features = ["unstable"] }
 
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
-
 [dev-dependencies]
 serial_test.workspace = true
-prost-reflect.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-test-fixtures = []
-
-[[bin]]
-name = "supervisor-test-runtime"
-path = "tests/fixtures/runtime_process.rs"
-required-features = ["test-fixtures"]
-
-[[bin]]
-name = "supervisor-test-motion-inputs"
-path = "tests/fixtures/motion_inputs.rs"
-required-features = ["test-fixtures"]
-
-[[test]]
-name = "runtime_process"
-path = "tests/runtime_process.rs"
-required-features = ["test-fixtures"]
-
-[[test]]
-name = "public_session"
-path = "tests/public_session.rs"
-required-features = ["test-fixtures"]

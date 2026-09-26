@@ -70,3 +70,40 @@ capabilities:
       id: imu_site
     signals:
       angular_velocity: gyroscope
+
+outputs:
+  accelerometer:
+    delivery: queue
+    max_bytes: 8192
+    max_items: 16
+    type: phoxal.component.oak_d_lite.v1.AccelerometerSample
+  depth:
+    delivery: queue
+    max_bytes: 8388608
+    max_items: 4
+    type: phoxal.component.oak_d_lite.v1.DepthFrame
+  gyroscope:
+    delivery: queue
+    max_bytes: 8192
+    max_items: 16
+    type: phoxal.component.oak_d_lite.v1.GyroscopeSample
+  imu:
+    delivery: queue
+    max_bytes: 16384
+    max_items: 16
+    type: phoxal.component.oak_d_lite.v1.ImuSample
+  left_mono:
+    delivery: queue
+    max_bytes: 8388608
+    max_items: 4
+    type: phoxal.component.oak_d_lite.v1.CameraFrame
+  rgb:
+    delivery: queue
+    max_bytes: 8388608
+    max_items: 4
+    type: phoxal.component.oak_d_lite.v1.CameraFrame
+  right_mono:
+    delivery: queue
+    max_bytes: 8388608
+    max_items: 4
+    type: phoxal.component.oak_d_lite.v1.CameraFrame

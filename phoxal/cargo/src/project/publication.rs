@@ -648,11 +648,16 @@ fn classify_package(
 
 fn require_participant_api(source_root: &Path, package: &str, kind: &str) -> Result<(), Error> {
     let api = source_root.join("api");
-    if !source_root.join("build.rs").is_file() || !api.is_dir() {
+    // A built-in-only manifest contract packages service.yaml without an
+    // api/ directory; either layout is a runnable contract input set.
+    if !source_root.join("build.rs").is_file()
+        || (!api.is_dir() && !source_root.join("service.yaml").is_file())
+    {
         return Err(PublicationError::InvalidPackageShape {
             package: package.to_owned(),
             kind: kind.to_owned(),
-            requirement: "runnable participants must package build.rs and api/".to_owned(),
+            requirement: "runnable participants must package build.rs and api/ (or service.yaml)"
+                .to_owned(),
         }
         .into());
     }
@@ -3502,8 +3507,12 @@ mod tests {
         )?;
         write(&directory.path().join("build.rs"), "fn main() {}\n")?;
         write(
+            &directory.path().join("service.yaml"),
+            "schema: phoxal/service/v0\noperations:\n  run:\n    contract: example.v1.Run\n    request: example.v1.Request\n    response: example.v1.Request\n    max_items: 4\n    max_bytes: 1024\n",
+        )?;
+        write(
             &directory.path().join("api/example.proto"),
-            "syntax = \"proto3\"; package example.v1; message Request {} service Example { rpc Run(Request) returns (Request); }\n",
+            "syntax = \"proto3\"; package example.v1; message Request {}\n",
         )?;
         write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
         let result = prepare_publication(&PublicationOptions {

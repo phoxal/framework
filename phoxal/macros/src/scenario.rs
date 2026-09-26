@@ -50,13 +50,13 @@ pub fn expand_scenario(attr: TokenStream, item: TokenStream) -> syn::Result<Toke
     function.sig.inputs.clear();
     function.attrs.push(syn::parse_quote!(#[test]));
     *function.block = syn::parse_quote!({
-        let mut __phoxal_simulation: #fixture_type =
-            ::phoxal::scenario::Simulation::__from_context(::std::concat!(
+        let mut phoxal_simulation: #fixture_type =
+            ::phoxal::scenario::Simulation::from_host_context(::std::concat!(
                 ::std::module_path!(),
                 "::",
                 ::std::stringify!(#test_name),
             ))?;
-        let #fixture_name = &mut __phoxal_simulation;
+        let #fixture_name = &mut phoxal_simulation;
         #original
     });
 

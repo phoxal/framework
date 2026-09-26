@@ -77,6 +77,7 @@ runtime = [
     "dep:clap",
     "dep:phoxal-macros",
     "dep:getrandom",
+    "dep:prost-reflect",
     "dep:serde_json",
     "dep:serde_yaml",
     "dep:sha2",
@@ -152,6 +153,7 @@ zenoh = { workspace = true, optional = true }
 
 phoxal-build = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
+prost-reflect = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal-build.workspace = true
@@ -169,6 +171,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 tempfile.workspace = true
+# Descriptor construction for receiver-side projection unit tests.
+prost-types = { workspace = true }
 
 # The Config derive test compares the emitted schema with the independent
 # schemars oracle without making schemars a runtime dependency.
@@ -203,11 +207,6 @@ required-features = ["contract"]
 [[test]]
 name = "config_derive"
 path = "tests/config_derive.rs"
-required-features = ["runtime"]
-
-[[test]]
-name = "runtime_authoring"
-path = "tests/runtime_authoring.rs"
 required-features = ["runtime"]
 
 [[test]]

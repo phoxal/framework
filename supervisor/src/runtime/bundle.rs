@@ -211,6 +211,10 @@ pub(crate) enum SourceManifest {
         model: Option<serde_json::Value>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
+        /// Compiled receiver-side observation projections; the receiving
+        /// runtime executes them, the supervisor only admits the bundle.
+        #[serde(default)]
+        projections: Vec<serde_json::Value>,
     },
 }
 
@@ -470,6 +474,7 @@ impl SourceManifest {
             component_sources: BTreeMap::new(),
             model: None,
             simulation: None,
+            projections: Vec::new(),
         }
     }
 }
@@ -1253,6 +1258,7 @@ mod tests {
             component_sources: BTreeMap::new(),
             model: None,
             simulation: Some(simulation_fixture()),
+            projections: Vec::new(),
         };
         {
             let SourceManifest::V0 {

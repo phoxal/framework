@@ -157,7 +157,6 @@ impl<Request, Response> CallMethod<Request, Response> {
     }
 
     /// Binds this method to one generated robot service instance.
-    #[doc(hidden)]
     #[must_use]
     pub const fn bind(self, instance: &'static str, request: Request) -> Call<Request, Response> {
         Call {
@@ -168,7 +167,6 @@ impl<Request, Response> CallMethod<Request, Response> {
     }
 
     /// Creates the explicit withdrawal for a leased method.
-    #[doc(hidden)]
     #[must_use]
     pub const fn withdraw(self, instance: &'static str) -> Withdraw<Request, Response> {
         assert!(
@@ -183,9 +181,8 @@ impl<Request, Response> CallMethod<Request, Response> {
 
     /// Adapts a non-leased call to the existing provider ingress collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __commands_port(self) -> crate::port::Commands<Request, Response> {
+    pub const fn commands_port(self) -> crate::port::Commands<Request, Response> {
         assert!(
             self.signature.lease.is_none(),
             "leased calls use the setpoint provider adapter"
@@ -198,9 +195,8 @@ impl<Request, Response> CallMethod<Request, Response> {
 
     /// Adapts a leased call to the existing provider ingress collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __setpoint_port(self) -> crate::port::Setpoint<Request> {
+    pub const fn setpoint_port(self) -> crate::port::Setpoint<Request> {
         assert!(
             self.signature.lease.is_some(),
             "only leased calls use the setpoint provider adapter"
@@ -269,7 +265,6 @@ impl<Value> ObservationMethod<Value> {
     }
 
     /// Binds this method to one generated robot service instance.
-    #[doc(hidden)]
     #[must_use]
     pub const fn bind(self, instance: &'static str) -> Observation<Value> {
         Observation {
@@ -280,9 +275,8 @@ impl<Value> ObservationMethod<Value> {
 
     /// Adapts a retained observation to the existing provider projection collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __state_port(self) -> crate::port::State<Value> {
+    pub const fn state_port(self) -> crate::port::State<Value> {
         assert!(
             self.signature.retained_latest,
             "only retained observations use the state provider adapter"
@@ -295,9 +289,8 @@ impl<Value> ObservationMethod<Value> {
 
     /// Adapts a non-retained observation to the existing provider sample collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __sample_port(self) -> crate::port::Sample<Value> {
+    pub const fn sample_port(self) -> crate::port::Sample<Value> {
         assert!(
             !self.signature.retained_latest,
             "retained observations use the state provider adapter"
@@ -310,9 +303,8 @@ impl<Value> ObservationMethod<Value> {
 
     /// Adapts a non-retained observation to an event provider collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __event_port(self) -> crate::port::Event<Value> {
+    pub const fn event_port(self) -> crate::port::Event<Value> {
         assert!(
             !self.signature.retained_latest,
             "retained observations use the state provider adapter"
@@ -325,9 +317,8 @@ impl<Value> ObservationMethod<Value> {
 
     /// Adapts a non-retained observation to a stream provider collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __stream_port(self) -> crate::port::Stream<Value> {
+    pub const fn stream_port(self) -> crate::port::Stream<Value> {
         assert!(
             !self.signature.retained_latest,
             "retained observations use the state provider adapter"
@@ -340,9 +331,8 @@ impl<Value> ObservationMethod<Value> {
 
     /// Adapts a leased observation to the existing provider setpoint collector.
     #[cfg(feature = "runtime")]
-    #[doc(hidden)]
     #[must_use]
-    pub const fn __setpoint_port(self) -> crate::port::Setpoint<Value> {
+    pub const fn setpoint_port(self) -> crate::port::Setpoint<Value> {
         assert!(
             self.signature.lease.is_some(),
             "only leased observations use the setpoint provider adapter"
@@ -389,6 +379,12 @@ impl<Request, Response> Call<Request, Response> {
         self.instance
     }
 
+    /// Returns the typed contract method for session binding.
+    #[must_use]
+    pub const fn method(&self) -> CallMethod<Request, Response> {
+        self.method
+    }
+
     /// Returns the generated contract method identity.
     #[must_use]
     pub fn signature(&self) -> MethodSignature {
@@ -402,7 +398,6 @@ impl<Request, Response> Call<Request, Response> {
     }
 
     /// Consumes the operation into its inert parts.
-    #[doc(hidden)]
     pub fn into_parts(self) -> (&'static str, MethodSignature, Request) {
         (self.instance, self.method.signature, self.request)
     }
@@ -426,6 +421,12 @@ impl<Value> Observation<Value> {
     #[must_use]
     pub const fn instance(self) -> &'static str {
         self.instance
+    }
+
+    /// Returns the typed contract method for session binding.
+    #[must_use]
+    pub const fn method(self) -> ObservationMethod<Value> {
+        self.method
     }
 
     /// Returns the generated contract method identity.

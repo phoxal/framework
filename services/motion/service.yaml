@@ -1,0 +1,67 @@
+schema: phoxal/service/v0
+
+inputs:
+  manual:
+    type: phoxal.motion.v1.MotionIntent
+    delivery: latest
+    required: true
+    lease: { valid_for_ms: 100 }
+    max_bytes: 4096
+  autonomous:
+    type: phoxal.motion.v1.MotionIntent
+    delivery: latest
+    required: true
+    lease: { valid_for_ms: 100 }
+    max_bytes: 4096
+  safety:
+    type: phoxal.motion.v1.MotionConstraints
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 4096
+  measurements:
+    type: phoxal.kinematics.v1.OdometryState
+    delivery: latest
+    required: true
+    max_age_ms: 100
+    max_bytes: 512
+
+outputs:
+  actuators:
+    type: phoxal.motion.v1.ActuatorSetpoint
+    delivery: latest
+    lease: { valid_for_ms: 100 }
+    projection: state
+    max_bytes: 1024
+  status:
+    type: phoxal.motion.v1.MotionStatus
+    delivery: latest
+    projection: state
+    bootstrap: true
+    max_bytes: 512
+
+operations:
+  arm:
+    contract: phoxal.motion.v1.Arm
+    request: phoxal.motion.v1.ArmRequest
+    response: phoxal.motion.v1.ApplyEmergencyResponse
+    max_items: 32
+    max_bytes: 16384
+  disarm:
+    contract: phoxal.motion.v1.Disarm
+    request: google.protobuf.Empty
+    response: phoxal.motion.v1.ApplyEmergencyResponse
+    max_items: 32
+    max_bytes: 16384
+  engage_emergency:
+    contract: phoxal.motion.v1.EngageEmergency
+    request: google.protobuf.Empty
+    response: phoxal.motion.v1.ApplyEmergencyResponse
+    max_items: 32
+    max_bytes: 16384
+  release_emergency:
+    contract: phoxal.motion.v1.ReleaseEmergency
+    request: phoxal.motion.v1.ReleaseEmergencyRequest
+    response: phoxal.motion.v1.ApplyEmergencyResponse
+    max_items: 32
+    max_bytes: 16384
