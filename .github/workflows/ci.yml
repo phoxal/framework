@@ -3,15 +3,20 @@ name: ci
 # Framework CI: formatting, strict clippy over every target, and the
 # deterministic workspace tests with locked dependency resolution.
 #
-# The native MuJoCo scenario in tests/robot needs a simulator
-# installation and is excluded here; it runs as the recorded native
-# acceptance command:
+# Compiling any Phoxal composition requires its prepared contracts, so
+# the build job first builds cargo-phoxal and prepares the three
+# workspace fixture compositions (tests/robot, tests/contracts/robot,
+# tests/contracts/client). The excluded-by-tests packages:
 #
-#   cargo build -p phoxal-supervisor --bin phoxal-supervisor &&
-#   cargo phoxal test --simulator <simulator-binary> forward_turn_stop
+# - tests/robot's native MuJoCo scenario needs a simulator installation;
+#   it is compiled here and runs as the recorded native acceptance
+#   command on a prepared host:
 #
-# The supervisor acceptance suite needs its binary built first (two-step
-# suite contract), so the test job builds it before running.
+#     cargo build -p phoxal-supervisor --bin phoxal-supervisor &&
+#     cargo phoxal test --simulator <simulator-binary> forward_turn_stop
+#
+# - tests/supervisor-runtime needs its supervisor binary built first
+#   (two-step suite contract) and runs in its own job below.
 
 on:
   pull_request:
@@ -19,14 +24,34 @@ on:
     branches: [main]
 
 jobs:
-  ci:
-    uses: phoxal/.github/.github/workflows/rust-ci.yml@main
-    with:
-      # tests/robot needs the MuJoCo simulator installation and
-      # tests/supervisor-runtime needs its prebuilt supervisor binary;
-      # the native scenario runs as the recorded acceptance command and
-      # the supervisor suite runs in its own job below.
-      test-args: "--exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture"
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          cache: false
+      - run: cargo fmt --all -- --check
+
+  build-and-test:
+    name: clippy and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - name: Build cargo-phoxal
+        run: cargo build -p cargo-phoxal --locked
+      - name: Prepare the fixture compositions
+        run: |
+          set -euo pipefail
+          for fixture in tests/robot tests/contracts/robot tests/contracts/client; do
+            (cd "$fixture" && ../../target/debug/cargo-phoxal prepare)
+          done
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
 
   supervisor-acceptance:
     name: supervisor acceptance

@@ -119,7 +119,7 @@ jobs:
           mkdir -p ~/.cargo
           printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
             >> ~/.cargo/config.toml
-          version="$(curl -fsSL "$REGISTRY_INDEX/ca/rg/o-cargo-phoxal" \
+          version="$(curl -fsSL "$REGISTRY_INDEX/ca/rg/cargo-phoxal" \
             | python3 -c "import sys,json; print(json.loads(sys.stdin.readlines()[-1])['vers'])")"
           echo "installing cargo-phoxal $version"
           cargo install cargo-phoxal --registry phoxal --version "$version" --locked --root "$RUNNER_TEMP/cli"
