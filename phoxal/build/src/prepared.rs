@@ -250,11 +250,22 @@ impl PreparedContract {
             let Some(signature) = &output.signature else {
                 continue;
             };
-            endpoints.push(PreparedEndpoint::Observation {
-                name: signature.endpoint.clone(),
-                response: signature.response.clone(),
-                lease_valid_for_ms: signature.lease_valid_for_ms,
-            });
+            if signature.shape == "call" {
+                // A method-role leased output binds as a leased call whose
+                // request is the published payload.
+                endpoints.push(PreparedEndpoint::Call {
+                    name: signature.endpoint.clone(),
+                    request: signature.request.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            } else {
+                endpoints.push(PreparedEndpoint::Observation {
+                    name: signature.endpoint.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            }
         }
         for input in &self.runtime.inputs {
             let Some(signature) = &input.signature else {
@@ -574,5 +585,68 @@ mod tests {
             remote_prepared_dir(root, Some("alpha")),
             remote_prepared_dir(root, None)
         );
+    }
+
+    fn contract_with_outputs(runtime_json: &str) -> PreparedContract {
+        PreparedContract {
+            runtime: serde_json::from_str(runtime_json).expect("runtime record"),
+            descriptors: FileDescriptorSet::default(),
+        }
+    }
+
+    #[test]
+    fn endpoints_classify_outputs_by_their_public_shape() {
+        // A method-role leased output carries a call signature; its typed
+        // helper must bind as a leased call, not an observation.
+        let contract = contract_with_outputs(
+            r#"{
+                "transient_outputs": [
+                    {
+                        "signature": {
+                            "endpoint": "manual",
+                            "service": "phoxal.motion.v1.MotionApi",
+                            "shape": "call",
+                            "request": "phoxal.motion.v1.MotionIntent",
+                            "response": "google.protobuf.Empty",
+                            "retained_latest": true,
+                            "lease_valid_for_ms": 100
+                        }
+                    }
+                ],
+                "service_outputs": [
+                    {
+                        "signature": {
+                            "endpoint": "status",
+                            "service": "phoxal.motion.v1.MotionApi",
+                            "shape": "observation",
+                            "request": "google.protobuf.Empty",
+                            "response": "phoxal.motion.v1.MotionStatus",
+                            "retained_latest": true
+                        }
+                    }
+                ]
+            }"#,
+        );
+        let endpoints = contract.endpoints();
+        assert_eq!(endpoints.len(), 2, "both outputs bind as endpoints");
+        assert!(matches!(
+            &endpoints[0],
+            PreparedEndpoint::Call {
+                name,
+                request,
+                response,
+                lease_valid_for_ms: Some(100),
+            } if name == "manual"
+                && request == "phoxal.motion.v1.MotionIntent"
+                && response == "google.protobuf.Empty"
+        ));
+        assert!(matches!(
+            &endpoints[1],
+            PreparedEndpoint::Observation {
+                name,
+                response,
+                lease_valid_for_ms: None,
+            } if name == "status" && response == "phoxal.motion.v1.MotionStatus"
+        ));
     }
 }
