@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-phoxal"
-version = "0.0.0-dev.8"
+version = "0.0.0-dev.9"
 dependencies = [
  "base64",
  "cargo_metadata",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-build"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "heck",
  "prettyplease",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-kinematics"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2456,7 +2456,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-world"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2482,7 +2482,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-supervisor"
-version = "0.0.0-dev.3"
+version = "0.0.0-dev.4"
 dependencies = [
  "anyhow",
  "clap",
