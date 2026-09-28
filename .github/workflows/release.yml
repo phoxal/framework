@@ -161,6 +161,7 @@ jobs:
   consumer-verify:
     name: verify a consumer against this exact release
     needs: publish
+    if: ${{ always() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

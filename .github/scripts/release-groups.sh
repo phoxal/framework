@@ -86,7 +86,10 @@ wait_live() { # <name> <version> <expected sha256 or empty to trust the index ck
             if [ -z "$expected" ]; then
                 expected="$cksum"  # resumed package: the trusted live record
             fi
-            verify_live_archive "$name" "$version" "$expected"
+            if ! verify_live_archive "$name" "$version" "$expected"; then
+                return 1
+            fi
+            echo "$expected"
             return 0
         elif [ $? -eq 3 ]; then
             : # version not deployed yet; keep polling
@@ -169,8 +172,6 @@ for group_index in $(seq 0 $((GROUP_COUNT - 1))); do
             exit 1
         fi
         echo "$NAME-$VERSION $SHA" >> "$SUBMITTED_SHAS"
-        echo "{\"name\": \"$NAME\", \"version\": \"$VERSION\", \"sha256\": \"$SHA\", \"pull_request\": \"$URL\"}" \
-            >> "$MANIFEST_TMP/lines"
         log "submitted $NAME $VERSION: $URL sha256 $SHA (admission validates and merges)"
         PR_URLS+=("$URL")
     done
@@ -183,7 +184,15 @@ for group_index in $(seq 0 $((GROUP_COUNT - 1))); do
     for ITEM in "${ITEMS[@]}"; do
         NAME="$(field "$ITEM" name)"
         VERSION="$(field "$ITEM" version)"
-        wait_live "$NAME" "$VERSION" "$(submitted_sha "$NAME" "$VERSION")"
+        # Explicit check: set -e does not reliably abort through command
+        # substitution in every bash this script may run under.
+        if ! VERIFIED="$(wait_live "$NAME" "$VERSION" "$(submitted_sha "$NAME" "$VERSION")")"; then
+            log "verification failed for $NAME $VERSION; stopping before dependents"
+            exit 1
+        fi
+        python3 -c "import json, sys; print(json.dumps({
+            'name': sys.argv[1], 'version': sys.argv[2], 'sha256': sys.argv[3],
+        }))" "$NAME" "$VERSION" "$VERIFIED" >> "$MANIFEST_TMP/lines"
     done
 done
 
