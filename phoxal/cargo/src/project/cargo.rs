@@ -14,8 +14,15 @@ pub(crate) fn is_registry_source(source: &str) -> bool {
     source.starts_with("registry+") || source.starts_with("sparse+")
 }
 
-/// Supply the public default only when Cargo has no authored Phoxal source.
-/// A command-line `--config` would override a project mirror or test registry.
+/// Always supply the effective Phoxal registry index explicitly.
+///
+/// `cargo install --registry phoxal` does not discover a project-level
+/// `.cargo/config.toml` when the working directory is itself a package
+/// root, so relying on discovery breaks preparation inside robot projects.
+/// The authored value (nearest configuration wins) is passed through so a
+/// project mirror or test registry keeps precedence over the public
+/// default; the environment variable still wins because Cargo reads it
+/// directly.
 pub(crate) fn registry_config(root: &Path) -> Option<String> {
     if std::env::var_os("CARGO_REGISTRIES_PHOXAL_INDEX").is_some() {
         return None;
@@ -34,23 +41,25 @@ pub(crate) fn registry_config(root: &Path) -> Option<String> {
         files.push(home.join("config.toml"));
         files.push(home.join("config"));
     }
-    let configured = files.into_iter().any(|path| {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
-            .is_some_and(|config| {
-                config
-                    .get("registries")
-                    .and_then(|value| value.get("phoxal"))
-                    .and_then(|value| value.get("index"))
-                    .is_some()
-                    || config
-                        .get("source")
-                        .and_then(|value| value.get("phoxal"))
-                        .is_some()
-            })
-    });
-    (!configured).then(|| format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""))
+    for path in files {
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(config) = toml::from_str::<toml::Value>(&source) else {
+            continue;
+        };
+        if let Some(index) = config
+            .get("registries")
+            .and_then(|value| value.get("phoxal"))
+            .and_then(|value| value.get("index"))
+            .and_then(toml::Value::as_str)
+        {
+            return Some(format!("registries.phoxal.index=\"{index}\""));
+        }
+    }
+    Some(format!(
+        "registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""
+    ))
 }
 
 /// Cargo's lockfile policy for project preparation and commands.
@@ -668,6 +677,26 @@ mod tests {
             "sparse+https://phoxal.github.io/registry/"
         ));
         assert!(!is_registry_source("git+https://example.invalid/repo"));
+    }
+
+    #[test]
+    fn registry_config_passes_the_authored_index_through() {
+        // `cargo install --registry phoxal` skips project configuration
+        // discovery when the working directory is a package root, so the
+        // effective index must always be passed explicitly. The nearest
+        // authored configuration keeps its exact value.
+        let project = tempfile::tempdir().expect("project root");
+        let cargo = project.path().join(".cargo");
+        std::fs::create_dir_all(&cargo).expect("cargo config directory");
+        std::fs::write(
+            cargo.join("config.toml"),
+            "[registries.phoxal]\nindex = \"sparse+https://mirror.invalid/registry/\"\n",
+        )
+        .expect("cargo config");
+        assert_eq!(
+            registry_config(project.path()).as_deref(),
+            Some("registries.phoxal.index=\"sparse+https://mirror.invalid/registry/\"")
+        );
     }
 
     #[test]
