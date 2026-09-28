@@ -1,0 +1,40 @@
+name: ci
+
+# Framework CI: formatting, strict clippy over every target, and the
+# deterministic workspace tests with locked dependency resolution.
+#
+# The native MuJoCo scenario in tests/robot needs a simulator
+# installation and is excluded here; it runs as the recorded native
+# acceptance command:
+#
+#   cargo build -p phoxal-supervisor --bin phoxal-supervisor &&
+#   cargo phoxal test --simulator <simulator-binary> forward_turn_stop
+#
+# The supervisor acceptance suite needs its binary built first (two-step
+# suite contract), so the test job builds it before running.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: phoxal/.github/.github/workflows/rust-ci.yml@main
+    with:
+      # tests/robot needs the MuJoCo simulator installation and
+      # tests/supervisor-runtime needs its prebuilt supervisor binary;
+      # the native scenario runs as the recorded acceptance command and
+      # the supervisor suite runs in its own job below.
+      test-args: "--exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture"
+
+  supervisor-acceptance:
+    name: supervisor acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build the supervisor binary (two-step suite contract)
+        run: cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
+      - name: Run the supervisor acceptance suite
+        run: cargo test -p phoxal-supervisor-runtime-fixture --locked --no-fail-fast
