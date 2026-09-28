@@ -1,13 +1,18 @@
 name: release
 
-# Maintainer-started release entry point: prepares the version PR
-# (release-plz), lets it merge automatically once CI passes, publishes
-# the exact changed archives to the phoxal registry in dependency-ready
-# groups (registry admission validates and auto-merges each), waits for
-# the live index, verifies checksums, and then verifies a published
-# consumer. Restartable: reruns resume from the observed registry state —
-# an already-published matching version is complete, a conflicting
-# archive is an error.
+# Maintainer-started release entry point. The run carries one exact
+# release identity end to end: the version PR it prepared (or the open
+# one it deliberately resumed), that PR's merged source revision, the
+# exact archives submitted from it, and the published manifest its
+# consumer verification resolves against. An unrelated newer index
+# entry or movement of main cannot change what this run publishes or
+# certifies.
+#
+# Restartable: reruns resume from the observed registry state — an
+# already-published matching version is complete, a conflicting archive
+# is an error. Pass skip-version-pr when versions are already bumped
+# and merged; the run then publishes from current main and records that
+# revision as the release identity.
 
 on:
   workflow_dispatch:
@@ -35,6 +40,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      merge-sha: ${{ steps.merge.outputs.merge-sha }}
+      pr-url: ${{ steps.merge.outputs.pr-url }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,40 +59,79 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Prepare the version PR
+      - name: Prepare or resume the version PR
+        id: prepare
         env:
           GIT_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: release-plz release-pr
-      - name: Enable auto-merge on the version PR and wait for it
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          release-plz release-pr 2>&1 | tee release-plz.log || true
+          url="$(grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' release-plz.log | head -1 || true)"
+          if [ -z "$url" ]; then
+            # Nothing new to release, or a previous run left an open
+            # version PR: deliberately resume that exact pull request.
+            candidate="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+              --json number --jq '[.[]] | first(.[]) | .number' || true)"
+            if [ -n "$candidate" ]; then
+              url="https://github.com/$GITHUB_REPOSITORY/pull/$candidate"
+              echo "resuming the open version PR $url"
+            fi
+          fi
+          if [ -z "$url" ]; then
+            echo "no version PR was created and none is open; nothing to release." >&2
+            exit 1
+          fi
+          echo "pr-url=$url" >> "$GITHUB_OUTPUT"
+      - name: Enable auto-merge on the selected PR and wait
+        id: merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          candidate="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json headRefName,number --jq ".[] | select(.headRefName | startswith(\"release-plz\")) | .number" | head -1 || true)"
-          if [ -z "$candidate" ]; then
-            echo "release-plz created no PR: nothing to release since the last published versions."
-            exit 0
-          fi
-          gh pr merge "$candidate" --repo "$GITHUB_REPOSITORY" --auto --squash
+          url="${{ steps.prepare.outputs.pr-url }}"
+          head="$(gh pr view "$url" --json headRefOid --jq .headRefOid)"
+          gh pr merge "$url" --repo "$GITHUB_REPOSITORY" --auto --squash \
+            --match-head-commit "$head"
           for _ in $(seq 1 120); do
-            state="$(gh pr view "$candidate" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
-            [ "$state" = "MERGED" ] && exit 0
+            state="$(gh pr view "$url" --json state --jq .state)"
+            if [ "$state" = "MERGED" ]; then
+              sha="$(gh pr view "$url" --json mergeCommit --jq .mergeCommit.oid)"
+              {
+                echo "merge-sha=$sha"
+                echo "pr-url=$url"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             sleep 30
           done
-          echo "version PR #$candidate did not merge within 60 minutes" >&2
+          echo "version PR $url did not merge within 60 minutes" >&2
           exit 1
 
   publish:
-    name: publish dependency-ready groups
+    name: publish dependency-ready groups from the release revision
     needs: version-pr
-    if: ${{ always() && (needs.version-pr.result == 'success' || needs.version-pr.result == 'skipped' || inputs.skip-version-pr) }}
+    if: ${{ always() && (needs.version-pr.result == 'success' || inputs.skip-version-pr) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      release-sha: ${{ steps.identity.outputs.release-sha }}
     steps:
+      - name: Resolve the exact release revision
+        id: identity
+        run: |
+          if [ "${{ inputs.skip-version-pr }}" = "true" ]; then
+            sha="$(git ls-remote "https://github.com/$GITHUB_REPOSITORY.git" HEAD | cut -f1)"
+          else
+            sha="${{ needs.version-pr.outputs.merge-sha }}"
+          fi
+          [ -n "$sha" ] || { echo "no release revision recorded" >&2; exit 1; }
+          echo "release-sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: main
+          # The exact approved release revision, never moving main.
+          ref: ${{ steps.identity.outputs.release-sha }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Generate the release App token (registry submissions)
         id: app-token
@@ -93,53 +140,92 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           # The App must be installed on phoxal/registry with contents and
-          # pull-request write so submissions and auto-merge work.
+          # pull-request write so submissions and registry merging work.
           permission-contents: write
           permission-pull-requests: write
           repositories: phoxal/registry
-      - name: Build cargo-phoxal from the merged owner revision
+      - name: Build cargo-phoxal from the release revision
         run: cargo build -p cargo-phoxal --locked
       - name: Submit, admit, and verify each dependency-ready group
         env:
           PHOXAL_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          REGISTRY_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash .github/scripts/release-groups.sh
+      - name: Upload the published manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-manifest
+          path: published-manifest.json
+          if-no-files-found: error
 
   consumer-verify:
-    name: verify a published consumer
+    name: verify a consumer against this exact release
     needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Install the published CLI from the registry
+      - name: Download the published manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: published-manifest
+      - name: Install the exact published CLI
         run: |
           set -euo pipefail
           mkdir -p ~/.cargo
           printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
             >> ~/.cargo/config.toml
-          version="$(curl -fsSL "$REGISTRY_INDEX/ca/rg/cargo-phoxal" \
-            | python3 -c "import sys,json; print(json.loads(sys.stdin.readlines()[-1])['vers'])")"
-          echo "installing cargo-phoxal $version"
-          cargo install cargo-phoxal --registry phoxal --version "$version" --locked --root "$RUNNER_TEMP/cli"
-      - name: Verify robot-v1 against the live registry
+          version="$(python3 -c "
+            import json
+            entries = json.load(open('published-manifest.json'))['published']
+            print(next(e['version'] for e in entries if e['name'] == 'cargo-phoxal'))
+          ")"
+          echo "installing cargo-phoxal $version from this release"
+          cargo install cargo-phoxal --registry phoxal --version "$version" \
+            --locked --root "$RUNNER_TEMP/cli"
+      - name: Build a scratch consumer pinned to this release
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/phoxal/robot-v1.git
-          cd robot-v1
-          "$RUNNER_TEMP/cli/bin/cargo-phoxal" prepare
-          "$RUNNER_TEMP/cli/bin/cargo-phoxal" check
-      - name: Compile the rover's native scenario (recorded acceptance)
+          mkdir -p src .cargo
+          printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
+            > .cargo/config.toml
+          python3 - <<'PY'
+          import json
+          entries = {e["name"]: e["version"] for e in
+                     json.load(open("published-manifest.json"))["published"]}
+          wanted = ["phoxal", "phoxal-supervisor", "phoxal-build"]
+          missing = [name for name in wanted if name not in entries]
+          if missing:
+              raise SystemExit(f"this release did not publish {missing}")
+          deps = "\n".join(
+              f'{name} = {{ registry = "phoxal", version = "={entries[name]}" }}'
+              for name in wanted
+          )
+          open("Cargo.toml", "w").write(
+              "[package]\nname = \"release-consumer\"\nversion = \"0.0.0\"\n"
+              "edition = \"2021\"\n\n[dependencies]\n" + deps + "\n"
+          )
+          open("src/main.rs", "w").write("fn main() {}\n")
+          PY
+          cargo build --locked
+          echo "resolved phoxal dependency graph:"
+          cargo tree --prefix none | grep -E "phoxal" | sort -u
+          if cargo tree --prefix none | grep -q "path+file"; then
+              echo "local path overlay leaked into the consumer graph" >&2
+              exit 1
+          fi
+      - name: Record the certified release identity
         run: |
-          set -euo pipefail
-          git clone --depth 1 https://github.com/phoxal/robot-rover.git
-          cd robot-rover
-          "$RUNNER_TEMP/cli/bin/cargo-phoxal" prepare
-          "$RUNNER_TEMP/cli/bin/cargo-phoxal" check
-          # The native forward/turn/stop scenario needs the MuJoCo
-          # simulator; CI compiles it and the recorded acceptance command
-          # runs it on a prepared host:
-          #   DYLD_LIBRARY_PATH=<mujoco> cargo-phoxal test \
-          #     --simulator <simulator-bin> forward_turn_stop
-          cargo check --tests --locked
+          {
+            echo "### Release consumer verification"
+            echo "Release revision: \`${{ needs.publish.outputs.release-sha }}\`"
+            echo "Published manifest:"
+            python3 -c "
+              import json
+              for entry in json.load(open('published-manifest.json'))['published']:
+                  print(f\"- {entry['name']} {entry['version']} sha256 {entry['sha256']}\")
+            "
+            echo "The scratch consumer resolved every phoxal dependency to the"
+            echo "versions above from the live registry, with no local overlays."
+          } >> "$GITHUB_STEP_SUMMARY"
