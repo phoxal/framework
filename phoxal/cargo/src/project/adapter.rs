@@ -339,6 +339,13 @@ fn generate(edges: &[Edge]) -> String {
     let mut source = String::from(MARKER);
     source.push_str("#![allow(\n    clippy::too_many_lines,\n    clippy::unnecessary_fallible_conversions,\n    reason = \"generated adapter supports both From and TryFrom conversions\"\n)]\n\n");
     source.push_str("#[path = \"../conversions.rs\"]\nmod conversions;\n\nphoxal::api!();\n\n");
+    // The brain-side payloads' generated bindings carry no linker-retained
+    // schema frames (the brain authors those definitions itself), so this
+    // adapter — and only this adapter — includes the build helper's
+    // retained-frame file for them: its compiled artifact must define the
+    // complete reachable schema of every payload it serves, nested
+    // messages, enumerations, and payload-enum variants included.
+    source.push_str("include!(concat!(env!(\"OUT_DIR\"), \"/phoxal-self-retention.rs\"));\n\n");
     source.push_str("use phoxal::runtime::input::Latest;\n");
     source.push_str("use phoxal::runtime::{InitContext, Runtime, Sample, StepContext};\n\n");
     for (index, edge) in edges.iter().enumerate() {
@@ -347,23 +354,6 @@ fn generate(edges: &[Edge]) -> String {
             source,
             "const TARGET_{index}: phoxal::contracts::ObservationMethod<\n    {destination},\n> = phoxal::contracts::ObservationMethod::new(\n    \"{}\",\n    \"target_{index}\",\n    \"target_{index}\",\n    \"google.protobuf.Empty\",\n    \"{}\",\n    true,\n    None,\n    &[],\n);",
             edge.destination_type, edge.destination_type
-        );
-        // The destination type's generated bindings carry no linker-retained
-        // schema frame (the brain authors that definition itself), so this
-        // adapter binary retains it explicitly: its compiled artifact must
-        // still define every payload it serves.
-        let _ = writeln!(
-            source,
-            "const _: () = {{\n    #[used]\n    \
-             #[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_schema\"))]\n    \
-             #[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_schema\"))]\n    \
-             static RETAINED_TARGET_{index}: [u8; ::phoxal::schema::encoded_len(\n        \
-             &<{destination} as ::phoxal::schema::MessageSchema>::RECORD,\n    )] = {{\n        \
-             let mut bytes = [0_u8; ::phoxal::schema::encoded_len(\n            \
-             &<{destination} as ::phoxal::schema::MessageSchema>::RECORD,\n        )];\n        \
-             ::phoxal::schema::write_frame(\n            \
-             &<{destination} as ::phoxal::schema::MessageSchema>::RECORD,\n            &mut bytes,\n        );\n        bytes\n    }};\n    \
-             ::std::hint::black_box(&RETAINED_TARGET_{index});\n}};\n"
         );
     }
     source.push_str("\n#[phoxal::runtime::inputs]\n#[derive(Default)]\nstruct Inputs {\n");

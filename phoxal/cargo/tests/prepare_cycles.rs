@@ -441,7 +441,9 @@ fn git_participant_revision_bump_keeps_preparation_green() -> Result<(), Box<dyn
 
 /// A brain whose telemetry expectation is its own private type, reached
 /// only through a robot-owned conversion from the participant's payload:
-/// composition lowers the connection into the generated adapter.
+/// composition lowers the connection into the generated adapter. The
+/// payload nests a message, an enumeration, and a payload enum so the
+/// adapter's retained schema must cover the complete reachable closure.
 fn converting_brain_main() -> String {
     r#"//! Brain: expects its own private telemetry record; the robot converts
 //! the provider's payload into it through the generated adapter.
@@ -451,9 +453,35 @@ use phoxal::contracts::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message]
+pub struct TelemetryDetail {
+    #[phoxal(tag = 1)]
+    pub label: String,
+}
+
+#[phoxal::message]
+pub enum TelemetryNote {
+    #[phoxal(tag = 1)]
+    Plain(String),
+    #[phoxal(tag = 2)]
+    Sealed(TelemetryDetail),
+}
+
+#[phoxal::message]
+pub enum TelemetryGrade {
+    Unspecified = 0,
+    Trusted = 1,
+}
+
+#[phoxal::message]
 pub struct TelemetryIn {
     #[phoxal(tag = 1)]
     pub beats: u64,
+    #[phoxal(tag = 2)]
+    pub detail: Option<TelemetryDetail>,
+    #[phoxal(tag = 3)]
+    pub note: Option<TelemetryNote>,
+    #[phoxal(tag = 4)]
+    pub grade: TelemetryGrade,
 }
 
 #[phoxal::endpoints(package = "proof.cycle.brain.v1")]
@@ -492,6 +520,8 @@ fn main() -> phoxal::Result<()> {
 }
 
 /// The robot-owned conversion the generated adapter compiles against.
+/// The nested detail, payload-enum note, and grade fields stay absent or
+/// neutral: the conversion only needs the reachable schema to exist.
 const CONVERSIONS: &str = r#"//! Robot-owned conversions for composed telemetry expectations.
 
 use crate::api::brain::TelemetryIn;
@@ -499,7 +529,10 @@ use crate::api::provider::ProviderState;
 
 impl From<ProviderState> for TelemetryIn {
     fn from(source: ProviderState) -> TelemetryIn {
-        TelemetryIn { beats: source.value }
+        TelemetryIn {
+            beats: source.value,
+            ..Default::default()
+        }
     }
 }
 "#;
