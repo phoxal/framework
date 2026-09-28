@@ -456,11 +456,19 @@ fn tree_entry(github: &GitHub, path: &str, bytes: &[u8], binary: bool) -> Result
 }
 
 fn existing_pull_request(github: &GitHub, branch: &str) -> Result<Option<PullRequest>, Error> {
+    // The list filter wants the owner-qualified form; a bare branch
+    // name is silently ignored and would return every open pull.
     let pulls = github.get_query::<Vec<PullRequest>>(
         &format!("/repos/{OWNER}/{REPOSITORY}/pulls"),
-        &[("state", "open"), ("head", branch)],
+        &[("state", "open"), ("head", &format!("{OWNER}:{branch}"))],
     )?;
-    Ok(pulls.into_iter().next())
+    // Defensive: only accept a pull whose head really is this branch,
+    // never whatever the filter happened to return.
+    Ok(pulls.into_iter().find(|pull| {
+        pull.head
+            .as_ref()
+            .is_some_and(|head| head.reference == branch)
+    }))
 }
 
 fn verify_pending_file(
@@ -939,6 +947,13 @@ struct GitCommitCreated {
 #[derive(Debug, Deserialize)]
 struct PullRequest {
     html_url: String,
+    head: Option<PullRequestHead>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestHead {
+    #[serde(rename = "ref")]
+    reference: String,
 }
 
 #[cfg(test)]
