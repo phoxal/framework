@@ -41,13 +41,15 @@ impl Runtime for Bno085 {
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_UNAVAILABLE, Bno085, Bno085Config};
-    use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::contracts::MethodShape;
+    use phoxal::contracts::component::imu;
     use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
+    use phoxal::schema::MessageSchema;
 
     #[test]
-    fn generated_methods_cover_every_declared_capability() {
+    fn derived_methods_cover_every_declared_capability() {
         assert_eq!(
             crate::api::service_methods::u0::IMU.signature().endpoint,
             "imu"
@@ -66,18 +68,13 @@ mod tests {
         );
         assert_eq!(
             crate::api::service_methods::u0::IMU.signature().service,
-            "phoxal.component.bno085.v1.ImuSample"
+            "phoxal.component.imu.v1.ImuSample"
         );
         assert_eq!(
             crate::api::service_methods::u0::IMU.signature().shape,
             MethodShape::Observation
         );
-        assert!(
-            !crate::api::service_methods::u0::IMU
-                .signature()
-                .descriptor_set()
-                .is_empty()
-        );
+        assert!(imu::ImuSample::retain_schema() > 0);
         assert_eq!(
             <Bno085 as Runtime>::Outputs::FIELDS
                 .iter()

@@ -1,7 +1,7 @@
 use phoxal::runtime::{ExecutionDuration, ExecutionTime, ObservationStamp, StepContext};
 
-use super::phoxal_provider::Inputs as ServiceInputs;
 use super::*;
+use crate::contract::kinematics_api::Inputs as ServiceInputs;
 
 fn config() -> KinematicsConfig {
     KinematicsConfig::default()

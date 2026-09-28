@@ -1,0 +1,5 @@
+<mujoco model="fixture">
+  <worldbody>
+    <body name="mount"><geom type="sphere" size="0.01"/></body>
+  </worldbody>
+</mujoco>

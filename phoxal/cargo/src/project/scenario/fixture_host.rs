@@ -264,12 +264,27 @@ fn serve_request(
                 cleanup,
                 supervisor_ready,
                 provider_contract_verified,
+                simulator_stdout,
+                simulator_stderr,
                 ..
             } = &report;
             let lifecycle_passing = *simulator_exit_code == Some(0)
                 && cleanup.error.is_none()
                 && *supervisor_ready
                 && *provider_contract_verified;
+            if !lifecycle_passing {
+                return send_failure(
+                    stream,
+                    &request_id,
+                    "lifecycle",
+                    format!(
+                        "simulator exit {simulator_exit_code:?}, supervisor ready {supervisor_ready}, provider contract verified {provider_contract_verified}, cleanup {:?}; simulator stdout: {}; simulator stderr: {}",
+                        cleanup.error,
+                        simulator_stdout.chars().take(4_000).collect::<String>(),
+                        simulator_stderr.chars().take(4_000).collect::<String>(),
+                    ),
+                );
+            }
             let evidence = super::run_host::build_lifecycle_report(&facts, &program, &report);
             fixture_protocol::write_message(
                 stream,

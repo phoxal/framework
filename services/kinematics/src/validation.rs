@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
-use crate::api::types::phoxal::kinematics::v1::{
+use crate::contract::{
     FrameTransform, FrameTree, JointState, KinematicsStatus, LookupFrameRequest,
-    LookupFrameResponse, OdometryState, UnavailableReason,
+    LookupFrameResponse, UnavailableReason,
 };
+use phoxal::contracts::robotics::OdometryState;
 
 pub const MAX_ID_BYTES: usize = 64;
 
@@ -72,11 +73,10 @@ pub fn status(value: &KinematicsStatus) -> Result<(), ValidationError> {
     }
     let mut reasons = HashSet::with_capacity(value.unavailable_reasons.len());
     for reason in &value.unavailable_reasons {
-        let reason = UnavailableReason::try_from(*reason)
-            .ok()
-            .filter(|reason| *reason != UnavailableReason::Unspecified)
-            .ok_or(ValidationError::InvalidReasons)?;
-        if !reasons.insert(reason) {
+        if *reason == UnavailableReason::Unspecified {
+            return Err(ValidationError::InvalidReasons);
+        }
+        if !reasons.insert(*reason) {
             return Err(ValidationError::InvalidReasons);
         }
     }

@@ -5,16 +5,16 @@
 
 mod support;
 
+#[path = "../src/contract.rs"]
+mod contract;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
+use contract::{InspectionReadRequest, inspection_api};
 use phoxal::session::{CallOutcome, Connection, ConnectionConfig, ObservationItem, connect};
-phoxal::api!();
-use crate::api::types::example::inspection::v1::InspectionReadRequest;
-
-use sha2::{Digest, Sha256};
 
 /// How long the supervisor is given to bind its socket. Binding is synchronous
 /// inside `host::run`, so this is slack for the compile-time-sized fixture
@@ -94,7 +94,7 @@ async fn a_session_attaches_to_a_live_supervisor() {
         .expect("select brain service instance");
 
     let status = brain
-        .method(crate::api::service_methods::u0::STATUS)
+        .method(inspection_api::STATUS)
         .await
         .expect("bind generated observation method");
     let mut observations = status.observe().await.expect("start observation");
@@ -119,7 +119,7 @@ async fn a_session_attaches_to_a_live_supervisor() {
     .expect("the generated runtime observation arrives");
 
     let read = brain
-        .method(crate::api::service_methods::u0::READ)
+        .method(inspection_api::READ)
         .await
         .expect("bind generated call method");
     let outcome = read
@@ -139,6 +139,52 @@ async fn a_session_attaches_to_a_live_supervisor() {
         ),
         "the generated call completes through the real runtime"
     );
+
+    // The derived standard encoder observation — spliced in from this
+    // component's declared capability beside the authored contract —
+    // delivers live samples through the supervisor.
+    let encoder = brain
+        .method(inspection_api::ENCODER)
+        .await
+        .expect("bind the derived standard encoder method");
+    let mut samples = encoder.observe().await.expect("observe encoder samples");
+    tokio::time::timeout(STARTUP, async {
+        loop {
+            let sample = samples
+                .recv()
+                .await
+                .expect("encoder stream remains open")
+                .expect("encoder sample decodes");
+            match sample {
+                ObservationItem::InitialAbsent { .. } => continue,
+                ObservationItem::Value { value, .. } => {
+                    assert!(
+                        value.position_rad.is_some() && value.velocity_radps.is_some(),
+                        "the component publishes live encoder measurements: {value:?}"
+                    );
+                    break;
+                }
+                unexpected => panic!("unexpected encoder record: {unexpected:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the standard component observation arrives");
+
+    // The component-specific calibrate operation replies through the same
+    // supervisor session as the standard surface.
+    let calibrate = brain
+        .method(inspection_api::CALIBRATE)
+        .await
+        .expect("bind the custom calibrate method");
+    let outcome = calibrate
+        .call(phoxal::contracts::Empty {}, STARTUP)
+        .await
+        .expect("calibrate transport completes");
+    assert!(
+        matches!(outcome, CallOutcome::Received(phoxal::contracts::Empty {})),
+        "the custom operation replies through the real runtime: {outcome:?}"
+    );
     supervisor_session
         .close()
         .await
@@ -147,69 +193,6 @@ async fn a_session_attaches_to_a_live_supervisor() {
         .close()
         .await
         .expect("the connection closes cleanly");
-    supervisor.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires independently installed Motion and a prepared robot consumer"]
-async fn installed_motion_contract_crosses_the_real_runner_and_supervisor() {
-    let binary = std::env::var_os("PHOXAL_PACKAGED_MOTION_BINARY")
-        .map(PathBuf::from)
-        .expect("set PHOXAL_PACKAGED_MOTION_BINARY to the installed Motion executable");
-    let client = std::env::var_os("PHOXAL_PACKAGED_MOTION_CONSUMER")
-        .expect("set PHOXAL_PACKAGED_MOTION_CONSUMER to the prepared robot executable");
-    let bundle = build_motion_bundle(&binary);
-    let root = bundle.root.canonicalize().expect("bundle root resolves");
-    let socket = root
-        .parent()
-        .expect("bundle has an owning release root")
-        .join(".phoxal/run/supervisor.sock");
-    let endpoint = format!("unixsock-stream/{}", socket.display());
-    let mut supervisor = support::SupervisorProcess::launch(&root, "motion-contract");
-    let connection = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &mut supervisor))
-        .await
-        .expect("the supervisor binds its socket");
-    let supervisor_session = connection
-        .supervisor("motion-contract")
-        .await
-        .expect("the supervisor accepts the session");
-    tokio::time::timeout(STARTUP, async {
-        loop {
-            let status = supervisor_session
-                .management()
-                .status()
-                .await
-                .expect("status");
-            match phoxal::communication::session::SupervisorState::try_from(status.state)
-                .expect("known state")
-            {
-                phoxal::communication::session::SupervisorState::Ready => break,
-                phoxal::communication::session::SupervisorState::Failed => {
-                    panic!(
-                        "Motion contract runtime admission failed: {:?}",
-                        status.detail
-                    )
-                }
-                _ => tokio::time::sleep(Duration::from_millis(20)).await,
-            }
-        }
-    })
-    .await
-    .expect("Motion runtime reaches Ready");
-    supervisor_session.close().await.expect("session closes");
-    connection.close().await.expect("connection closes");
-    let output = tokio::process::Command::new(client)
-        .arg(&endpoint)
-        .output()
-        .await
-        .expect("start separately prepared robot consumer");
-    assert!(
-        output.status.success(),
-        "separate consumer failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
     supervisor.shutdown().await;
 }
 
@@ -294,133 +277,4 @@ fn build_bundle() -> TestBundle {
         _temporary_root: temporary_root,
         root,
     }
-}
-
-fn build_motion_bundle(packaged: &Path) -> TestBundle {
-    let temporary_root = tempfile::tempdir().expect("temporary bundle root");
-    let root = temporary_root.path().join("bundle");
-    fs::create_dir_all(root.join("bin")).expect("bundle bin directory");
-
-    let executable = root.join("bin/motion");
-    fs::copy(packaged, &executable).expect("copy installed Motion executable");
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
-        .expect("make Motion contract Runtime executable");
-    let bytes = fs::read(&executable).expect("read copied Runtime fixture");
-    let brain_source = PathBuf::from(env!("CARGO_BIN_EXE_supervisor-test-runtime"));
-    let brain_executable = root.join("bin/brain");
-    fs::copy(brain_source, &brain_executable).expect("copy compiled brain Runtime");
-    fs::set_permissions(&brain_executable, fs::Permissions::from_mode(0o755))
-        .expect("make brain Runtime executable");
-    let brain_bytes = fs::read(&brain_executable).expect("read copied brain Runtime");
-    let artifact = packaged_artifact(&bytes);
-    let config = serde_json::json!({
-        "max_linear_mps": 1.0,
-        "max_angular_radps": 1.0,
-        "wheel_radius_m": 0.1,
-        "wheel_base_m": 0.4,
-        "left_wheels": [{"actuator_id": "left"}],
-        "right_wheels": [{"actuator_id": "right"}]
-    });
-    let document = serde_json::json!({
-        "schema": "phoxal/robot/v0",
-        "robot": {"id": "motion-contract-qualification", "model": null, "components": {}},
-        "brain": null,
-        "services": {"motion": {
-            "source": {"package": {"name": "phoxal-service-motion", "version": "0.0.0-dev.3"}},
-            "config": config
-        }},
-        "connections": {
-            "motion.safety": "brain.constraints",
-            "motion.measurements": "brain.odometry"
-        }
-    });
-    let manifest = serde_json::json!({
-        "schema": "phoxal/bundle/v0",
-        "robot_id": "motion-contract-qualification",
-        "root_package": {"id": "motion-contract-qualification", "name": "motion-contract-qualification", "source": "local"},
-        "target": "host",
-        "profile": "dev",
-        "features": [],
-        "executables": [
-            {
-                "role": "brain",
-                "instance": "brain",
-                "package_id": "motion-contract-qualification",
-                "package": "motion-contract-qualification",
-                "target": "supervisor-test-runtime",
-                "path": "bin/brain",
-                "artifact": packaged_artifact(&brain_bytes)
-            },
-            {
-                "role": "service",
-                "instance": "motion",
-                "package_id": "phoxal-service-motion",
-                "package": "phoxal-service-motion",
-                "target": "phoxal-service-motion",
-                "path": "bin/motion",
-                "artifact": artifact
-            }
-        ],
-        "components": []
-    });
-    fs::write(
-        root.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest).expect("manifest serializes"),
-    )
-    .expect("write manifest");
-    fs::write(
-        root.join("robot.yaml"),
-        serde_yaml::to_string(&document).expect("compiled robot serializes"),
-    )
-    .expect("write compiled robot");
-    TestBundle {
-        _temporary_root: temporary_root,
-        root,
-    }
-}
-
-fn packaged_artifact(bytes: &[u8]) -> serde_json::Value {
-    let magic = b"PHXART0\n";
-    let offsets = bytes
-        .windows(magic.len())
-        .enumerate()
-        .filter_map(|(offset, window)| (window == magic).then_some(offset))
-        .collect::<Vec<_>>();
-    assert_eq!(offsets.len(), 1, "installed Motion has one runtime record");
-    let start = offsets[0] + magic.len();
-    let length = u32::from_le_bytes(
-        bytes[start..start + 4]
-            .try_into()
-            .expect("runtime record length"),
-    ) as usize;
-    let runtime =
-        serde_json::from_slice::<serde_json::Value>(&bytes[start + 4..start + 4 + length])
-            .expect("installed Motion runtime record decodes");
-    let descriptor_magic = &phoxal::contract::DESCRIPTOR_FRAME_MAGIC;
-    let descriptors = bytes
-        .windows(descriptor_magic.len())
-        .enumerate()
-        .filter_map(|(offset, window)| (window == descriptor_magic).then_some(offset))
-        .map(|offset| {
-            let start = offset + descriptor_magic.len();
-            let length = u64::from_le_bytes(
-                bytes[start..start + 8]
-                    .try_into()
-                    .expect("descriptor frame length"),
-            ) as usize;
-            let raw = &bytes[start + 8..start + 8 + length];
-            let pool = prost_reflect::DescriptorPool::decode(raw)
-                .expect("installed binary descriptor closure decodes");
-            serde_json::json!({
-                "sha256": format!("{:x}", Sha256::digest(raw)),
-                "bytes": raw.len(),
-                "files": pool.files().map(|file| file.name().to_owned()).collect::<Vec<_>>()
-            })
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !descriptors.is_empty(),
-        "installed binary retains API descriptors"
-    );
-    serde_json::json!({"runtime": runtime, "descriptors": descriptors})
 }

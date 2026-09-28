@@ -2,11 +2,11 @@
 
 use std::collections::HashSet;
 
-use crate::api::types::phoxal::motion::v1::{
-    ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, Constraint, ConstraintReason,
-    ControlMode, MotionConstraints, MotionIntent, Permission, ReleaseEmergencyRequest,
-    actuator_target, apply_emergency_response,
+use crate::contract::{
+    ApplyEmergencyResponse, ArmRequest, Constraint, ConstraintReason, ControlMode,
+    MotionConstraints, MotionIntent, Permission, ReleaseEmergencyRequest,
 };
+use phoxal::contracts::component::actuator::{ActuatorSetpoint, Control};
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ValidationError {
@@ -21,8 +21,6 @@ pub enum ValidationError {
     },
     #[error("setpoint actuator membership does not match configured authority")]
     Membership,
-    #[error("{0} is required")]
-    Missing(&'static str),
     #[error("reset_token must contain 1 to 64 UTF-8 bytes")]
     InvalidResetToken,
     #[error("emergency mode or refusal reason is unspecified or unknown")]
@@ -40,10 +38,9 @@ pub fn intent(value: &MotionIntent) -> Result<(), ValidationError> {
 }
 
 pub fn arm_request(value: &ArmRequest) -> Result<(), ValidationError> {
-    ControlMode::try_from(value.mode)
-        .ok()
-        .filter(|mode| matches!(mode, ControlMode::Manual | ControlMode::Autonomous))
-        .ok_or(ValidationError::InvalidEmergencyValue)?;
+    if !matches!(value.mode, ControlMode::Manual | ControlMode::Autonomous) {
+        return Err(ValidationError::InvalidEmergencyValue);
+    }
     Ok(())
 }
 
@@ -60,19 +57,12 @@ pub fn release_request(value: &ReleaseEmergencyRequest) -> Result<(), Validation
     reason = "provider boundary validates responses before future external use"
 )]
 pub fn emergency_response(value: &ApplyEmergencyResponse) -> Result<(), ValidationError> {
-    match value
-        .decision
-        .as_ref()
-        .ok_or(ValidationError::Missing("decision"))?
-    {
-        apply_emergency_response::Decision::Accepted(_) => Ok(()),
-        apply_emergency_response::Decision::Refused(refused) => {
-            crate::api::types::phoxal::motion::v1::EmergencyRefusalReason::try_from(refused.reason)
-                .ok()
-                .filter(|reason| {
-                    *reason != crate::api::types::phoxal::motion::v1::EmergencyRefusalReason::Unspecified
-                })
-                .ok_or(ValidationError::InvalidEmergencyValue)?;
+    match value {
+        ApplyEmergencyResponse::Accepted => Ok(()),
+        ApplyEmergencyResponse::Refused(refused) => {
+            if refused.reason == crate::contract::EmergencyRefusalReason::Unspecified {
+                return Err(ValidationError::InvalidEmergencyValue);
+            }
             Ok(())
         }
     }
@@ -92,8 +82,8 @@ pub fn actuator_setpoint<'a>(
             return Err(ValidationError::InvalidActuatorId("duplicate"));
         }
         let quantity = match target.control.as_ref() {
-            Some(actuator_target::Control::VelocityRadps(value)) => ("velocity_radps", *value),
-            Some(actuator_target::Control::TorqueNm(value)) => ("torque_nm", *value),
+            Some(Control::VelocityRadps(value)) => ("velocity_radps", *value),
+            Some(Control::TorqueNm(value)) => ("torque_nm", *value),
             None => return Err(ValidationError::MissingControl(target.actuator_id.clone())),
         };
         if !quantity.1.is_finite() {
@@ -118,10 +108,10 @@ pub enum ConstraintValidationError {
 }
 
 fn constraint(value: &Constraint) -> Result<(), ConstraintValidationError> {
-    let reason = ConstraintReason::try_from(value.reason)
-        .ok()
-        .filter(|reason| *reason != ConstraintReason::Unspecified)
-        .ok_or(ConstraintValidationError::InvalidConstraint)?;
+    let reason = value.reason;
+    if reason == ConstraintReason::Unspecified {
+        return Err(ConstraintValidationError::InvalidConstraint);
+    }
     for quantity in [
         value.max_linear_speed_mps,
         value.max_angular_speed_radps,
@@ -155,10 +145,10 @@ fn constraint(value: &Constraint) -> Result<(), ConstraintValidationError> {
 }
 
 pub fn constraints(value: &MotionConstraints) -> Result<(), ConstraintValidationError> {
-    let permission = Permission::try_from(value.permission)
-        .ok()
-        .filter(|permission| *permission != Permission::Unspecified)
-        .ok_or(ConstraintValidationError::InvalidProduct)?;
+    let permission = value.permission;
+    if permission == Permission::Unspecified {
+        return Err(ConstraintValidationError::InvalidProduct);
+    }
     if permission != Permission::Stopped
         && value
             .oldest_capture_time_nanos
@@ -173,8 +163,7 @@ pub fn constraints(value: &MotionConstraints) -> Result<(), ConstraintValidation
     let mut has_limit = false;
     for item in &value.constraints {
         constraint(item)?;
-        let reason = ConstraintReason::try_from(item.reason)
-            .map_err(|_| ConstraintValidationError::InvalidConstraint)?;
+        let reason = item.reason;
         if !reasons.insert(reason) {
             return Err(ConstraintValidationError::InvalidProduct);
         }

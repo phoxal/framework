@@ -1,5 +1,11 @@
-#![cfg(feature = "runtime")]
+#![cfg(phoxal_self_prepared)]
 #![allow(clippy::expect_used, reason = "test fixture setup and assertions")]
+
+//! Live transport proof against the compiled world service.
+//!
+//! Types and the window method descriptor come from bindings generated out
+//! of this package's own self-prepared compiled artifacts (`cargo phoxal
+//! prepare`), never from a library of the service implementation.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -9,7 +15,6 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use phoxal::contract::MethodDescriptor;
 use phoxal::identity::ExecutionId;
 use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
 use phoxal::runtime::execution_protocol::{self, wire as execution_wire};
@@ -17,8 +22,10 @@ use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireSample};
 use phoxal::runtime::{ExecutionTime, ObservationStamp};
 phoxal::api!();
 
-use api::types::phoxal::kinematics::v1::OdometryState;
-use api::types::phoxal::world::v1::{Bounds, WindowRequest, WindowResponse, window_response};
+use api::service_methods::u0::WINDOW;
+use api::types::phoxal::world::v1::{Bounds, WindowRequest, WindowResponse};
+use phoxal::contracts::ProstPayload;
+use phoxal::contracts::robotics::OdometryState;
 use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -75,7 +82,7 @@ fn install_bundle(binary: &Path) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
                 "shape": "observation",
                 "retained_latest": true,
                 "input_fqn": "google.protobuf.Empty",
-                "payload_fqn": "phoxal.kinematics.v1.OdometryState",
+                "payload_fqn": "phoxal.robotics.v1.OdometryState",
                 "max_message_bytes": 512,
                 "max_buffered_items": 2
             }]
@@ -125,6 +132,7 @@ async fn admit_world(
     responses: &Subscriber,
     execution: ExecutionId,
     digest: Vec<u8>,
+    child: &mut Child,
 ) {
     let request = execution_wire::AdmitExecutionRequest {
         execution_id: execution.to_string(),
@@ -140,10 +148,14 @@ async fn admit_world(
         mode: execution_wire::ExecutionMode::Hardware as i32,
         quantum_ns: 0,
     };
-    for _ in 0..40 {
+    // A first start from a cold build directory can take seconds before
+    // the runtime binds its session, so the window is generous; when it
+    // still passes without an answer, the child's own state names the
+    // likely cause instead of a bare timeout.
+    for _ in 0..100 {
         publish_execution(bus, "admit", &request).await;
         if let Ok(Ok(sample)) =
-            tokio::time::timeout(Duration::from_millis(50), responses.recv_async()).await
+            tokio::time::timeout(Duration::from_millis(100), responses.recv_async()).await
         {
             let response: execution_wire::AdmitExecutionResponse =
                 execution_protocol::decode(sample.payload().to_bytes().as_ref())
@@ -156,7 +168,22 @@ async fn admit_world(
             return;
         }
     }
-    panic!("world runtime did not answer admission");
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            panic!(
+                "world runtime exited with {status} before answering admission; rerun \
+                    `cargo phoxal prepare` in this package and retry with a fresh binary"
+            )
+        }
+        Ok(None) => {
+            panic!(
+                "world runtime is still running but answered no admission request within \
+                    10 s; it may be slow to bind its transport from this build directory — \
+                    rerun the test before treating this as a framework defect"
+            )
+        }
+        Err(error) => panic!("world runtime state is unknown: {error}"),
+    }
 }
 
 async fn publish_odometry(bus: &Connection, sequence: u64) {
@@ -213,7 +240,7 @@ async fn query_window(bus: &Connection, replies: &Subscriber, command_id: u64) -
         .put(
             bus.full_key(&transport::port_key(
                 "world",
-                api::service_methods::u0::WINDOW.signature().endpoint,
+                WINDOW.signature().endpoint,
                 "request",
             )),
             transport::encode_prost(&request).expect("window request encodes"),
@@ -227,7 +254,7 @@ async fn query_window(bus: &Connection, replies: &Subscriber, command_id: u64) -
         .expect("window reply deadline")
         .expect("window reply");
     let wire = WireSample::from_zenoh(sample).expect("window reply metadata");
-    WindowResponse::decode(wire.payload()).expect("window response decodes")
+    WindowResponse::decode_payload(wire.payload()).expect("window response decodes")
 }
 
 async fn stop_child(child: &mut Child) {
@@ -254,7 +281,7 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
         .expect("session is open")
         .declare_subscriber(bus.full_key(&transport::port_key(
             "world",
-            api::service_methods::u0::WINDOW.signature().endpoint,
+            WINDOW.signature().endpoint,
             "reply",
         )))
         .with(zenoh::handlers::FifoChannel::new(8))
@@ -275,8 +302,8 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
         .spawn()
         .expect("world runtime starts");
 
-    admit_world(&bus, &admission_responses, execution, digest).await;
-    tokio::time::timeout(Duration::from_secs(2), ready.recv_async())
+    admit_world(&bus, &admission_responses, execution, digest, &mut child).await;
+    tokio::time::timeout(Duration::from_secs(5), ready.recv_async())
         .await
         .expect("world ready deadline")
         .expect("world ready");
@@ -297,7 +324,7 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
     let mut available = None;
     for command_id in 1..=20 {
         let response = query_window(&bus, &replies, command_id).await;
-        if matches!(response.result, Some(window_response::Result::Window(_))) {
+        if matches!(response, WindowResponse::Window(_)) {
             available = Some((command_id, response));
             break;
         }
@@ -305,7 +332,7 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
     }
     let (completed_command_id, response) =
         available.expect("World did not expose an available window after fresh odometry");
-    let Some(window_response::Result::Window(window)) = response.result.as_ref() else {
+    let WindowResponse::Window(window) = &response else {
         unreachable!("loop exits only with an available window")
     };
     assert!(window.revision > 0);
@@ -313,7 +340,7 @@ async fn real_world_window_call_runs_while_odometry_keeps_its_own_schedule() {
 
     tokio::time::sleep(Duration::from_millis(30)).await;
     let later = query_window(&bus, &replies, completed_command_id + 100).await;
-    let Some(window_response::Result::Window(later_window)) = later.result else {
+    let WindowResponse::Window(later_window) = later else {
         panic!("a later World call must return the current available window")
     };
     assert!(later_window.revision >= window.revision);

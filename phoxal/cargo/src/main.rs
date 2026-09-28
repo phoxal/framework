@@ -25,6 +25,25 @@ fn main() -> ExitCode {
     }
 }
 
+/// Walks from `start` to the nearest ancestor carrying a `Cargo.toml`.
+///
+/// A workspace root manifest is rejected downstream by package resolution,
+/// which needs a concrete package.
+fn nearest_package_root(start: &std::path::Path) -> Result<PathBuf, crate::project::Error> {
+    let mut cursor = Some(start);
+    while let Some(directory) = cursor {
+        if directory.join("Cargo.toml").is_file() {
+            return Ok(directory.to_path_buf());
+        }
+        cursor = directory.parent();
+    }
+    Err(crate::project::Error::Discovery(
+        crate::project::DiscoveryError::MissingRobot {
+            start: start.to_path_buf(),
+        },
+    ))
+}
+
 // Cargo external subcommands receive their own name as argv[1].
 fn cargo_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     let mut arguments: Vec<_> = arguments.into_iter().collect();
@@ -42,18 +61,25 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
     match command {
         Command::Publish(arguments) => run_publication(arguments),
         Command::Prepare(arguments) => {
-            let layout = crate::project::ProjectLayout::discover(
-                std::env::current_dir().map_err(|source| {
-                    crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
-                        path: ".".into(),
-                        source,
-                    })
-                })?,
-            )?;
-            let changes = crate::project::participant::prepare(
-                &layout,
-                &arguments.options.into_options(Vec::new(), Vec::new()),
-            )?;
+            let options = arguments.options.into_options(Vec::new(), Vec::new());
+            let start = std::env::current_dir().map_err(|source| {
+                crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
+                    path: ".".into(),
+                    source,
+                })
+            })?;
+            let changes = match crate::project::ProjectLayout::discover(&start) {
+                Ok(layout) => crate::project::participant::prepare(&layout, &options)?,
+                Err(crate::project::DiscoveryError::MissingRobot { .. }) => {
+                    // No robot project upward: a standalone service package
+                    // self-prepares its own compiled contract products.
+                    let package = nearest_package_root(&start)?;
+                    crate::project::participant::prepare_self(&package, &options)?
+                }
+                Err(other) => {
+                    return Err(crate::project::Error::Discovery(other));
+                }
+            };
             for change in changes {
                 eprintln!("prepared {change}");
             }
@@ -299,7 +325,6 @@ fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> 
     let (kind, package) = match arguments.package {
         PublishPackage::Component(package) => (PublicationKind::Component, package),
         PublishPackage::Service(package) => (PublicationKind::Service, package),
-        PublishPackage::Preset(package) => (PublicationKind::Preset, package),
         PublishPackage::Library(package) => (PublicationKind::Library, package),
         PublishPackage::ProcMacro(package) => (PublicationKind::ProcMacro, package),
         PublishPackage::Simulator(package) => (PublicationKind::SimulatorApplication, package),
@@ -487,6 +512,7 @@ fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
             | crate::project::DiscoveryError::MissingManifest { root: path } => Some(path.clone()),
         },
         crate::project::Error::DeclarationCheck { .. } => None,
+        crate::project::Error::ContractPreparation { .. } => None,
         crate::project::Error::ReadRobot { path, .. }
         | crate::project::Error::ParseRobot { path, .. }
         | crate::project::Error::InvalidRobot { path, .. }
@@ -678,10 +704,8 @@ struct PublishArgs {
 enum PublishPackage {
     /// Prepare a component package, including a targetless passive carrier.
     Component(PublishPackageArgs),
-    /// Prepare a service implementation or configuration preset package.
+    /// Prepare a runnable service implementation package.
     Service(PublishPackageArgs),
-    /// Prepare a configuration preset package.
-    Preset(PublishPackageArgs),
     /// Prepare a reusable library package.
     Library(PublishPackageArgs),
     /// Prepare a procedural macro package.
@@ -1085,7 +1109,6 @@ mod tests {
         for role in [
             "component",
             "service",
-            "preset",
             "library",
             "proc-macro",
             "simulator",

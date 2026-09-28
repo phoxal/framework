@@ -1698,8 +1698,8 @@ fn method_signature(
         service: signature.service.to_owned(),
         method: signature.method.to_owned(),
         shape: match signature.shape {
-            phoxal::contract::MethodShape::Call => MethodShape::Call,
-            phoxal::contract::MethodShape::Observation => MethodShape::Observation,
+            phoxal::contracts::MethodShape::Call => MethodShape::Call,
+            phoxal::contracts::MethodShape::Observation => MethodShape::Observation,
         },
         request: signature.request.to_owned(),
         response: signature.response.to_owned(),

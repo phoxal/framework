@@ -814,6 +814,27 @@ fn output_transport(
             })?;
             let max_bytes = max_bytes
                 .ok_or_else(|| syn::Error::new_spanned(item, "state requires max_bytes = ..."))?;
+            let value = option_inner(&item.ty).ok_or_else(|| {
+                syn::Error::new_spanned(item, "a staged state output must be Option<Payload>")
+            })?;
+            let (payload, metadata) = if wrapped_payload(&value, "Sample", item).is_ok() {
+                (
+                    quote!(value.payload()),
+                    quote!(::phoxal::runtime::transport::sample_metadata(
+                        value.stamp(),
+                        context.invocation_index()
+                    )),
+                )
+            } else {
+                (
+                    quote!(value),
+                    quote!(::phoxal::runtime::transport::publication_metadata(
+                        source,
+                        context,
+                        context.invocation_index()
+                    )),
+                )
+            };
             Ok(quote! {
                 {
                     let signature = #signature;
@@ -823,13 +844,9 @@ fn output_transport(
                         records.push(
                             ::phoxal::runtime::transport::PreparedOutput::response(
                                 signature,
-                                value,
+                                #payload,
                                 #max_bytes,
-                                ::phoxal::runtime::transport::publication_metadata(
-                                    source,
-                                    context,
-                                    context.invocation_index(),
-                                ),
+                                #metadata,
                             )?.for_field(stringify!(#field_name)),
                         );
                     }

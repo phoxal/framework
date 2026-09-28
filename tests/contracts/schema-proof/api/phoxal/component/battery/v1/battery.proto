@@ -1,0 +1,23 @@
+// Independent Protobuf reference mirroring the SDK's authored
+// `phoxal::contracts::component::battery` shapes, compiled by protoc for
+// the interop proof. The SDK owns the authoritative Rust definitions.
+syntax = "proto3";
+
+package phoxal.component.battery.v1;
+
+enum ChargeState {
+  CHARGE_STATE_UNKNOWN = 0;
+  CHARGE_STATE_CHARGING = 1;
+  CHARGE_STATE_DISCHARGING = 2;
+  CHARGE_STATE_IDLE = 3;
+  CHARGE_STATE_FULL = 4;
+}
+
+message BatterySample {
+  bool present = 1;
+  optional double voltage_v = 2;
+  optional double current_a = 3;
+  optional double temperature_c = 4;
+  optional double state_of_charge = 5;
+  ChargeState charge_state = 6;
+}

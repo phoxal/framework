@@ -1,19 +1,17 @@
 mod assessment;
 use assessment::{assess_motion, assess_ranges, assess_world, is_stop_reason, observed_constraint};
 
-use self::phoxal_provider::Inputs as SafetyInputs;
-#[cfg(test)]
-#[cfg(test)]
-use crate::api::types::phoxal::motion::v1::MotionStatus;
-use crate::api::types::phoxal::motion::v1::{
-    Constraint, ConstraintReason, MotionConstraints, Permission,
-};
-use crate::api::types::phoxal::safety::v1::SafetyStatus;
-#[cfg(test)]
-use crate::api::types::phoxal::world::v1::{WorldBelief, WorldRevision};
 use crate::config::{SafetyConfig, validate_config};
+#[cfg(test)]
+#[cfg(test)]
+use crate::contract::MotionStatus;
+use crate::contract::SafetyStatus;
+use crate::contract::safety_api::Inputs as SafetyInputs;
+use crate::contract::{Constraint, ConstraintReason, MotionConstraints, Permission};
+#[cfg(test)]
+use crate::contract::{WorldBelief, WorldRevision};
 use crate::validation;
-use phoxal::robotics::RangeSample;
+use phoxal::contracts::component::range::RangeSample;
 use phoxal::runtime::input::Latest;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
@@ -35,7 +33,7 @@ impl SafetyState {
     fn new(config: SafetyConfig) -> Self {
         let constraints = MotionConstraints {
             sequence: 0,
-            permission: Permission::Stopped as i32,
+            permission: Permission::Stopped,
             constraints: vec![observed_constraint(ConstraintReason::WorldUnavailable, 0.0)],
             oldest_capture_time_nanos: None,
             valid_from_nanos: 0,
@@ -44,7 +42,7 @@ impl SafetyState {
         let status = SafetyStatus {
             protective_state_clear: false,
             sequence: 0,
-            reasons: vec![ConstraintReason::WorldUnavailable as i32],
+            reasons: vec![ConstraintReason::WorldUnavailable],
         };
         Self {
             config,
@@ -60,7 +58,7 @@ impl SafetyState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Safety;
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::SafetyApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Safety {
     type Config = SafetyConfig;
     type State = SafetyState;
@@ -106,10 +104,13 @@ impl Runtime for Safety {
                 )
             })
             .max(now_nanos);
-        let reasons: Vec<i32> = constraints.iter().map(|item| item.reason).collect();
+        let reasons = constraints
+            .iter()
+            .map(|item| item.reason)
+            .collect::<Vec<_>>();
         state.constraints = MotionConstraints {
             sequence: state.sequence,
-            permission: permission as i32,
+            permission,
             constraints,
             oldest_capture_time_nanos,
             valid_from_nanos: now_nanos,
@@ -126,7 +127,7 @@ impl Runtime for Safety {
     }
 }
 
-impl crate::api::projections::Projections for Safety {
+impl crate::contract::safety_api::projections::Projections for Safety {
     type State = SafetyState;
 
     /// Projects the expiring protective constraints consumed by Motion.

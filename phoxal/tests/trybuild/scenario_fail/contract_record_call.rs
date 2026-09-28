@@ -1,4 +1,4 @@
-use phoxal::contract::CallMethod;
+use phoxal::contracts::CallMethod;
 use phoxal::scenario::{CapturePolicy, Simulation};
 
 #[derive(Clone, PartialEq, prost::Message)]

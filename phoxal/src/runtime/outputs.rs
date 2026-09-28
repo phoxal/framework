@@ -9,7 +9,7 @@ pub mod read;
 
 use super::StepContext;
 use super::input::TransportValue;
-use crate::contract::{Call, MethodSignature, Withdraw};
+use crate::contracts::{Call, MethodSignature, Withdraw};
 use crate::port::PortSignature;
 use activation::ActivationKey;
 use prost::Message;

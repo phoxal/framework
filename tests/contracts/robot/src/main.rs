@@ -1,13 +1,16 @@
-//! Robot brain for the contract-evaluation composition, authored from
-//! `service.yaml`: the endpoint surface (cross-service `inspect` requirement
-//! and the served `report` operation) is generated; this file owns only the
-//! probe tally and pacing.
+//! Robot brain for the contract-evaluation composition: the endpoint surface
+//! (cross-service `inspect` requirement and the served `report` operation)
+//! is declared in Rust here; external participant bindings still come from
+//! the prepared composition products through `api`.
 
+mod contract;
 phoxal::api!();
 
-use crate::api::types::example::probe::v1::ProbeReport;
-use phoxal::contract::Empty;
 use phoxal::runtime::{CallTicket, InitContext, Runtime, StepContext};
+
+use crate::contract::ProbeReport;
+use crate::contract::brain_api;
+use phoxal::contracts::Empty;
 
 use crate::api::consumer::ConsumerStatus;
 
@@ -37,7 +40,7 @@ fn report(state: &BrainState) -> ProbeReport {
     }
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::BrainApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Brain {
     type Config = ();
     type State = BrainState;
@@ -75,7 +78,7 @@ impl Runtime for Brain {
             && state.step >= PROBE_WARMUP_STEPS
             && (state.step - PROBE_WARMUP_STEPS).is_multiple_of(PROBE_EVERY_STEPS)
         {
-            let ticket = outputs.send(ctx, crate::api::calls::inspect(Empty {}))?;
+            let ticket = outputs.send(ctx, brain_api::calls::inspect(Empty {}))?;
             state.pending = Some(ticket);
         }
         Ok((state, outputs))

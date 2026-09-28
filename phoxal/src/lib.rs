@@ -9,7 +9,11 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(all(feature = "runtime", test))]
+// Macro-generated code references the SDK through `::phoxal`, including
+// inside this crate's own modules; the self-alias keeps those paths valid
+// for every consumer profile. Profiles without macro-generated paths leave
+// the alias unused, which is expected.
+#[allow(unused_extern_crates)]
 extern crate self as phoxal;
 
 pub mod geometry;
@@ -18,19 +22,13 @@ mod sample_schedule;
 
 /// Opaque execution, producer, and timeline identities used by the runtime
 /// and public protocols.
-#[cfg(feature = "protocol")]
-#[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod identity;
 
 /// Framework-owned Protobuf protocol messages and transport-independent
 /// admission state.
-#[cfg(feature = "protocol")]
-#[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod communication;
 
 /// Serialized project, bundle, scenario, and simulation contracts.
-#[cfg(feature = "artifact")]
-#[cfg_attr(docsrs, doc(cfg(feature = "artifact")))]
 pub mod artifact;
 
 /// Synchronous Runtime authoring and execution.
@@ -60,10 +58,12 @@ pub mod communication_transport;
 #[cfg(any(feature = "runtime", feature = "scenario"))]
 pub use anyhow::{Result, anyhow};
 
-/// Inert generated service-method descriptors and robot-instance operations.
-#[cfg(feature = "contract")]
-#[cfg_attr(docsrs, doc(cfg(feature = "contract")))]
-pub mod contract;
+/// The canonical public contract surface: endpoint primitives, shared
+/// robotics vocabulary, and standard component contracts.
+pub mod contracts;
+
+/// Compiler-resolved schema records for Rust-authored Protobuf messages.
+pub mod schema;
 
 /// Attaches the build-script generated API once at the crate root.
 #[macro_export]
@@ -79,8 +79,6 @@ macro_rules! api {
 ///
 /// Generated bindings reference this module for their Protobuf runtime and
 /// the build-helper version marker; it is not application API.
-#[cfg(feature = "contract")]
-#[cfg_attr(docsrs, doc(cfg(feature = "contract")))]
 pub mod generated {
     pub use prost;
 
@@ -104,19 +102,15 @@ pub mod generated {
 #[cfg(any(feature = "runtime", feature = "scenario"))]
 mod port;
 
-/// Framework-owned shared robotics vocabulary: generated Protobuf messages
-/// and their domain validation. Independent of the protocol/transport
-/// features so a component or service that only needs the inert port surface
-/// does not pay for the robotics codegen.
-#[cfg(feature = "robotics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "robotics")))]
-pub mod robotics;
+/// Runtime provider adapters of the inert contract method descriptors.
+/// Inherent impls, so the methods exist exactly when the module compiles.
+#[cfg(feature = "runtime")]
+mod method_ports;
 
-/// Authoring helper for Protobuf build scripts.
+/// Generates bindings from local prepared contracts and component capabilities.
 ///
-/// Re-exports the Protobuf contract compiler, dependency descriptor input,
-/// and the `include_dir` / `descriptor_set_path` lookups over the internal
-/// `phoxal-build` implementation helper.
+/// Used in a package build script after `cargo phoxal prepare` selects and
+/// acquires the participants. It never downloads sources or invokes Cargo.
 ///
 /// Owner manifests declare `phoxal` with the `build` feature in
 /// `[build-dependencies]`; the standard contract authoring path does not
@@ -128,7 +122,10 @@ pub mod build;
 
 #[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
-pub use phoxal_macros::{Config, runtime};
+pub use phoxal_macros::{Config, endpoints, runtime};
+
+/// Rust-authored Protobuf message and contract-module declarations.
+pub use phoxal_macros::{message, messages};
 
 /// `#[phoxal::scenario]` attribute for function-based simulation tests.
 #[cfg(feature = "scenario")]

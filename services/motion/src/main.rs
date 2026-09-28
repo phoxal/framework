@@ -1,6 +1,5 @@
-phoxal::api!();
-
 mod config;
+mod contract;
 mod drive;
 mod runtime;
 mod validation;

@@ -549,6 +549,27 @@ pub trait Runtime {
     ) -> crate::Result<(Self::State, Self::Outputs)>;
 }
 
+/// A Rust-authored endpoint contract attached by `#[phoxal::runtime]`.
+///
+/// Implemented by the `#[phoxal::api]` expansion; the runtime attribute
+/// references the contract type, never a generated module path, so
+/// declarations and runtime implementations can live in different modules.
+pub trait RuntimeContract {
+    /// The generated input transaction.
+    type Inputs;
+    /// The generated output transaction.
+    type Outputs: super::outputs::OutputSet;
+
+    /// The served projection ports bound to runtimes attached to this
+    /// contract.  Mirrors the `OutputBindings::FIELDS` a manifest-authored
+    /// service declares on its inherent output methods.
+    const BINDINGS: &'static [super::outputs::OutputField];
+
+    /// Retains every locally authored schema frame reachable from this
+    /// contract so the final artifact carries the complete closure.
+    fn retain_schemas() -> usize;
+}
+
 /// A stable identifier for one accepted invocation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Invocation {

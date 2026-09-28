@@ -3,7 +3,6 @@
 use super::{ArtifactContract, Error, InputRole, MethodShape};
 use crate::project::document::{PortReference, RobotDocument};
 use phoxal::artifact::RuntimeRecord;
-use phoxal::artifact::document::ConnectionSources;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -68,12 +67,6 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                 producer: String::new(),
                 message: "consumer input is absent from the runtime artifact".to_owned(),
             })?;
-        if matches!(sources, ConnectionSources::Projection(_)) {
-            // The foreign message identity deliberately differs; the
-            // declaration check and the compiled bundle projection carry the
-            // validated mapping and its descriptor closures instead.
-            continue;
-        }
         if sources.as_slice().is_empty()
             || (matches!(
                 input.role,
@@ -251,6 +244,7 @@ mod tests {
             }))
             .unwrap(),
             descriptors: Vec::new(),
+            schemas: Vec::new(),
         }
     }
     fn document(connections: serde_json::Value) -> RobotDocument {

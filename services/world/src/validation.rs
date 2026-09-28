@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use crate::api::types::phoxal::kinematics::v1::OdometryState;
-use crate::api::types::phoxal::world::v1::{
+use crate::contract::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
-    WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus, window_response,
+    WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
 };
+use phoxal::contracts::robotics::OdometryState;
 
 pub const MAX_ID_BYTES: usize = 64;
 
@@ -108,10 +108,9 @@ pub fn window(value: &GridWindow) -> Result<(), ValidationError> {
         .ok_or(ValidationError::InvalidGrid)?;
     let covered = value.covered.as_ref().ok_or(ValidationError::InvalidGrid)?;
     for cell in &value.cells {
-        let _ = Occupancy::try_from(*cell)
-            .ok()
-            .filter(|occupancy| *occupancy != Occupancy::Unspecified)
-            .ok_or(ValidationError::InvalidGrid)?;
+        if *cell == Occupancy::Unspecified {
+            return Err(ValidationError::InvalidGrid);
+        }
     }
     bounds(requested)?;
     bounds(covered)?;
@@ -142,17 +141,12 @@ pub fn window_request(value: &WindowRequest) -> Result<(), ValidationError> {
 }
 
 pub fn window_response(value: &WindowResponse) -> Result<(), ValidationError> {
-    match value
-        .result
-        .as_ref()
-        .ok_or(ValidationError::InvalidResponse)?
-    {
-        window_response::Result::Window(value) => window(value),
-        window_response::Result::Unavailable(value) => {
-            let _ = WindowUnavailableReason::try_from(value.reason)
-                .ok()
-                .filter(|reason| *reason != WindowUnavailableReason::Unspecified)
-                .ok_or(ValidationError::InvalidResponse)?;
+    match value {
+        WindowResponse::Window(value) => window(value),
+        WindowResponse::Unavailable(value) => {
+            if value.reason == WindowUnavailableReason::Unspecified {
+                return Err(ValidationError::InvalidResponse);
+            }
             Ok(())
         }
     }
@@ -164,11 +158,10 @@ pub fn status(value: &WorldStatus) -> Result<(), ValidationError> {
     }
     let mut reasons = HashSet::with_capacity(value.unavailable_reasons.len());
     for reason in &value.unavailable_reasons {
-        let reason = UnavailableReason::try_from(*reason)
-            .ok()
-            .filter(|reason| *reason != UnavailableReason::Unspecified)
-            .ok_or(ValidationError::InvalidReasons)?;
-        if !reasons.insert(reason) {
+        if *reason == UnavailableReason::Unspecified {
+            return Err(ValidationError::InvalidReasons);
+        }
+        if !reasons.insert(*reason) {
             return Err(ValidationError::InvalidReasons);
         }
     }
@@ -217,7 +210,7 @@ mod tests {
             resolution_m: 0.1,
             width: 2,
             height: 2,
-            cells: vec![Occupancy::Free as i32; 4],
+            cells: vec![Occupancy::Free; 4],
             revision: 1,
             requested: Some(requested),
             covered: Some(requested),

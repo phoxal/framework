@@ -8,9 +8,13 @@ license.workspace = true
 description = "Internal four-wheel native-motion qualification robot."
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime", "robotics"] }
+phoxal = { workspace = true, features = ["runtime"] }
 phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.3" }
 serde_json.workspace = true
+
+[dev-dependencies]
+# Scenario authoring belongs to the robot's test tier, not its runtime.
+phoxal = { workspace = true, features = ["scenario"] }
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }

@@ -90,11 +90,13 @@ pub struct MessageType {
 }
 
 impl MessageType {
-    /// Extract the constants of an owner-generated message type.
-    pub const fn of<T: prost::Name>() -> Self {
+    /// Extract the constants of an owner-generated message type. Wire
+    /// identity comes from the schema record because payload enums carry
+    /// no `prost::Message` implementation for `prost::Name` to build on.
+    pub const fn of<T: crate::schema::MessageSchema>() -> Self {
         Self {
-            package: T::PACKAGE,
-            name: T::NAME,
+            package: <T as crate::schema::MessageSchema>::RECORD.package(),
+            name: <T as crate::schema::MessageSchema>::RECORD.name(),
         }
     }
 }
@@ -220,7 +222,7 @@ pub trait TransportInputSet: InputSnapshot {
 /// The indirection keeps Prost bounds generic.  Direct runtime fixtures may
 /// use scalar or private payloads without becoming ill-formed, while a
 /// process runner obtains this implementation only for a connected generated
-/// contract whose payloads satisfy [`super::transport::ProstPayload`].
+/// contract whose payloads satisfy [`crate::contracts::ProstPayload`].
 pub trait GeneratedTransportDecoder<Inputs>: 'static {
     /// Generated field metadata in declaration order.
     const FIELDS: &'static [super::transport::InputTransportField];
@@ -1890,10 +1892,10 @@ pub trait CallResponse: Sized {
 
 impl<T> CallResponse for T
 where
-    T: prost::Message + Default,
+    T: crate::contracts::ProstPayload,
 {
     fn decode_call_response(bytes: &[u8]) -> Result<Self, RequestError> {
-        T::decode(bytes).map_err(|error| {
+        crate::runtime::transport::decode_prost(bytes).map_err(|error| {
             RequestError::OutcomeUnknown(format!("generated response did not decode: {error}"))
         })
     }

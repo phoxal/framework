@@ -430,6 +430,12 @@ pub enum Error {
     /// A selected source could not be resolved.
     #[error("source selection failed: {0}")]
     Source(#[from] SourceError),
+    /// Rust-contract preparation from a compiled artifact failed.
+    #[error("contract preparation failed: {message}")]
+    ContractPreparation {
+        /// Specific failure.
+        message: String,
+    },
     /// Cargo command execution failed.
     #[error("cargo {operation} failed ({status}):\n{stdout}\n{stderr}")]
     CargoCommand {

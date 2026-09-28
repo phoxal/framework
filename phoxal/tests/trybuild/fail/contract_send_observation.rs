@@ -1,4 +1,4 @@
-use phoxal::contract::ObservationMethod;
+use phoxal::contracts::ObservationMethod;
 use phoxal::runtime::{ExecutionDuration, ExecutionTime, Outputs, StepContext};
 
 #[derive(Clone, PartialEq, prost::Message)]

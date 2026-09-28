@@ -163,7 +163,6 @@ pub struct RuntimeLaunchManifest {
     executable_sha256: String,
     config: Value,
     connections: BTreeMap<String, Vec<String>>,
-    projections: BTreeMap<(String, String), crate::artifact::bundle::ConnectionProjection>,
     /// Composition-bound destinations for this runtime's declared call
     /// requirements, resolved once at admission: requirement endpoint name to
     /// the provider instance and its served endpoint signature.
@@ -219,7 +218,6 @@ impl RuntimeLaunchManifest {
             robot_id: bundle_robot_id,
             executables: bundle_executables,
             simulation: bundle_simulation,
-            projections: bundle_projections,
             ..
         } = manifest;
         let document_path = root.join("robot.yaml");
@@ -365,18 +363,6 @@ impl RuntimeLaunchManifest {
             connections,
             artifacts,
             requirement_destinations,
-            projections: bundle_projections
-                .into_iter()
-                .map(|projection| {
-                    (
-                        (
-                            projection.consumer_instance.clone(),
-                            projection.consumer_field.clone(),
-                        ),
-                        projection,
-                    )
-                })
-                .collect(),
             observation_providers: bundle_simulation
                 .into_iter()
                 .flat_map(|simulation| simulation.providers)
@@ -389,16 +375,6 @@ impl RuntimeLaunchManifest {
                 .collect(),
             scenario_producers,
         })
-    }
-
-    /// Returns the compiled receiver-side projection for one local input
-    /// field, when this runtime's connection declared an explicit mapping.
-    pub(super) fn projection_for_field(
-        &self,
-        field: &str,
-    ) -> Option<&crate::artifact::bundle::ConnectionProjection> {
-        self.projections
-            .get(&(self.instance_id.clone(), field.to_owned()))
     }
 
     /// Installed bundle root.
@@ -2411,8 +2387,6 @@ enum SourceBundleManifest {
         executables: Vec<SourceExecutable>,
         #[serde(default)]
         simulation: Option<SourceSimulation>,
-        #[serde(default)]
-        projections: Vec<crate::artifact::bundle::ConnectionProjection>,
     },
 }
 
@@ -2564,18 +2538,12 @@ struct SourceComponent {
 enum SourceConnectionSources {
     One(String),
     Many(Vec<String>),
-    /// An explicit projection names its foreign source under `from`; the
-    /// receiving runtime executes the compiled mapping from the bundle.
-    Projection {
-        from: String,
-    },
 }
 
 impl SourceConnectionSources {
     fn as_slice(&self) -> &[String] {
         match self {
             Self::One(source) => std::slice::from_ref(source),
-            Self::Projection { from } => std::slice::from_ref(from),
             Self::Many(sources) => sources,
         }
     }

@@ -168,11 +168,6 @@ pub(crate) fn assemble_with_inputs(
                 }
             }
         })?;
-        if let Some(declaration) =
-            super::manifest_check::declaration_for_instance(prepared, &instance)?
-        {
-            super::manifest_check::check_executable_agreement(&instance, &declaration, &contract)?;
-        }
         artifacts.insert(key, (target.clone(), executable, contract));
     }
 
@@ -301,7 +296,6 @@ pub(crate) fn assemble_with_inputs(
         component_sources,
         model: staged_model.as_ref().map(|model| model.closure.clone()),
         simulation,
-        projections: super::manifest_check::compile_projections(prepared)?,
     };
     write_yaml(&staged_root.join("robot.yaml"), &document)?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;

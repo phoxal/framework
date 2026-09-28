@@ -4,6 +4,7 @@
 //! It deliberately does not depend on the Runtime SDK, supervisor, service
 //! implementations, simulator, registry client, or the archived CLI.
 
+mod adapter;
 pub mod artifact;
 mod bundle;
 mod cargo;
@@ -108,7 +109,7 @@ impl Project {
         options: &CargoOptions,
         before_resolution: impl FnOnce(&Path, &Path, Option<&Path>) -> Result<T, Error>,
     ) -> Result<(PreparedProject, T), Error> {
-        participant::prepare(&self.layout, options)?;
+        let (_, document) = participant::prepare_graph(&self.layout, options, &self.document)?;
         let result = before_resolution(self.layout.cargo_manifest(), self.layout.root(), None)?;
         let metadata = cargo::load_metadata_at(
             self.layout.cargo_manifest(),
@@ -118,7 +119,7 @@ impl Project {
         )?;
         reject_direct_targetless_git(&metadata)?;
         let cargo_sources =
-            selection::resolve_prepared_sources(&self.layout, &self.document, &metadata, options)?;
+            selection::resolve_prepared_sources(&self.layout, &document, &metadata, options)?;
         let cargo_root_package = metadata
             .root_package()
             .cloned()
@@ -126,7 +127,7 @@ impl Project {
         Ok((
             PreparedProject {
                 layout: self.layout.clone(),
-                document: self.document.clone(),
+                document,
                 metadata: metadata.clone(),
                 cargo_metadata: metadata,
                 cargo_root_package,
@@ -286,17 +287,13 @@ impl PreparedProject {
         }
     }
 
-    /// Validates declared connections, reports deferred edges, runs Cargo
-    /// check without building runtime executables.
+    /// Validates compiled participant contracts and checks the robot project.
     pub fn check(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
-        let report = manifest_check::validate(self)?;
-        for deferred in &report.deferred {
-            eprintln!("cargo phoxal: declaration check: {deferred}");
-        }
-        if report.checked > 0 {
+        let (prepared, brain) = manifest_check::validate_prepared_connections(self, options)?;
+        if prepared > 0 || brain {
             eprintln!(
-                "cargo phoxal: declaration check validated {} connection(s) from service.yaml",
-                report.checked
+                "cargo phoxal: declaration check validated the compiled contracts of {prepared} prepared participant(s){}",
+                if brain { " and the compiled brain" } else { "" }
             );
         }
         self.run(CargoOperation::Check, options)

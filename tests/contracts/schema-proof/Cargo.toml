@@ -1,0 +1,30 @@
+[package]
+name = "phoxal-schema-proof-fixture"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Wire and descriptor interop proof for Rust-authored Phoxal messages."
+
+[lib]
+name = "phoxal_schema_proof_fixture"
+
+[[bin]]
+name = "phoxal-schema-proof-fixture"
+path = "src/bin/proof.rs"
+
+[dependencies]
+phoxal = { path = "../../../phoxal", default-features = false }
+prost = { workspace = true }
+
+[build-dependencies]
+phoxal = { path = "../../../phoxal", default-features = false, features = ["build"] }
+
+[dev-dependencies]
+object = { workspace = true }
+prost-reflect = { workspace = true }
+prost-types = { workspace = true }
+
+[lints]
+workspace = true

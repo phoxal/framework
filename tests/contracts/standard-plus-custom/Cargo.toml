@@ -1,0 +1,15 @@
+[package]
+name = "standard-plus-custom"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "standard-plus-custom"
+path = "src/main.rs"
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }

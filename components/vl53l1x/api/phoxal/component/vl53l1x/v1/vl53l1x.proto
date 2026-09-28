@@ -1,5 +1,0 @@
-syntax = "proto3";
-
-package phoxal.component.vl53l1x.v1;
-
-import "phoxal/robotics/v1/robotics.proto";

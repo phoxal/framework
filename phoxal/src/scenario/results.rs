@@ -1025,7 +1025,7 @@ impl EvidenceCollector {
     /// observe them from the supervisor / native execution and call
     /// `with_terminal_quantum_ns` / `with_completed_transitions`.
     /// The builder is the only path that constructs
-    /// [`TerminalEvidence`]; external code cannot assemble the
+    /// `TerminalEvidence`; external code cannot assemble the
     /// surface from arbitrary fields.
     pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {

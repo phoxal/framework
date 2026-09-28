@@ -1453,6 +1453,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
+name = "identity-owner-a"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
+
+[[package]]
+name = "identity-owner-b"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
+
+[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2400,6 +2414,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-schema-proof-fixture"
+version = "0.0.0"
+dependencies = [
+ "object",
+ "phoxal",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+]
+
+[[package]]
 name = "phoxal-service-kinematics"
 version = "0.0.0-dev.3"
 dependencies = [
@@ -2487,10 +2512,8 @@ dependencies = [
  "anyhow",
  "libc",
  "phoxal",
- "prost-reflect",
  "serde_json",
  "serde_yaml",
- "sha2",
  "tempfile",
  "tokio",
 ]
@@ -3695,6 +3718,13 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "standard-plus-custom"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
 
 [[package]]
 name = "static_assertions"

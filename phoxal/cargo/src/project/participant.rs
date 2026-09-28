@@ -1,4 +1,4 @@
-//! Exact participant installation and prepared Protobuf source publication.
+//! Exact participant installation and compiled contract preparation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -126,9 +126,10 @@ fn selected_installation(
     let binary = binary.unwrap_or(package);
     let executable = store.join("bin").join(binary);
     let source_root = store.join("source");
+    // The endpoint surface is extracted from the selected installed binary.
     if !executable.is_file()
-        || !source_root.join("api").is_dir()
         || !store.join("package-id").is_file()
+        || !store.join(".crates.toml").is_file()
     {
         return Err(invalid(
             layout.robot_manifest(),
@@ -182,6 +183,15 @@ fn local_selection(
                 path: layout.root().join(path),
                 source,
             })?;
+    package_selection(&source_root, binary, options)
+}
+
+/// Resolves the Cargo package at `source_root` and its selected binary.
+fn package_selection(
+    source_root: &Path,
+    binary: Option<&str>,
+    options: &CargoOptions,
+) -> Result<InstalledSelection, Error> {
     let manifest_path = source_root.join("Cargo.toml");
     let mut local_options = options.clone();
     local_options.features.clear();
@@ -189,7 +199,7 @@ fn local_selection(
     local_options.no_default_features = false;
     local_options.cargo_args.clear();
     let metadata =
-        super::cargo::load_metadata_at(&manifest_path, &source_root, None, &local_options)?;
+        super::cargo::load_metadata_at(&manifest_path, source_root, None, &local_options)?;
     let selected = metadata
         .packages
         .iter()
@@ -214,7 +224,7 @@ fn local_selection(
         package_id: selected.id.to_string(),
         source_path: Some(target.src_path.as_std_path().to_owned()),
         manifest_path: Some(manifest_path.clone()),
-        source_root,
+        source_root: source_root.to_path_buf(),
         source: PackageSource::Local { manifest_path },
     })
 }
@@ -230,7 +240,47 @@ pub(crate) fn prepare(
         source,
     })?;
     let robot = super::document::parse_and_validate(&text, layout.robot_manifest())?;
-    prepare_robot(layout, options, robot)
+    prepare_graph(layout, options, &robot).map(|(changes, _)| changes)
+}
+
+/// Prepares selected binaries and returns the graph after robot-owned
+/// conversions have been lowered exactly once.
+pub(crate) fn prepare_graph(
+    layout: &ProjectLayout,
+    options: &CargoOptions,
+    robot: &RobotDocument,
+) -> Result<(Vec<String>, RobotDocument), Error> {
+    options.validate()?;
+    let changes = prepare_robot(layout, options, robot.clone())?;
+    let executable = super::adapter::lower(layout, robot, options)?;
+    Ok((changes, executable))
+}
+
+/// Self-prepares a standalone service package: builds its default binary
+/// and writes its extracted contract products under the package's own
+/// `.phoxal/local/self` tree.
+///
+/// The package's build helper generates local client bindings from those
+/// products without compiling the package recursively; integration tests
+/// gate on the resulting `phoxal_self_prepared` cfg.
+pub(crate) fn prepare_self(package: &Path, options: &CargoOptions) -> Result<Vec<String>, Error> {
+    options.validate()?;
+    let manifest_path = package.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Err(invalid(
+            &manifest_path,
+            "self-preparation needs a Cargo package root; run from the service package \
+             or a robot project root",
+        ));
+    }
+    let _lock = preparation_lock(package)?;
+    let selection = package_selection(package, None, options)?;
+    let contract_dir = phoxal_build::self_prepared_dir(package);
+    if prepare_selection_products(options, &selection, &contract_dir)? {
+        Ok(vec![format!("{} (self)", selection.binary)])
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 fn prepare_robot(
@@ -238,7 +288,7 @@ fn prepare_robot(
     options: &CargoOptions,
     robot: RobotDocument,
 ) -> Result<Vec<String>, Error> {
-    let _lock = preparation_lock(layout)?;
+    let _lock = preparation_lock(layout.root())?;
     let home = phoxal_home()?;
     let _installation_lock = installation_lock(&home)?;
     let target = match &options.target {
@@ -248,40 +298,270 @@ fn prepare_robot(
     let RobotDocument::V0 {
         robot, services, ..
     } = robot;
+    // Robot-owned adapter targets select the robot package itself; their
+    // compilation consumes every other participant's prepared products —
+    // services AND components — so they prepare last. Everything else
+    // keeps its authored order.
+    let root = layout
+        .root()
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: layout.root().to_owned(),
+            source,
+        })?;
+    let is_self = |source: &Source| {
+        matches!(source, Source::Path(path)
+            if layout
+                .root()
+                .join(Path::new(path))
+                .canonicalize()
+                .is_ok_and(|resolved| resolved == root))
+    };
+    let mut selections: Vec<(&String, &Source, Option<&str>)> = services
+        .iter()
+        .map(|(instance, selection)| (instance, &selection.source, selection.binary.as_deref()))
+        .chain(
+            robot
+                .components
+                .iter()
+                .filter(|(_, component)| component.driver.is_some())
+                .map(|(instance, component)| {
+                    (instance, &component.source, component.binary.as_deref())
+                }),
+        )
+        .collect();
+    selections.sort_by_key(|(_, source, _)| is_self(source));
     let mut changes = Vec::new();
     let mut seen = BTreeSet::new();
-    for (instance, selection) in services {
-        if seen.insert(format!("{:?}:{:?}", selection.source, selection.binary))
-            && let Some(change) = prepare_selection(
-                layout,
-                options,
-                &home,
-                &target,
-                &instance,
-                &selection.source,
-                selection.binary.as_deref(),
-            )?
-        {
-            changes.push(change);
-        }
-    }
-    for (instance, component) in robot.components {
-        if component.driver.is_some()
-            && seen.insert(format!("{:?}:{:?}", component.source, component.binary))
-            && let Some(change) = prepare_selection(
-                layout,
-                options,
-                &home,
-                &target,
-                &instance,
-                &component.source,
-                component.binary.as_deref(),
-            )?
+    for (instance, source, binary) in selections {
+        if seen.insert(format!("{source:?}:{binary:?}"))
+            && let Some(change) =
+                prepare_selection(layout, options, &home, &target, instance, source, binary)?
         {
             changes.push(change);
         }
     }
     Ok(changes)
+}
+
+/// Builds one local Rust-contract participant and prepares its extracted
+/// contract products under the robot's `.phoxal/local/` tree.
+///
+/// The prepared directory is keyed by the selection's declared source path
+/// and binary spelling, so two binaries of one package keep distinct
+/// products.
+fn prepare_local_contract(
+    layout: &ProjectLayout,
+    options: &CargoOptions,
+    path: &Path,
+    declared_binary: Option<&str>,
+    selection: &InstalledSelection,
+) -> Result<(), Error> {
+    let contract_dir = phoxal_build::local_prepared_dir(layout.root(), path, declared_binary);
+    prepare_selection_products(options, selection, &contract_dir).map(|_| ())
+}
+
+/// Builds one selected participant and writes its extracted contract
+/// products to `contract_dir`, skipping the write while the recorded
+/// provenance still matches the compiled executable.
+///
+/// Returns whether the products were written afresh.
+fn prepare_selection_products(
+    options: &CargoOptions,
+    selection: &InstalledSelection,
+    contract_dir: &Path,
+) -> Result<bool, Error> {
+    let manifest_path = selection
+        .manifest_path
+        .clone()
+        .unwrap_or_else(|| selection.source_root.join("Cargo.toml"));
+    let workdir = manifest_path
+        .parent()
+        .ok_or_else(|| Error::ArtifactCapture {
+            package: selection.package.clone(),
+            target: selection.binary.clone(),
+            message: "local participant manifest has no parent".to_owned(),
+        })?
+        .to_owned();
+    let mut command = Command::new(options.cargo_program());
+    command
+        .current_dir(&workdir)
+        .args(["build", "--manifest-path"]);
+    command.arg(&manifest_path);
+    if let Some(config) = super::cargo::registry_config(&workdir) {
+        command.args(["--config", &config]);
+    }
+    let mut local_options = options.clone();
+    local_options.features.clear();
+    local_options.all_features = false;
+    local_options.no_default_features = false;
+    local_options.cargo_args.clear();
+    local_options.append_common(&mut command, false, false);
+    command.args([
+        "--package",
+        &selection.package,
+        "--bin",
+        &selection.binary,
+        "--message-format",
+        "json",
+    ]);
+    let output = command.output().map_err(|source| Error::ArtifactFile {
+        path: options.cargo_program(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(Error::CargoCommand {
+            operation: "build".to_owned(),
+            status: output.status.to_string(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    let executable = artifact_executable(&output.stdout, &selection.binary).ok_or_else(|| {
+        Error::ArtifactCapture {
+            package: selection.package.clone(),
+            target: selection.binary.clone(),
+            message: "cargo reported no executable for the Rust-contract participant".to_owned(),
+        }
+    })?;
+    let executable = workdir.join(executable.strip_prefix(&workdir).unwrap_or(&executable));
+    let provenance = format!(
+        "{} {}-{}",
+        digest_of(&executable)?,
+        selection.package,
+        selection.version
+    );
+    let provenance_path = contract_dir.join(phoxal_build::PROVENANCE_FILE);
+    if contract_dir.join(phoxal_build::ENDPOINTS_FILE).is_file()
+        && fs::read_to_string(&provenance_path).is_ok_and(|current| current == provenance)
+    {
+        return Ok(false);
+    }
+    let contract =
+        super::artifact::inspect_file(&executable).map_err(|error| Error::ContractPreparation {
+            message: format!("cannot inspect {}: {error}", executable.display()),
+        })?;
+    let descriptors = merge_descriptor_closures(&contract)?;
+    write_prepared_contract(contract_dir, &contract.runtime, &descriptors, &provenance)?;
+    Ok(true)
+}
+
+/// Writes one prepared contract directory atomically.
+pub(crate) fn write_prepared_contract(
+    contract_dir: &Path,
+    runtime: &phoxal::artifact::RuntimeRecord,
+    descriptors: &prost_types::FileDescriptorSet,
+    provenance: &str,
+) -> Result<(), Error> {
+    use prost::Message as _;
+    let staging = contract_dir.with_extension("staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|source| Error::ArtifactFile {
+            path: staging.clone(),
+            source,
+        })?;
+    }
+    fs::create_dir_all(&staging).map_err(|source| Error::ArtifactFile {
+        path: staging.clone(),
+        source,
+    })?;
+    let endpoints = staging.join(phoxal_build::ENDPOINTS_FILE);
+    fs::write(
+        &endpoints,
+        serde_json::to_vec(runtime).map_err(|error| Error::ContractPreparation {
+            message: error.to_string(),
+        })?,
+    )
+    .map_err(|source| Error::ArtifactFile {
+        path: endpoints.clone(),
+        source,
+    })?;
+    let descriptor_path = staging.join(phoxal_build::DESCRIPTORS_FILE);
+    fs::write(&descriptor_path, descriptors.encode_to_vec()).map_err(|source| {
+        Error::ArtifactFile {
+            path: descriptor_path.clone(),
+            source,
+        }
+    })?;
+    let provenance_path = staging.join(phoxal_build::PROVENANCE_FILE);
+    fs::write(&provenance_path, provenance).map_err(|source| Error::ArtifactFile {
+        path: provenance_path.clone(),
+        source,
+    })?;
+    if contract_dir.exists() {
+        fs::remove_dir_all(contract_dir).map_err(|source| Error::ArtifactFile {
+            path: contract_dir.to_owned(),
+            source,
+        })?;
+    }
+    fs::rename(&staging, contract_dir).map_err(|source| Error::ArtifactFile {
+        path: contract_dir.to_owned(),
+        source,
+    })
+}
+
+/// Extracts the executable path of one binary from Cargo's JSON messages.
+fn artifact_executable(stdout: &[u8], binary: &str) -> Option<PathBuf> {
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["reason"] == "compiler-artifact"
+            && value["target"]["name"] == binary
+            && value["executable"].is_string()
+        {
+            return Some(PathBuf::from(value["executable"].as_str()?));
+        }
+    }
+    None
+}
+
+pub(crate) fn digest_of(path: &Path) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+    let bytes = fs::read(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Folds every retained descriptor closure of one artifact into a single
+/// standard descriptor set, collapsing identical files and rejecting
+/// conflicting definitions.
+pub(crate) fn merge_descriptor_closures(
+    contract: &super::artifact::ArtifactContract,
+) -> Result<prost_types::FileDescriptorSet, Error> {
+    use prost::Message as _;
+    let mut files = Vec::<prost_types::FileDescriptorProto>::new();
+    let mut by_name = BTreeMap::<String, Vec<u8>>::new();
+    for descriptor in &contract.descriptors {
+        let set =
+            prost_types::FileDescriptorSet::decode(descriptor.raw_bytes()).map_err(|error| {
+                Error::ContractPreparation {
+                    message: format!("retained descriptor closure is malformed: {error}"),
+                }
+            })?;
+        for file in set.file {
+            let identity = file.name().to_owned();
+            let encoded = file.encode_to_vec();
+            match by_name.get(&identity) {
+                Some(existing) if *existing == encoded => {}
+                Some(_) => {
+                    return Err(Error::ContractPreparation {
+                        message: format!("conflicting retained descriptor file `{identity}`"),
+                    });
+                }
+                None => {
+                    by_name.insert(identity, encoded);
+                    files.push(file);
+                }
+            }
+        }
+    }
+    files.sort_by(|left, right| left.name().cmp(right.name()));
+    Ok(prost_types::FileDescriptorSet { file: files })
 }
 
 fn prepare_selection(
@@ -308,18 +588,11 @@ fn prepare_selection(
                 format!("{instance} local source must be a nonempty relative path"),
             ));
         }
-        let api_source = layout.root().join(path).join("api");
-        let service_source = layout.root().join(path).join("service.yaml");
-        let component_source = layout.root().join(path).join("component.yaml");
-        if !api_source.is_dir() && !service_source.is_file() && !component_source.is_file() {
-            return Err(invalid(
-                &api_source,
-                format!(
-                    "{instance} has no api/ directory or endpoint declaration (service.yaml or component.yaml)"
-                ),
-            ));
-        }
-        local_selection(layout, path, binary, options)?;
+        // Every local participant owns its endpoint surface in Rust: it
+        // prepares from its compiled artifact. Unrelated adjacent files
+        // stay untouched.
+        let selection = local_selection(layout, path, binary, options)?;
+        prepare_local_contract(layout, options, path, binary, &selection)?;
         return Ok(None);
     }
     let (package, expected_version, store, prepared) = match source {
@@ -356,33 +629,20 @@ fn prepare_selection(
         ),
         Source::Path(_) => unreachable!("handled above"),
     };
+    let declared_binary = binary;
     let binary = binary.unwrap_or(package);
     let installed = store.join("bin").join(binary);
-    // A built-in-only manifest contract retains service.yaml without an
-    // api/ directory; either layout completes an installation.
-    let complete_install = installed.is_file()
+    // A Rust-contract participant carries its endpoint surface in the
+    // installed binary; its prepared products under the robot's tree
+    // complete that installation.
+    let rust_contract_install = installed.is_file()
         && store.join(".crates.toml").is_file()
-        && (store.join("source/api").is_dir() || store.join("source/service.yaml").is_file())
         && store.join("package-id").is_file()
-        && store.join("package-version").is_file();
-    if complete_install
-        && (prepared.join("api").is_dir() || prepared.join("service.yaml").is_file())
-    {
-        let installed_manifest = store.join("source/service.yaml");
-        let prepared_manifest = prepared.join("service.yaml");
-        let manifest_agrees = match (installed_manifest.is_file(), prepared_manifest.is_file()) {
-            (false, false) => true,
-            (true, true) => same_file(&installed_manifest, &prepared_manifest),
-            _ => false,
-        };
-        if !manifest_agrees {
-            return Err(invalid(
-                &prepared,
-                format!(
-                    "prepared contract inputs for {instance} are incomplete; remove this directory and rerun `cargo phoxal prepare`"
-                ),
-            ));
-        }
+        && store.join("package-version").is_file()
+        && phoxal_build::remote_prepared_dir(&prepared, declared_binary)
+            .join(phoxal_build::ENDPOINTS_FILE)
+            .is_file();
+    if rust_contract_install {
         return Ok(None);
     }
     let staging = home.join("packages/.staging");
@@ -459,29 +719,27 @@ fn prepare_selection(
             format!("Git package {package} is not at selected path {path}"),
         ));
     }
-    let api_source = source_root.join("api");
-    // A built-in-only contract ships `service.yaml` without an `api/`
-    // directory; both layouts constitute a runnable contract input set.
-    if !api_source.is_dir() && !source_root.join("service.yaml").is_file() {
-        return Err(invalid(
-            &api_source,
-            format!("{package} has no packaged api/ directory or service.yaml declaration"),
-        ));
-    }
-    let validation = tempfile::tempdir_in(&staging).map_err(|source| Error::ArtifactFile {
-        path: staging.clone(),
-        source,
-    })?;
-    phoxal_build::validate_participant_api(&api_source, validation.path())
-        .map_err(|error| invalid(&api_source, format!("invalid participant API: {error}")))?;
-    retain_package_files(&source_root, install.path())?;
     if !install.path().join("bin").join(binary).is_file() {
         return Err(invalid(
             install.path(),
             format!("Cargo did not install binary `{binary}`"),
         ));
     }
-    publish_api(&source_root, &prepared)?;
+    retain_package_files(&source_root, install.path())?;
+    // The installed executable is the authoritative contract: extract it
+    // from the exact binary, exactly like a local path selection.
+    {
+        let executable = install.path().join("bin").join(binary);
+        let contract_dir = phoxal_build::remote_prepared_dir(&prepared, declared_binary);
+        let provenance = format!("{} {}-{}", digest_of(&executable)?, package, version);
+        let contract = super::artifact::inspect_file(&executable).map_err(|error| {
+            Error::ContractPreparation {
+                message: format!("cannot inspect {}: {error}", executable.display()),
+            }
+        })?;
+        let descriptors = merge_descriptor_closures(&contract)?;
+        write_prepared_contract(&contract_dir, &contract.runtime, &descriptors, &provenance)?;
+    }
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
             path: parent.to_owned(),
@@ -595,163 +853,13 @@ fn captured_source(
     ))
 }
 
-fn publish_api(source_root: &Path, destination_root: &Path) -> Result<(), Error> {
-    let api_source = source_root.join("api");
-    if let Some(parent) = destination_root.parent() {
-        fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
-            path: parent.to_owned(),
-            source,
-        })?;
-        let staging = tempfile::tempdir_in(parent).map_err(|source| Error::ArtifactFile {
-            path: parent.to_owned(),
-            source,
-        })?;
-        let candidate = staging.path();
-        // A built-in-only manifest contract has no api/ directory to copy;
-        // the prepared tree keeps the api/ layout shape as an empty directory
-        // beside the manifest so consumers never see a partial publication.
-        if api_source.is_dir() {
-            copy_protos(&api_source, &candidate.join("api"))?;
-        } else {
-            fs::create_dir_all(candidate.join("api")).map_err(|source| Error::ArtifactFile {
-                path: candidate.join("api"),
-                source,
-            })?;
-        }
-        let manifest = source_root.join("service.yaml");
-        let manifest_destination = candidate.join("service.yaml");
-        if manifest.is_file() {
-            fs::copy(&manifest, &manifest_destination).map_err(|source| Error::ArtifactFile {
-                path: manifest_destination.clone(),
-                source,
-            })?;
-        }
-        if destination_root.exists() {
-            if same_tree(candidate, destination_root)? {
-                return Ok(());
-            }
-            return Err(invalid(
-                destination_root,
-                "prepared source differs for the same exact package; remove the corrupted directory before retrying",
-            ));
-        }
-        fs::rename(candidate, destination_root).map_err(|source| Error::ArtifactFile {
-            path: destination_root.to_owned(),
-            source,
-        })?;
-    }
-    Ok(())
-}
-
-fn copy_protos(source: &Path, destination: &Path) -> Result<(), Error> {
-    fs::create_dir_all(destination).map_err(|error| Error::ArtifactFile {
-        path: destination.to_owned(),
-        source: error,
-    })?;
-    for entry in fs::read_dir(source).map_err(|error| Error::ArtifactFile {
-        path: source.to_owned(),
-        source: error,
-    })? {
-        let entry = entry.map_err(|error| Error::ArtifactFile {
-            path: source.to_owned(),
-            source: error,
-        })?;
-        let path = entry.path();
-        let target = destination.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&path).map_err(|error| Error::ArtifactFile {
-            path: path.clone(),
-            source: error,
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(invalid(&path, "api/ must not contain symlinks"));
-        }
-        if metadata.is_dir() {
-            copy_protos(&path, &target)?;
-        } else if metadata.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extension == "proto")
-        {
-            fs::copy(&path, &target).map_err(|error| Error::ArtifactFile {
-                path: target.clone(),
-                source: error,
-            })?;
-        } else {
-            return Err(invalid(
-                &path,
-                "api/ may contain only .proto files and directories",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn same_file(left: &Path, right: &Path) -> bool {
-    fs::read(left).is_ok_and(|left| fs::read(right).is_ok_and(|right| left == right))
-}
-
-fn same_tree(left: &Path, right: &Path) -> Result<bool, Error> {
-    let mut left_files = BTreeMap::new();
-    let mut right_files = BTreeMap::new();
-    collect_files(left, left, &mut left_files)?;
-    collect_files(right, right, &mut right_files)?;
-    Ok(left_files == right_files)
-}
-
-fn collect_files(
-    root: &Path,
-    directory: &Path,
-    files: &mut BTreeMap<PathBuf, Vec<u8>>,
-) -> Result<(), Error> {
-    for entry in fs::read_dir(directory).map_err(|source| Error::ArtifactFile {
-        path: directory.to_owned(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::ArtifactFile {
-            path: directory.to_owned(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|source| Error::ArtifactFile {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.is_dir() {
-            collect_files(root, &path, files)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| invalid(&path, error.to_string()))?;
-            files.insert(
-                relative.to_owned(),
-                fs::read(&path).map_err(|source| Error::ArtifactFile {
-                    path: path.clone(),
-                    source,
-                })?,
-            );
-        } else {
-            return Err(invalid(&path, "prepared api/ has a non-file entry"));
-        }
-    }
-    Ok(())
-}
-
 fn retain_package_files(source: &Path, installed: &Path) -> Result<(), Error> {
     let retained = installed.join("source");
-    // A manifest-only package has no api/ to retain, but the retained
-    // source/ root must still exist for the manifest copy below.
+    // Only component model resources need source retention.
     fs::create_dir_all(&retained).map_err(|error| Error::ArtifactFile {
         path: retained.clone(),
         source: error,
     })?;
-    copy_package_source(&source.join("api"), &retained.join("api"))?;
-    let service = source.join("service.yaml");
-    if service.is_file() {
-        fs::copy(&service, retained.join("service.yaml")).map_err(|error| Error::ArtifactFile {
-            path: service,
-            source: error,
-        })?;
-    }
     let component = source.join("component.yaml");
     if component.is_file() {
         fs::copy(&component, retained.join("component.yaml")).map_err(|error| {
@@ -765,57 +873,8 @@ fn retain_package_files(source: &Path, installed: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn copy_package_source(source: &Path, retained: &Path) -> Result<(), Error> {
-    // A built-in-only manifest contract has no api/ directory to retain.
-    if !source.exists() {
-        return Ok(());
-    }
-    fs::create_dir_all(retained).map_err(|error| Error::ArtifactFile {
-        path: retained.to_owned(),
-        source: error,
-    })?;
-    for entry in fs::read_dir(source).map_err(|error| Error::ArtifactFile {
-        path: source.to_owned(),
-        source: error,
-    })? {
-        let entry = entry.map_err(|error| Error::ArtifactFile {
-            path: source.to_owned(),
-            source: error,
-        })?;
-        let name = entry.file_name();
-        if name == ".cargo-ok" || name == ".cargo-checksum.json" {
-            continue;
-        }
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|error| Error::ArtifactFile {
-            path: path.clone(),
-            source: error,
-        })?;
-        if metadata.is_dir() {
-            if ["target", ".git", ".codex", ".phoxal"]
-                .iter()
-                .any(|skip| name == *skip)
-            {
-                continue;
-            }
-            copy_package_source(&path, &retained.join(&name))?;
-        } else if metadata.is_file() {
-            fs::copy(&path, retained.join(&name)).map_err(|error| Error::ArtifactFile {
-                path,
-                source: error,
-            })?;
-        } else {
-            return Err(invalid(
-                &path,
-                "package source contains a symlink or special file",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn preparation_lock(layout: &ProjectLayout) -> Result<ExclusiveFileLock, Error> {
-    let directory = layout.root().join("target/phoxal");
+fn preparation_lock(root: &Path) -> Result<ExclusiveFileLock, Error> {
+    let directory = root.join("target/phoxal");
     let path = directory.join("preparation.lock");
     fs::create_dir_all(&directory).map_err(|source| Error::ArtifactFile {
         path: directory.clone(),
@@ -972,10 +1031,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary package");
         let source = directory.path().join("source");
         let installed = directory.path().join("installed");
-        fs::create_dir_all(source.join("api")).expect("API directory");
         fs::create_dir_all(source.join("assets")).expect("asset directory");
         fs::create_dir_all(source.join("src")).expect("source directory");
-        fs::write(source.join("api/component.proto"), "syntax = \"proto3\";").expect("API file");
         fs::write(source.join("component.yaml"), "schema: phoxal/component/v0\nmodel: { file: model.xml, root_body: mount }\ncapabilities: {}\n").expect("component definition");
         fs::write(source.join("model.xml"), "<mujoco model=\"proof\"/>").expect("model");
         fs::write(source.join("assets/mesh.obj"), "proof mesh").expect("resource");
@@ -987,12 +1044,7 @@ mod tests {
         .expect("manifest");
 
         retain_package_files(&source, &installed).expect("retain runtime resources");
-        for path in [
-            "api/component.proto",
-            "component.yaml",
-            "model.xml",
-            "assets/mesh.obj",
-        ] {
+        for path in ["component.yaml", "model.xml", "assets/mesh.obj"] {
             assert!(
                 installed.join("source").join(path).is_file(),
                 "missing {path}"

@@ -39,13 +39,20 @@ fn check_passes_a_valid_robot_and_writes_a_lockfile() {
 }
 
 #[test]
-fn check_defers_runtime_artifact_inspection_to_build() {
+fn check_validates_the_compiled_brain_contract() {
     let (_guard, root) = stage("check-missing-artifact");
+    // The brain's compiled contract is validated by check itself: a brain
+    // without an embedded Runtime record fails here, exactly as build
+    // would reject it.
     let checked = support::invoke(&root, &["check", "--offline"]);
     assert!(
-        checked.status.success(),
-        "Cargo check must succeed without a compiled Runtime contract: {}",
-        String::from_utf8_lossy(&checked.stderr)
+        !checked.status.success(),
+        "check must reject a brain without a compiled Runtime contract"
+    );
+    let checked_stderr = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        checked_stderr.contains("Phoxal Runtime contract"),
+        "stderr must mention the missing contract, got:\n{checked_stderr}"
     );
     let output = support::invoke(&root, &["build", "--offline"]);
     assert!(
@@ -57,26 +64,6 @@ fn check_defers_runtime_artifact_inspection_to_build() {
     assert!(
         stderr.contains("Phoxal Runtime contract"),
         "stderr must mention the missing contract, got:\n{stderr}"
-    );
-}
-
-#[test]
-fn check_rejects_the_removed_service_implementation_field() {
-    let (_guard, root) = stage("check-bad-deps");
-    let output = support::invoke(&root, &["check", "--offline"]);
-    assert!(
-        !output.status.success(),
-        "legacy service implementation must yield a non-zero exit, got {}",
-        output.status
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unknown field `implementation`"),
-        "stderr must name the removed field, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("expected one of `source`, `binary`, `config`"),
-        "stderr must surface the current service selection shape, got:\n{stderr}"
     );
 }
 

@@ -1,15 +1,15 @@
-error[E0277]: the trait bound `phoxal::contract::Call<Request, Response>: ObservationOperation` is not satisfied
+error[E0277]: the trait bound `phoxal::contracts::Call<Request, Response>: ObservationOperation` is not satisfied
   --> tests/trybuild/scenario_fail/contract_record_call.rs:24:9
    |
 23 |     let _ = plan.record(
    |                  ------ required by a bound introduced by this call
 24 |         CALL.bind("service", Request {}),
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `ObservationOperation` is not implemented for `phoxal::contract::Call<Request, Response>`
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `ObservationOperation` is not implemented for `phoxal::contracts::Call<Request, Response>`
    |
-help: the trait `ObservationOperation` is implemented for `phoxal::contract::Observation<Value>`
+help: the trait `ObservationOperation` is implemented for `phoxal::contracts::Observation<Value>`
   --> src/scenario/fixture.rs
    |
-   | / impl<Value> ObservationOperation for crate::contract::Observation<Value>
+   | / impl<Value> ObservationOperation for crate::contracts::Observation<Value>
    | | where
    | |     Value: ScenarioValue,
    | |_________________________^

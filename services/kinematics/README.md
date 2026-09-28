@@ -1,7 +1,8 @@
 # Kinematics service
 
 This executable estimates planar differential or skid-steer motion from every configured wheel encoder.
-Its local `api/` sources define the Protobuf messages and methods declared by [`kinematics.proto`](api/phoxal/kinematics/v1/kinematics.proto).
+Its Rust contract in `src/contract.rs` declares its endpoints and specialized payloads.
+The shared odometry record comes from `phoxal::contracts::robotics`.
 Configuration, inputs, outputs, runtime state, and measurement calculations live in separate executable modules.
 
 Configure `left_wheels` and `right_wheels` with one to four entries per side.

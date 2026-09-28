@@ -1,37 +1,25 @@
 //! Strict parsing, normalization, and descriptor resolution for authored
-//! service documents (`service.yaml`, schema `phoxal/service/v0`).
+//! capability-derived endpoint records and their private resolver types.
 //!
-//! One service document is the sole authored endpoint authority for its
-//! package: local endpoint names, directions, message types, delivery
-//! policies, and bounds. Message definitions stay in Protobuf; behavior,
-//! configuration, state, and payload construction stay handwritten Rust.
+//! Component capabilities derive standard endpoint records. Runnable
+//! packages author their additional endpoint contracts in Rust.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use prost::Message;
-use prost_reflect::{DescriptorPool, MessageDescriptor};
 use serde::Deserialize;
 
 use crate::Error;
 
-/// Schema identity of an authored service document.
-pub const SCHEMA: &str = "phoxal/service/v0";
-
-/// File name of the authored service document beside a package's `api/` tree.
-pub const FILE_NAME: &str = "service.yaml";
-
 /// Schema identity of an authored robot document.
 pub const ROBOT_SCHEMA: &str = "phoxal/robot/v0";
 
-/// File name of the authored component document beside a package's `api/` tree.
+/// File name of a package-owned component document.
 pub const COMPONENT_FILE_NAME: &str = "component.yaml";
 
 /// Schema identity of an authored component document.
 pub const COMPONENT_SCHEMA: &str = "phoxal/component/v0";
 
-/// The only built-in message vocabulary mapped to SDK-owned Rust types.
-const ROBOTICS_PACKAGE: &str = "phoxal.robotics.v1";
 /// The canonical empty message.
 const EMPTY_MESSAGE: &str = "google.protobuf.Empty";
 
@@ -39,9 +27,6 @@ const EMPTY_MESSAGE: &str = "google.protobuf.Empty";
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceDocument {
-    /// Schema line, present only in a standalone `service.yaml`.
-    #[serde(default)]
-    schema: Option<String>,
     #[serde(default)]
     inputs: BTreeMap<String, InputDecl>,
     #[serde(default)]
@@ -50,32 +35,6 @@ pub struct ServiceDocument {
     operations: BTreeMap<String, ServedDecl>,
     #[serde(default)]
     calls: BTreeMap<String, CallDecl>,
-}
-
-impl ServiceDocument {
-    /// Returns whether any referenced message belongs to a package.
-    pub fn references_package(&self, package: &str) -> bool {
-        let prefix = format!("{package}.");
-        let matches = |name: &str| name == package || name.starts_with(&prefix);
-        self.inputs.values().any(|input| matches(&input.message))
-            || self.outputs.values().any(|output| matches(&output.message))
-            || self
-                .operations
-                .values()
-                .any(|endpoint| matches(&endpoint.request) || matches(&endpoint.response))
-            || self
-                .calls
-                .values()
-                .any(|endpoint| matches(&endpoint.request) || matches(&endpoint.response))
-    }
-
-    /// Returns whether the document declares no endpoints at all.
-    pub fn is_empty(&self) -> bool {
-        self.inputs.is_empty()
-            && self.outputs.is_empty()
-            && self.operations.is_empty()
-            && self.calls.is_empty()
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -172,7 +131,10 @@ pub struct ResolvedMessage {
 }
 
 impl ResolvedMessage {
-    fn resolve(pool: &DescriptorPool, fqn: &str, owner: &str, path: &Path) -> Result<Self, Error> {
+    /// Resolves a capability document's message against the SDK-owned
+    /// standard vocabulary: no owned schemas are compiled, so the type must
+    /// be a framework-owned standard definition.
+    fn resolve_standard(fqn: &str, owner: &str, path: &Path) -> Result<Self, Error> {
         let invalid = |message: String| Error::ApiInput {
             path: path.to_owned(),
             message: format!("{owner} references {fqn}: {message}"),
@@ -180,38 +142,21 @@ impl ResolvedMessage {
         if fqn == EMPTY_MESSAGE {
             return Ok(Self {
                 fqn: fqn.to_owned(),
-                rust_path: "::phoxal::contract::Empty".to_owned(),
+                rust_path: "::phoxal::contracts::Empty".to_owned(),
             });
         }
-        if !qualified_name(fqn) {
-            return Err(invalid(
-                "the name is not a dotted Protobuf identifier".into(),
-            ));
+        if let Some(rust_path) = crate::sdk_type_path(fqn) {
+            return Ok(Self {
+                fqn: fqn.to_owned(),
+                rust_path,
+            });
         }
-        let descriptor = pool.get_message_by_name(fqn).ok_or_else(|| {
-            invalid("no message definition resolves in this service's schemas".into())
-        })?;
-        let rust_path = if descriptor.parent_file().package_name() == ROBOTICS_PACKAGE {
-            format!("::phoxal::robotics::{}", descriptor.name())
-        } else {
-            rust_message_path(&descriptor)
-        };
-        Ok(Self {
-            fqn: fqn.to_owned(),
-            rust_path,
-        })
+        Err(invalid(
+            "capability-generated endpoints reference only the SDK standard \
+             vocabulary"
+                .into(),
+        ))
     }
-}
-
-fn rust_message_path(message: &MessageDescriptor) -> String {
-    let package = message
-        .parent_file()
-        .package_name()
-        .split('.')
-        .map(heck::ToSnakeCase::to_snake_case)
-        .collect::<Vec<_>>()
-        .join("::");
-    format!("crate::api::types::{package}::{}", message.name())
 }
 
 /// One declared input endpoint after validation and resolution.
@@ -223,8 +168,6 @@ pub struct ResolvedInput {
     pub message: ResolvedMessage,
     /// Delivery policy.
     pub delivery: Delivery,
-    /// Whether a composition must connect this endpoint.
-    pub required: bool,
     /// Freshness bound for latest delivery.
     pub max_age_ms: Option<u64>,
     /// Batch bound for queued delivery.
@@ -265,14 +208,10 @@ pub struct ResolvedOutput {
 pub struct ResolvedOperation {
     /// Local endpoint name.
     pub name: String,
-    /// Behavioral contract identity, independent of either enclosing service.
-    pub contract: String,
     /// Request message.
     pub request: ResolvedMessage,
     /// Response message.
     pub response: ResolvedMessage,
-    /// Whether a composition must bind this call.
-    pub required: bool,
     /// Outstanding/batch item bound.
     pub max_items: u64,
     /// Encoded-byte bound.
@@ -293,89 +232,13 @@ pub struct ResolvedService {
     pub calls: Vec<ResolvedOperation>,
 }
 
-impl ResolvedService {
-    /// Returns every endpoint name declared by this service.
-    pub fn endpoint_names(&self) -> Vec<&str> {
-        self.inputs
-            .iter()
-            .map(|input| input.name.as_str())
-            .chain(self.outputs.iter().map(|output| output.name.as_str()))
-            .chain(
-                self.operations
-                    .iter()
-                    .map(|operation| operation.name.as_str()),
-            )
-            .chain(self.calls.iter().map(|call| call.name.as_str()))
-            .collect()
-    }
+/// A component.yaml's raw capabilities.
+pub struct ComponentSurface {
+    /// The component's raw capability declarations.
+    pub capabilities: BTreeMap<String, serde_yaml::Value>,
 }
 
-/// Parses an authored service document strictly.
-///
-/// Unknown fields, duplicate mapping keys, invalid names, and invalid
-/// combinations are rejected instead of merged or ignored.
-pub fn parse_document(source: &[u8], path: &Path) -> Result<ServiceDocument, Error> {
-    reject_duplicate_keys(source, path, FILE_NAME)?;
-    let document: ServiceDocument =
-        serde_yaml::from_slice(source).map_err(|source| Error::ApiInput {
-            path: path.to_owned(),
-            message: format!("invalid {FILE_NAME}: {source}"),
-        })?;
-    if document.schema.as_deref() != Some(SCHEMA) {
-        return Err(Error::ApiInput {
-            path: path.to_owned(),
-            message: format!(
-                "{FILE_NAME} declares schema {:?}; this build supports {SCHEMA:?}",
-                document.schema.unwrap_or_default()
-            ),
-        });
-    }
-    Ok(document)
-}
-
-/// The brain section of a robot document: the four endpoint sections plus the
-/// robot document's carrier fields, validated as strictly as a standalone
-/// service document so a typo cannot silently drop the brain's declaration.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BrainSection {
-    /// Binary target name owned by the robot document, not by endpoints.
-    #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "carrier field of the robot document; consumed by cargo-phoxal"
-    )]
-    pub binary: Option<String>,
-    #[serde(default)]
-    inputs: BTreeMap<String, InputDecl>,
-    #[serde(default)]
-    outputs: BTreeMap<String, OutputDecl>,
-    #[serde(default)]
-    operations: BTreeMap<String, ServedDecl>,
-    #[serde(default)]
-    calls: BTreeMap<String, CallDecl>,
-}
-
-impl BrainSection {
-    /// Returns the endpoint declaration carried by this section.
-    pub fn document(&self) -> ServiceDocument {
-        ServiceDocument {
-            schema: None,
-            inputs: self.inputs.clone(),
-            outputs: self.outputs.clone(),
-            operations: self.operations.clone(),
-            calls: self.calls.clone(),
-        }
-    }
-}
-
-/// Extracts the endpoint sections of an authored component document.
-///
-/// The component document's carrier fields (`model`, `capabilities`,
-/// `assets`) belong to the SDK's component DTO, but their presence and the
-/// document's exact key set are still validated here so ordinary Cargo
-/// generation and `cargo phoxal` accept and reject the same documents.
-pub fn parse_component_document(source: &[u8], path: &Path) -> Result<ServiceDocument, Error> {
+pub fn parse_component_surface(source: &[u8], path: &Path) -> Result<ComponentSurface, Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ComponentWire {
@@ -385,10 +248,7 @@ pub fn parse_component_document(source: &[u8], path: &Path) -> Result<ServiceDoc
             reason = "component DTO carrier; validated by the SDK component document"
         )]
         model: serde_yaml::Value,
-        #[allow(
-            dead_code,
-            reason = "component DTO carrier; validated by the SDK component document"
-        )]
+        #[serde(default)]
         capabilities: BTreeMap<String, serde_yaml::Value>,
         #[serde(default)]
         #[allow(
@@ -396,14 +256,6 @@ pub fn parse_component_document(source: &[u8], path: &Path) -> Result<ServiceDoc
             reason = "component DTO carrier; validated by the SDK component document"
         )]
         assets: Vec<PathBuf>,
-        #[serde(default)]
-        inputs: BTreeMap<String, InputDecl>,
-        #[serde(default)]
-        outputs: BTreeMap<String, OutputDecl>,
-        #[serde(default)]
-        operations: BTreeMap<String, ServedDecl>,
-        #[serde(default)]
-        calls: BTreeMap<String, CallDecl>,
     }
 
     reject_duplicate_keys(source, path, COMPONENT_FILE_NAME)?;
@@ -420,19 +272,221 @@ pub fn parse_component_document(source: &[u8], path: &Path) -> Result<ServiceDoc
             ),
         });
     }
-    Ok(ServiceDocument {
-        schema: None,
-        inputs: wire.inputs,
-        outputs: wire.outputs,
-        operations: wire.operations,
-        calls: wire.calls,
+    Ok(ComponentSurface {
+        capabilities: wire.capabilities,
     })
 }
 
-/// Resolves and validates a parsed document against a compiled descriptor pool.
-pub fn resolve_document(
+/// Standard capability policies: one authority per standard endpoint.
+///
+/// A velocity-commanded motor implies a leased actuator setpoint input; an
+/// encoder implies a queued encoder sample output. Bounds and leases are
+/// documented defaults until authored beside the capability.
+const STANDARD_MOTOR_LEASE_MS: u64 = 100;
+const STANDARD_MOTOR_MAX_BYTES: u64 = 1024;
+const STANDARD_ENCODER_MAX_ITEMS: u64 = 16;
+const STANDARD_ENCODER_MAX_BYTES: u64 = 8192;
+const STANDARD_IMU_MAX_ITEMS: u64 = 16;
+const STANDARD_IMU_MAX_BYTES: u64 = 16_384;
+const STANDARD_ACCELEROMETER_MAX_BYTES: u64 = 8192;
+const STANDARD_GYROSCOPE_MAX_BYTES: u64 = 8192;
+const STANDARD_CAMERA_MAX_ITEMS: u64 = 4;
+const STANDARD_CAMERA_MAX_BYTES: u64 = 8_388_608;
+const STANDARD_RANGE_MAX_ITEMS: u64 = 16;
+const STANDARD_RANGE_MAX_BYTES: u64 = 512;
+const STANDARD_GNSS_MAX_ITEMS: u64 = 8;
+const STANDARD_GNSS_MAX_BYTES: u64 = 8192;
+const ACTUATOR_SETPOINT: &str = "phoxal.component.actuator.v1.ActuatorSetpoint";
+const ENCODER_SAMPLE: &str = "phoxal.robotics.v1.EncoderSample";
+const IMU_SAMPLE: &str = "phoxal.component.imu.v1.ImuSample";
+const ACCELEROMETER_SAMPLE: &str = "phoxal.component.imu.v1.AccelerometerSample";
+const GYROSCOPE_SAMPLE: &str = "phoxal.component.imu.v1.GyroscopeSample";
+const CAMERA_FRAME: &str = "phoxal.component.camera.v1.CameraFrame";
+const DEPTH_FRAME: &str = "phoxal.component.camera.v1.DepthFrame";
+const RANGE_SAMPLE: &str = "phoxal.robotics.v1.RangeSample";
+const GNSS_SAMPLE: &str = "phoxal.component.gnss.v1.GnssSample";
+
+/// Derives the standard endpoint document implied by a component's
+/// capabilities. Returns `None` when the component declares none.
+pub fn capability_document(
+    capabilities: &BTreeMap<String, serde_yaml::Value>,
+    path: &Path,
+) -> Result<Option<ServiceDocument>, Error> {
+    let reject = |message: String| Error::ApiInput {
+        path: path.to_owned(),
+        message,
+    };
+    // The SDK's component document owns the full capability schema; only
+    // the contract-relevant fields are read and the remaining physical
+    // configuration is deliberately ignored here.
+    #[derive(Deserialize)]
+    struct MotorDecl {
+        command: String,
+    }
+    #[derive(Deserialize)]
+    struct CameraDecl {
+        mode: String,
+    }
+    #[derive(Deserialize)]
+    struct KindDecl {
+        kind: String,
+    }
+    let queue_output = |outputs: &mut BTreeMap<String, OutputDecl>,
+                        endpoint: &str,
+                        message: &str,
+                        max_items: u64,
+                        max_bytes: u64|
+     -> Result<(), Error> {
+        if outputs
+            .insert(
+                endpoint.to_owned(),
+                OutputDecl {
+                    message: message.to_owned(),
+                    delivery: Delivery::Queue,
+                    retained_latest: false,
+                    lease: None,
+                    projection: None,
+                    bootstrap: false,
+                    on_change: false,
+                    max_items: Some(max_items),
+                    max_bytes: Some(max_bytes),
+                },
+            )
+            .is_some()
+        {
+            return Err(reject(format!(
+                "the standard `{endpoint}` endpoint is declared by more than one capability"
+            )));
+        }
+        Ok(())
+    };
+    let mut inputs = BTreeMap::new();
+    let mut outputs = BTreeMap::new();
+    for (name, declaration) in capabilities {
+        let kind: KindDecl = serde_yaml::from_value(declaration.clone())
+            .map_err(|error| reject(format!("capability `{name}` is invalid: {error}")))?;
+        match kind.kind.as_str() {
+            "motor" => {
+                let motor: MotorDecl = serde_yaml::from_value(declaration.clone())
+                    .map_err(|error| reject(format!("capability `{name}` is invalid: {error}")))?;
+                if name != "motor" {
+                    return Err(reject(format!(
+                        "capability `{name}` declares kind `motor`; the name and kind must agree"
+                    )));
+                }
+                if motor.command != "velocity" {
+                    return Err(reject(format!(
+                        "capability `{name}` declares command {:?}; only `velocity` has a \
+                         standard contract generation",
+                        motor.command
+                    )));
+                }
+                if inputs
+                    .insert(
+                        "actuator".to_owned(),
+                        InputDecl {
+                            message: ACTUATOR_SETPOINT.to_owned(),
+                            delivery: Delivery::Latest,
+                            required: true,
+                            max_age_ms: None,
+                            max_items: None,
+                            max_bytes: Some(STANDARD_MOTOR_MAX_BYTES),
+                            lease: Some(LeaseDecl {
+                                valid_for_ms: STANDARD_MOTOR_LEASE_MS,
+                            }),
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(reject(
+                        "the standard `actuator` endpoint is declared by more than one \
+                         capability"
+                            .to_owned(),
+                    ));
+                }
+            }
+            "encoder" | "imu" | "accelerometer" | "gyroscope" | "depth" | "range" | "gnss" => {
+                if name != &kind.kind {
+                    return Err(reject(format!(
+                        "capability `{name}` declares kind {:?}; the name and kind must agree",
+                        kind.kind
+                    )));
+                }
+                let (message, max_items, max_bytes) = match kind.kind.as_str() {
+                    "encoder" => (
+                        ENCODER_SAMPLE,
+                        STANDARD_ENCODER_MAX_ITEMS,
+                        STANDARD_ENCODER_MAX_BYTES,
+                    ),
+                    "imu" => (IMU_SAMPLE, STANDARD_IMU_MAX_ITEMS, STANDARD_IMU_MAX_BYTES),
+                    "accelerometer" => (
+                        ACCELEROMETER_SAMPLE,
+                        STANDARD_IMU_MAX_ITEMS,
+                        STANDARD_ACCELEROMETER_MAX_BYTES,
+                    ),
+                    "gyroscope" => (
+                        GYROSCOPE_SAMPLE,
+                        STANDARD_IMU_MAX_ITEMS,
+                        STANDARD_GYROSCOPE_MAX_BYTES,
+                    ),
+                    "depth" => (
+                        DEPTH_FRAME,
+                        STANDARD_CAMERA_MAX_ITEMS,
+                        STANDARD_CAMERA_MAX_BYTES,
+                    ),
+                    "range" => (
+                        RANGE_SAMPLE,
+                        STANDARD_RANGE_MAX_ITEMS,
+                        STANDARD_RANGE_MAX_BYTES,
+                    ),
+                    _ => (
+                        GNSS_SAMPLE,
+                        STANDARD_GNSS_MAX_ITEMS,
+                        STANDARD_GNSS_MAX_BYTES,
+                    ),
+                };
+                queue_output(&mut outputs, name, message, max_items, max_bytes)?;
+            }
+            "camera" => {
+                let camera: CameraDecl = serde_yaml::from_value(declaration.clone())
+                    .map_err(|error| reject(format!("capability `{name}` is invalid: {error}")))?;
+                if camera.mode != "mono" && camera.mode != "rgb" {
+                    return Err(reject(format!(
+                        "camera capability `{name}` declares mode {:?}; only `mono` and `rgb` \
+                         have a standard contract generation",
+                        camera.mode
+                    )));
+                }
+                queue_output(
+                    &mut outputs,
+                    name,
+                    CAMERA_FRAME,
+                    STANDARD_CAMERA_MAX_ITEMS,
+                    STANDARD_CAMERA_MAX_BYTES,
+                )?;
+            }
+            // A capability kind without a standard generation owns no
+            // derived endpoints: its surface stays explicitly declared in
+            // Rust until that kind gains a generation.
+            _ => continue,
+        }
+    }
+    if inputs.is_empty() && outputs.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(ServiceDocument {
+        inputs,
+        outputs,
+        operations: BTreeMap::new(),
+        calls: BTreeMap::new(),
+    }))
+}
+
+/// Resolves a capability-derived document against the SDK-owned standard
+/// vocabulary: message types map to their owning crates and no owned
+/// schemas are compiled.
+pub fn resolve_standard_document(
     document: &ServiceDocument,
-    pool: &DescriptorPool,
     path: &Path,
 ) -> Result<ResolvedService, Error> {
     let reject = |message: String| Error::ApiInput {
@@ -469,11 +523,11 @@ pub fn resolve_document(
         let owner = format!("input {name:?}");
         if !decl.required {
             return Err(reject(format!(
-                "{owner}: optional inputs are not supported in {SCHEMA}; \
+                "{owner}: optional capability inputs are not supported; \
                  every input requires a composition binding"
             )));
         }
-        let message = ResolvedMessage::resolve(pool, &decl.message, &owner, path)?;
+        let message = ResolvedMessage::resolve_standard(&decl.message, &owner, path)?;
         let max_bytes = require_bound(decl.max_bytes, &owner, "max_bytes", path)?;
         match decl.delivery {
             Delivery::Latest => {
@@ -506,7 +560,6 @@ pub fn resolve_document(
             name: name.clone(),
             message,
             delivery: decl.delivery,
-            required: decl.required,
             max_age_ms: decl.max_age_ms,
             max_items: decl.max_items,
             max_bytes,
@@ -518,7 +571,7 @@ pub fn resolve_document(
     for (name, decl) in &document.outputs {
         ensure_name(name, "outputs")?;
         let owner = format!("output {name:?}");
-        let message = ResolvedMessage::resolve(pool, &decl.message, &owner, path)?;
+        let message = ResolvedMessage::resolve_standard(&decl.message, &owner, path)?;
         let max_bytes = require_bound(decl.max_bytes, &owner, "max_bytes", path)?;
         let lease_valid_for_ms = lease_bound(&decl.lease, &owner, path)?;
         let projection = decl
@@ -581,20 +634,11 @@ pub fn resolve_document(
     let mut operations = Vec::new();
     for (name, decl) in &document.operations {
         ensure_name(name, "operations")?;
-        let resolved = resolve_exchange(
-            pool,
-            name,
-            &decl.contract,
-            &decl.request,
-            &decl.response,
-            path,
-        )?;
+        let resolved = resolve_exchange(name, &decl.contract, &decl.request, &decl.response, path)?;
         operations.push(ResolvedOperation {
             name: name.clone(),
-            contract: decl.contract.clone(),
             request: resolved.0,
             response: resolved.1,
-            required: false,
             max_items: decl.max_items.unwrap_or(1),
             max_bytes: require_bound(
                 decl.max_bytes,
@@ -610,24 +654,15 @@ pub fn resolve_document(
         ensure_name(name, "calls")?;
         if !decl.required {
             return Err(reject(format!(
-                "call {name:?}: optional requirements are not supported in {SCHEMA}; \
+                "call {name:?}: optional capability requirements are not supported; \
                  every call requires a composition binding"
             )));
         }
-        let resolved = resolve_exchange(
-            pool,
-            name,
-            &decl.contract,
-            &decl.request,
-            &decl.response,
-            path,
-        )?;
+        let resolved = resolve_exchange(name, &decl.contract, &decl.request, &decl.response, path)?;
         calls.push(ResolvedOperation {
             name: name.clone(),
-            contract: decl.contract.clone(),
             request: resolved.0,
             response: resolved.1,
-            required: decl.required,
             max_items: decl.max_items.unwrap_or(1),
             max_bytes: require_bound(decl.max_bytes, &format!("call {name:?}"), "max_bytes", path)?,
         });
@@ -642,7 +677,6 @@ pub fn resolve_document(
 }
 
 fn resolve_exchange(
-    pool: &DescriptorPool,
     name: &str,
     contract: &str,
     request: &str,
@@ -658,8 +692,8 @@ fn resolve_exchange(
         });
     }
     let owner = format!("endpoint {name:?}");
-    let request = ResolvedMessage::resolve(pool, request, &owner, path)?;
-    let response = ResolvedMessage::resolve(pool, response, &owner, path)?;
+    let request = ResolvedMessage::resolve_standard(request, &owner, path)?;
+    let response = ResolvedMessage::resolve_standard(response, &owner, path)?;
     Ok((request, response))
 }
 
@@ -764,373 +798,77 @@ fn snake_identifier(value: &str) -> bool {
         && characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// A resolved declaration plus the descriptor closure it compiled against.
-#[derive(Clone, Debug)]
-pub struct DeclarationEvidence {
-    /// The normalized endpoint authority.
-    pub service: ResolvedService,
-    /// Raw descriptor-set bytes for definition equality checks.
-    pub descriptors: Vec<u8>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Kind of one declared endpoint, for composition checks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EndpointSide {
-    /// The endpoint receives data.
-    Input,
-    /// The endpoint produces data.
-    Output,
-    /// The endpoint serves an operation.
-    Served,
-    /// The endpoint requires an operation.
-    Call,
-}
+    fn capabilities(yaml: &str) -> BTreeMap<String, serde_yaml::Value> {
+        serde_yaml::from_str::<BTreeMap<String, serde_yaml::Value>>(yaml).expect("capability wire")
+    }
 
-impl ResolvedService {
-    /// Locates one declared endpoint by local name.
-    pub fn endpoint(&self, name: &str) -> Option<(EndpointSide, &str)> {
-        let message = self
+    #[test]
+    fn standard_capabilities_derive_their_endpoint_contracts() {
+        let wire = capabilities(
+            "{motor: {kind: motor, command: velocity, max_torque_nm: 2.0}, encoder: {kind: encoder, publish_rate_hz: 50.0}}",
+        );
+        let document = capability_document(&wire, Path::new("component.yaml")).expect("derivation");
+        let document = document.expect("the component declares capabilities");
+        let actuator = document
             .inputs
-            .iter()
-            .find(|input| input.name == name)
-            .map(|input| input.message.fqn.as_str())
-            .map(|fqn| (EndpointSide::Input, fqn));
-        let output = self
+            .get("actuator")
+            .expect("leased actuator input");
+        assert_eq!(
+            actuator.message,
+            "phoxal.component.actuator.v1.ActuatorSetpoint"
+        );
+        assert_eq!(
+            actuator
+                .lease
+                .as_ref()
+                .expect("standard lease")
+                .valid_for_ms,
+            100
+        );
+        assert_eq!(actuator.max_bytes, Some(1024));
+        let encoder = document
             .outputs
-            .iter()
-            .find(|output| output.name == name)
-            .map(|output| output.message.fqn.as_str())
-            .map(|fqn| (EndpointSide::Output, fqn));
-        let served = self
-            .operations
-            .iter()
-            .find(|operation| operation.name == name)
-            .map(|operation| operation.response.fqn.as_str())
-            .map(|fqn| (EndpointSide::Served, fqn));
-        let call = self
-            .calls
-            .iter()
-            .find(|call| call.name == name)
-            .map(|call| call.response.fqn.as_str())
-            .map(|fqn| (EndpointSide::Call, fqn));
-        message.or(output).or(served).or(call)
+            .get("encoder")
+            .expect("queued encoder output");
+        assert_eq!(encoder.message, "phoxal.robotics.v1.EncoderSample");
+        assert_eq!(encoder.max_items, Some(16));
+        let resolved = resolve_standard_document(&document, Path::new("component.yaml"))
+            .expect("standard resolution");
+        assert_eq!(
+            resolved.inputs[0].message.rust_path,
+            "::phoxal::contracts::component::actuator::ActuatorSetpoint"
+        );
+        assert_eq!(
+            resolved.outputs[0].message.rust_path,
+            "::phoxal::contracts::component::encoder::EncoderSample"
+        );
     }
 
-    /// Returns the input declaration for one local endpoint name.
-    pub fn input(&self, name: &str) -> Option<&ResolvedInput> {
-        self.inputs.iter().find(|input| input.name == name)
-    }
+    #[test]
+    fn unsupported_capabilities_are_rejected_without_inference() {
+        let torque = capabilities("{motor: {kind: motor, command: torque}}");
+        let error = capability_document(&torque, Path::new("component.yaml"))
+            .expect_err("torque command has no standard generation");
+        assert!(error.to_string().contains("only `velocity`"));
 
-    /// Returns the required-operation declaration for one local endpoint name.
-    pub fn call(&self, name: &str) -> Option<&ResolvedOperation> {
-        self.calls.iter().find(|call| call.name == name)
-    }
+        // Capabilities without a generation derive nothing: their surface
+        // stays explicitly declared.
+        let ungenerated = capabilities("{lidar: {kind: lidar}}");
+        assert!(
+            capability_document(&ungenerated, Path::new("component.yaml"))
+                .expect("no derivation for ungenerated capabilities")
+                .is_none()
+        );
 
-    /// Returns the data output declaration for one local endpoint name.
-    pub fn output(&self, name: &str) -> Option<&ResolvedOutput> {
-        self.outputs.iter().find(|output| output.name == name)
+        let empty = capabilities("{}");
+        assert!(
+            capability_document(&empty, Path::new("component.yaml"))
+                .expect("empty derivation")
+                .is_none()
+        );
     }
-
-    /// Returns the served operation declaration for one local endpoint name.
-    pub fn operation(&self, name: &str) -> Option<&ResolvedOperation> {
-        self.operations
-            .iter()
-            .find(|operation| operation.name == name)
-    }
-}
-
-/// Reports whether a message resolves to identical definitions in two
-/// declarations' descriptor closures.
-fn definitions_agree(
-    consumer: &DeclarationEvidence,
-    producer: &DeclarationEvidence,
-    fqn: &str,
-) -> Result<bool, Error> {
-    if fqn == EMPTY_MESSAGE {
-        return Ok(true);
-    }
-    let left = DescriptorPool::decode(consumer.descriptors.as_slice())
-        .ok()
-        .and_then(|pool| pool.get_message_by_name(fqn))
-        .map(|message| message.descriptor_proto().encode_to_vec());
-    let right = DescriptorPool::decode(producer.descriptors.as_slice())
-        .ok()
-        .and_then(|pool| pool.get_message_by_name(fqn))
-        .map(|message| message.descriptor_proto().encode_to_vec());
-    Ok(matches!((left, right), (Some(left), Some(right)) if left == right))
-}
-
-/// Validates one data binding between a consumer input and a producer output.
-///
-/// The check compares message contract identity and definitions, delivery
-/// compatibility, lease requirements, and declared bounds without depending
-/// on either side's enclosing service identity.
-pub fn check_data_binding(
-    consumer: &DeclarationEvidence,
-    consumer_endpoint: &str,
-    producer: &DeclarationEvidence,
-    producer_endpoint: &str,
-) -> Result<(), Error> {
-    let describe = |message: String| Error::ApiInput {
-        path: Path::new("robot.yaml").to_owned(),
-        message,
-    };
-    let input = consumer.service.input(consumer_endpoint).ok_or_else(|| {
-        describe(format!(
-            "consumer endpoint `{consumer_endpoint}` is not a declared input"
-        ))
-    })?;
-    let output = producer.service.output(producer_endpoint).ok_or_else(|| {
-        describe(format!(
-            "producer endpoint `{producer_endpoint}` is not a declared data output"
-        ))
-    })?;
-    if input.message.fqn != output.message.fqn {
-        return Err(describe(format!(
-            "input `{consumer_endpoint}` expects `{}` but `{producer_endpoint}` produces `{}`",
-            input.message.fqn, output.message.fqn
-        )));
-    }
-    if !definitions_agree(consumer, producer, &input.message.fqn)? {
-        return Err(describe(format!(
-            "message `{}` differs between the two declarations",
-            input.message.fqn
-        )));
-    }
-    if input.delivery != output.delivery {
-        return Err(describe(format!(
-            "`{consumer_endpoint}` uses {:?} delivery but `{producer_endpoint}` uses {:?}",
-            input.delivery, output.delivery
-        )));
-    }
-    match (input.lease_valid_for_ms, output.lease_valid_for_ms) {
-        (None, None) => {}
-        (Some(left), Some(right)) if left == right => {}
-        (left, right) => {
-            return Err(describe(format!(
-                "lease requirements differ between `{consumer_endpoint}` ({left:?}) and \
-                 `{producer_endpoint}` ({right:?})"
-            )));
-        }
-    }
-    if input.max_bytes < output.max_bytes {
-        return Err(describe(format!(
-            "`{consumer_endpoint}` accepts {} bytes but `{producer_endpoint}` may publish {}",
-            input.max_bytes, output.max_bytes
-        )));
-    }
-    Ok(())
-}
-
-/// Validates one operation binding between a required call and a served
-/// operation.
-///
-/// Identity is the declared contract plus request and response messages;
-/// equality of the whole enclosing services is deliberately not required.
-pub fn check_call_binding(
-    consumer: &DeclarationEvidence,
-    consumer_endpoint: &str,
-    producer: &DeclarationEvidence,
-    producer_endpoint: &str,
-) -> Result<(), Error> {
-    let describe = |message: String| Error::ApiInput {
-        path: Path::new("robot.yaml").to_owned(),
-        message,
-    };
-    let call = consumer.service.call(consumer_endpoint).ok_or_else(|| {
-        describe(format!(
-            "consumer endpoint `{consumer_endpoint}` is not a declared call"
-        ))
-    })?;
-    let operation = producer
-        .service
-        .operation(producer_endpoint)
-        .ok_or_else(|| {
-            describe(format!(
-                "producer endpoint `{producer_endpoint}` is not a declared operation"
-            ))
-        })?;
-    if call.contract != operation.contract {
-        return Err(describe(format!(
-            "call `{consumer_endpoint}` requires contract `{}` but `{producer_endpoint}` serves `{}`",
-            call.contract, operation.contract
-        )));
-    }
-    if call.request.fqn != operation.request.fqn || call.response.fqn != operation.response.fqn {
-        return Err(describe(format!(
-            "call `{consumer_endpoint}` exchanges {}/{} but `{producer_endpoint}` serves {}/{}",
-            call.request.fqn, call.response.fqn, operation.request.fqn, operation.response.fqn
-        )));
-    }
-    if !definitions_agree(consumer, producer, &call.response.fqn)? {
-        return Err(describe(format!(
-            "message `{}` differs between the two declarations",
-            call.response.fqn
-        )));
-    }
-    if call.max_bytes < operation.max_bytes {
-        return Err(describe(format!(
-            "`{consumer_endpoint}` accepts {} reply bytes but `{producer_endpoint}` may send {}",
-            call.max_bytes, operation.max_bytes
-        )));
-    }
-    Ok(())
-}
-
-/// Validates one explicit observation projection between a foreign producer
-/// output and a consumer latest input.
-///
-/// Only top-level scalar copies between compatible explicit-presence fields
-/// are supported; every destination field must be accounted for and absent
-/// optional values stay absent.  Anything else is rejected with a diagnostic
-/// instead of a silent fallback.
-pub fn check_projection_binding(
-    consumer: &DeclarationEvidence,
-    consumer_endpoint: &str,
-    producer: &DeclarationEvidence,
-    producer_endpoint: &str,
-    map: &std::collections::BTreeMap<String, String>,
-) -> Result<(), Error> {
-    let describe = |message: String| Error::ApiInput {
-        path: Path::new("robot.yaml").to_owned(),
-        message,
-    };
-    if map.is_empty() {
-        return Err(describe(
-            "a projection connection requires at least one field mapping".into(),
-        ));
-    }
-    let input = consumer.service.input(consumer_endpoint).ok_or_else(|| {
-        describe(format!(
-            "consumer endpoint `{consumer_endpoint}` is not a declared input"
-        ))
-    })?;
-    if input.delivery != Delivery::Latest || input.lease_valid_for_ms.is_some() {
-        return Err(describe(format!(
-            "`{consumer_endpoint}` must be a plain latest input for an observation projection"
-        )));
-    }
-    let output = producer.service.output(producer_endpoint).ok_or_else(|| {
-        describe(format!(
-            "producer endpoint `{producer_endpoint}` is not a declared data output"
-        ))
-    })?;
-    let consumer_pool = DescriptorPool::decode(consumer.descriptors.as_slice())
-        .map_err(|error| describe(format!("consumer descriptors are invalid: {error}")))?;
-    let producer_pool = DescriptorPool::decode(producer.descriptors.as_slice())
-        .map_err(|error| describe(format!("producer descriptors are invalid: {error}")))?;
-    let destination = consumer_pool
-        .get_message_by_name(&input.message.fqn)
-        .ok_or_else(|| {
-            describe(format!(
-                "consumer message `{}` is missing",
-                input.message.fqn
-            ))
-        })?;
-    let source = producer_pool
-        .get_message_by_name(&output.message.fqn)
-        .ok_or_else(|| {
-            describe(format!(
-                "producer message `{}` is missing",
-                output.message.fqn
-            ))
-        })?;
-
-    let unsupported = |side: &str, field: &str| {
-        describe(format!(
-            "projection field `{field}` on the {side} message must be a top-level scalar"
-        ))
-    };
-    let mut mapped_destination: Vec<String> = Vec::new();
-    for (destination_path, source_path) in map {
-        if destination_path.contains('.') || source_path.contains('.') {
-            return Err(describe(
-                "nested field paths are not supported in projection mappings".into(),
-            ));
-        }
-        let destination_field = destination
-            .get_field_by_name(destination_path)
-            .ok_or_else(|| describe(format!("destination has no field `{destination_path}`")))?;
-        let source_field = source
-            .get_field_by_name(source_path)
-            .ok_or_else(|| describe(format!("source has no field `{source_path}`")))?;
-        let repeated = |field: &prost_reflect::FieldDescriptor| {
-            field.field_descriptor_proto().label()
-                == prost_types::field_descriptor_proto::Label::Repeated
-        };
-        if repeated(&destination_field) || repeated(&source_field) {
-            return Err(describe(
-                "repeated and mapped fields are not supported in projection mappings".into(),
-            ));
-        }
-        let is_composite = |field: &prost_reflect::FieldDescriptor| {
-            matches!(
-                field.field_descriptor_proto().r#type(),
-                prost_types::field_descriptor_proto::Type::Enum
-                    | prost_types::field_descriptor_proto::Type::Message
-                    | prost_types::field_descriptor_proto::Type::Group
-            )
-        };
-        if is_composite(&destination_field) || is_composite(&source_field) {
-            return Err(describe(
-                "enum, message, and oneof fields are not supported in projection mappings".into(),
-            ));
-        }
-        if !matches!(
-            destination_field.field_descriptor_proto().r#type(),
-            prost_types::field_descriptor_proto::Type::Double
-                | prost_types::field_descriptor_proto::Type::Float
-                | prost_types::field_descriptor_proto::Type::Int32
-                | prost_types::field_descriptor_proto::Type::Int64
-                | prost_types::field_descriptor_proto::Type::Uint32
-                | prost_types::field_descriptor_proto::Type::Uint64
-                | prost_types::field_descriptor_proto::Type::Bool
-                | prost_types::field_descriptor_proto::Type::String
-                | prost_types::field_descriptor_proto::Type::Bytes
-        ) || !matches!(
-            source_field.field_descriptor_proto().r#type(),
-            prost_types::field_descriptor_proto::Type::Double
-                | prost_types::field_descriptor_proto::Type::Float
-                | prost_types::field_descriptor_proto::Type::Int32
-                | prost_types::field_descriptor_proto::Type::Int64
-                | prost_types::field_descriptor_proto::Type::Uint32
-                | prost_types::field_descriptor_proto::Type::Uint64
-                | prost_types::field_descriptor_proto::Type::Bool
-                | prost_types::field_descriptor_proto::Type::String
-                | prost_types::field_descriptor_proto::Type::Bytes
-        ) {
-            return Err(unsupported("mapped", destination_path));
-        }
-        if destination_field.field_descriptor_proto().r#type()
-            != source_field.field_descriptor_proto().r#type()
-        {
-            return Err(describe(format!(
-                "projection field `{destination_path}` copies a different scalar type than `{source_path}`"
-            )));
-        }
-        let destination_optional = destination_field.field_descriptor_proto().proto3_optional();
-        let source_optional = source_field.field_descriptor_proto().proto3_optional();
-        if !destination_optional && source_optional {
-            return Err(describe(format!(
-                "destination field `{destination_path}` is required but `{source_path}` is optional; absent values cannot be fabricated"
-            )));
-        }
-        mapped_destination.push(destination_path.clone());
-    }
-    let mut unmapped = Vec::new();
-    for field in destination.fields() {
-        let optional = field.field_descriptor_proto().proto3_optional();
-        let mapped = mapped_destination.contains(&field.name().to_owned());
-        if !mapped && !optional {
-            unmapped.push(field.name().to_owned());
-        }
-    }
-    if !unmapped.is_empty() {
-        unmapped.sort();
-        return Err(describe(format!(
-            "required destination fields are missing from the mapping: {}",
-            unmapped.join(", ")
-        )));
-    }
-    Ok(())
 }

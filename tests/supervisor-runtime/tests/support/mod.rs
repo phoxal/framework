@@ -54,6 +54,22 @@ pub fn reference_runtime_artifact() -> serde_json::Value {
                     "retained_latest": false,
                     "lease_valid_for_ms": null
                 }
+            }, {
+                "name": "calibrate",
+                "role": "call_ingress",
+                "max_items": 4,
+                "max_bytes": 1024,
+                "port": "calibrate",
+                "signature": {
+                    "endpoint": "calibrate",
+                    "service": "example.inspection.v1.Calibrate",
+                    "method": "calibrate",
+                    "shape": "call",
+                    "request": "google.protobuf.Empty",
+                    "response": "google.protobuf.Empty",
+                    "retained_latest": false,
+                    "lease_valid_for_ms": null
+                }
             }],
             "transient_outputs": [{
                 "name": "read_replies",
@@ -61,46 +77,14 @@ pub fn reference_runtime_artifact() -> serde_json::Value {
                 "input": "read",
                 "max_items": 8,
                 "max_bytes": 4096
+            }, {
+                "name": "calibrate_replies",
+                "role": "reply",
+                "input": "calibrate",
+                "max_items": 4,
+                "max_bytes": 1024
             }],
             "service_outputs": [
-                {
-                    "name": "constraints",
-                    "role": "method",
-                    "port": "constraints",
-                    "max_items": 1,
-                    "max_bytes": 4096,
-                    "bootstrap": true,
-                    "on_change": false,
-                    "signature": {
-                        "endpoint": "constraints",
-                        "service": "phoxal.motion.v1.MotionConstraints",
-                        "method": "constraints",
-                        "shape": "observation",
-                        "request": "google.protobuf.Empty",
-                        "response": "phoxal.motion.v1.MotionConstraints",
-                        "retained_latest": true,
-                        "lease_valid_for_ms": null
-                    }
-                },
-                {
-                    "name": "odometry",
-                    "role": "method",
-                    "port": "odometry",
-                    "max_items": 1,
-                    "max_bytes": 512,
-                    "bootstrap": true,
-                    "on_change": false,
-                    "signature": {
-                        "endpoint": "odometry",
-                        "service": "phoxal.kinematics.v1.OdometryState",
-                        "method": "odometry",
-                        "shape": "observation",
-                        "request": "google.protobuf.Empty",
-                        "response": "phoxal.kinematics.v1.OdometryState",
-                        "retained_latest": true,
-                        "lease_valid_for_ms": null
-                    }
-                },
                 {
                     "name": "status",
                     "role": "method",
@@ -117,6 +101,25 @@ pub fn reference_runtime_artifact() -> serde_json::Value {
                         "request": "google.protobuf.Empty",
                         "response": "example.inspection.v1.InspectionState",
                         "retained_latest": true,
+                        "lease_valid_for_ms": null
+                    }
+                },
+                {
+                    "name": "encoder",
+                    "role": "method",
+                    "port": "encoder",
+                    "max_items": 16,
+                    "max_bytes": 8192,
+                    "bootstrap": false,
+                    "on_change": false,
+                    "signature": {
+                        "endpoint": "encoder",
+                        "service": "phoxal.robotics.v1.EncoderSample",
+                        "method": "encoder",
+                        "shape": "observation",
+                        "request": "google.protobuf.Empty",
+                        "response": "phoxal.robotics.v1.EncoderSample",
+                        "retained_latest": false,
                         "lease_valid_for_ms": null
                     }
                 }

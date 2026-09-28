@@ -1,5 +1,5 @@
-phoxal::api!();
 mod config;
+mod contract;
 mod runtime;
 mod validation;
 

@@ -12,7 +12,7 @@ name = "phoxal-contract-client-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["contract", "robotics"] }
+phoxal = { workspace = true, default-features = false }
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }

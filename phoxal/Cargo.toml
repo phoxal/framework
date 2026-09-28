@@ -11,7 +11,7 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["robotics", "robot", "autonomy", "zenoh", "simulation"]
+keywords = ["robot", "autonomy", "zenoh", "simulation"]
 categories = ["science::robotics", "simulation"]
 exclude = ["cargo"]
 
@@ -19,130 +19,38 @@ exclude = ["cargo"]
 name = "phoxal"
 path = "src/lib.rs"
 
-# The consumer profiles. A profile is one supported consumer role: it decides
-# which modules `src/lib.rs` declares as `pub`, and - for the two host roles
-# that need crates a robot binary has no business linking - which optional
-# dependencies compile. It is never an authority boundary: Cargo unifies
-# features, and who may do what at runtime remains process ownership and the
-# constructible API.
-#
-# Every profile compiles the same source; features select optional dependencies
-# and `pub` declarations, not parallel code paths. The one place a feature may
-# be named in this crate's source is `src/lib.rs`.
+# The base SDK contains inert contracts, schemas, and protocol/artifact records.
+# Features add executable roles, never alternate contract definitions.
 [features]
-default = ["runtime", "scenario"]
+default = ["runtime"]
 
-# Inert generated service-method descriptors and robot-bound operations.
-# Contract-only service dependencies enable this without a runtime, transport,
-# session, or host profile.
-contract = ["dep:prost"]
-
-# Framework-owned shared robotics vocabulary: generated Protobuf messages and
-# their domain validation. Independent of `protocol` so consumers that need
-# only the inert port surface do not pay for the robotics codegen.
-robotics = [
-    "dep:prost",
-    "dep:thiserror",
+# Synchronous participant authoring and its runner/transport.
+runtime = [
+    "dep:anyhow", "dep:clap", "dep:prost-reflect", "dep:serde_yaml",
+    "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:zenoh",
 ]
 
-# Authoring helper for Protobuf build scripts. The `phoxal::build` module
-# re-exports `compile_protos` and `compile_protos_with_dependencies` over the
-# internal `phoxal-build` implementation helper. Pulls in no
-# runtime/transport/session/supervisor/native simulation dependencies; this
-# feature exists so service contract owners can declare `phoxal` as their
-# `build-dependencies` entry instead of naming `phoxal-build` directly.
-# Phoxal's own `build.rs` keeps a direct `phoxal-build` dependency identified
-# by reason because it cannot depend on its own not-yet-built library to
-# generate its own protocols.
+# Scenario authoring without the participant runner or transport.
+scenario = ["dep:anyhow", "dep:base64", "dep:tempfile"]
+
+# Applications attaching to an execution through the public session protocol.
+session = ["dep:tokio", "dep:tokio-util", "dep:tracing", "dep:zenoh"]
+
+# Local prepared-product generation, selected only in build-dependencies.
 build = ["dep:phoxal-build"]
 
-# Framework-owned public protocol messages and pure admission state.
-# This layer has no scheduler, transport, simulator, or project dependency.
-protocol = [
-    "contract",
-    "dep:getrandom",
-    "dep:prost",
-    "dep:serde",
-    "dep:serde_bytes",
-    "dep:thiserror",
-]
-
-# Synchronous Runtime definitions, typed input/output forms, and bounded managed
-# operations.
-runtime = [
-    "artifact",
-    "contract",
-    "protocol",
-    "dep:anyhow",
-    "dep:clap",
-    "dep:phoxal-macros",
-    "dep:getrandom",
-    "dep:prost-reflect",
-    "dep:serde_json",
-    "dep:serde_yaml",
-    "dep:sha2",
-    "dep:tokio",
-    "dep:tokio-util",
-    "dep:tracing",
-    "dep:zenoh",
-]
-
-# Lightweight scenario authoring surface and command-scoped fixture client.
-# Independent of `runtime` so test targets do not pull the participant runner.
-scenario = [
-    "artifact",
-    "contract",
-    "protocol",
-    "dep:anyhow",
-    "dep:phoxal-macros",
-    "dep:base64",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:tempfile",
-    "dep:thiserror",
-]
-
-# Serialized project, bundle, and simulation contracts shared with framework
-# tools and independent applications. This surface is inert: it owns records,
-# schema identities, validation, and deterministic digests, but no authored
-# file parsing, filesystem discovery, process control, or transport.
-artifact = [
-    "dep:serde",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:thiserror",
-]
-
-# The CLI, Operator, and any other application attaching to a running
-# execution. The public session owns its Protobuf-over-Zenoh transport and typed
-# client only; it does not pull in the participant runner or its internal bus.
-session = [
-    "contract",
-    "protocol",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:tokio",
-    "dep:tokio-util",
-    "dep:tracing",
-    "dep:zenoh",
-]
-
 [dependencies]
-phoxal-macros = { workspace = true, optional = true }
+phoxal-macros = { workspace = true }
 anyhow = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"], optional = true }
-# `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
-# reaches the supervisor's one orderly shutdown path.
-getrandom = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"], optional = true }
-serde_bytes = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+getrandom = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
-# The supervisor asks its own host to reboot or power off.
-thiserror = { workspace = true, optional = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"], optional = true }
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
@@ -152,8 +60,9 @@ tracing = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-build = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
+prost = { workspace = true }
 prost-reflect = { workspace = true, optional = true }
+prost-types = { workspace = true }
 
 [build-dependencies]
 phoxal-build.workspace = true
@@ -196,22 +105,12 @@ workspace = true
 # therefore declare the profile that publishes it; `cargo test -p phoxal
 # --all-features` is what runs the whole set.
 [[test]]
-name = "feature_codegen"
-path = "tests/feature_codegen.rs"
-
-[[test]]
 name = "consumer_policy"
 path = "tests/consumer_policy.rs"
-required-features = ["contract"]
 
 [[test]]
 name = "config_derive"
 path = "tests/config_derive.rs"
-required-features = ["runtime"]
-
-[[test]]
-name = "runtime_forms"
-path = "tests/runtime_forms.rs"
 required-features = ["runtime"]
 
 [[test]]

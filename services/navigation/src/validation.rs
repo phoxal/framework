@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
-use crate::api::types::phoxal::kinematics::v1::OdometryState;
-use crate::api::types::phoxal::navigation::v1::{
-    ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
-    GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
-    UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
+use crate::contract::MapState;
+use crate::contract::{
+    ApplyCommand, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse, GoalFinished,
+    GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason, UnavailableReason,
 };
-use crate::api::types::phoxal::world::v1::WorldRevision;
+use phoxal::contracts::robotics::OdometryState;
 
 pub const MAX_ID_BYTES: usize = 64;
 pub const TERMINAL_RESULT_RETENTION: usize = 256;
@@ -44,7 +43,7 @@ pub fn odometry(value: &OdometryState) -> Result<(), ValidationError> {
     validate_finite(value.angular_z_radps, "angular_z_radps")
 }
 
-pub fn world_revision(value: &WorldRevision) -> Result<(), ValidationError> {
+pub fn world_revision(value: &MapState) -> Result<(), ValidationError> {
     if value.available && value.oldest_capture_time_nanos.is_none() {
         return Err(ValidationError::Missing("oldest_capture_time_nanos"));
     }
@@ -61,13 +60,9 @@ pub fn goal_target(value: &GoalTarget) -> Result<(), ValidationError> {
     Ok(())
 }
 
-pub fn command_request(value: &ApplyCommandRequest) -> Result<(), ValidationError> {
-    match value
-        .command
-        .as_ref()
-        .ok_or(ValidationError::Missing("command"))?
-    {
-        apply_command_request::Command::Start(start) => {
+pub fn command_request(value: &ApplyCommand) -> Result<(), ValidationError> {
+    match value {
+        ApplyCommand::Start(start) => {
             validate_id(&start.goal_id, "goal_id")?;
             goal_target(
                 start
@@ -76,29 +71,28 @@ pub fn command_request(value: &ApplyCommandRequest) -> Result<(), ValidationErro
                     .ok_or(ValidationError::Missing("target"))?,
             )
         }
-        apply_command_request::Command::Cancel(cancel) => validate_id(&cancel.goal_id, "goal_id"),
+        ApplyCommand::Cancel(cancel) => validate_id(&cancel.goal_id, "goal_id"),
     }
 }
 
 pub fn command_response(value: &ApplyCommandResponse) -> Result<(), ValidationError> {
-    match value
-        .decision
-        .as_ref()
-        .ok_or(ValidationError::Missing("decision"))?
-    {
-        apply_command_response::Decision::Accepted(_) => Ok(()),
-        apply_command_response::Decision::Refused(refused) => {
-            let reason = RefusalReason::try_from(refused.reason)
-                .ok()
-                .filter(|reason| *reason != RefusalReason::Unspecified)
-                .ok_or(ValidationError::InvalidEnum("reason"))?;
+    match value {
+        ApplyCommandResponse::Accepted => Ok(()),
+        ApplyCommandResponse::Refused(refused) => {
+            if refused.reason == RefusalReason::Unspecified {
+                return Err(ValidationError::InvalidEnum("reason"));
+            }
             unavailable_reasons(&refused.unavailable_reasons)?;
-            if reason == RefusalReason::Unavailable && refused.unavailable_reasons.is_empty() {
+            if refused.reason == RefusalReason::Unavailable
+                && refused.unavailable_reasons.is_empty()
+            {
                 return Err(ValidationError::InvalidUnavailableReasons(
                     "unavailable refusal requires at least one reason",
                 ));
             }
-            if reason != RefusalReason::Unavailable && !refused.unavailable_reasons.is_empty() {
+            if refused.reason != RefusalReason::Unavailable
+                && !refused.unavailable_reasons.is_empty()
+            {
                 return Err(ValidationError::InvalidUnavailableReasons(
                     "only an unavailable refusal carries availability reasons",
                 ));
@@ -109,10 +103,10 @@ pub fn command_response(value: &ApplyCommandResponse) -> Result<(), ValidationEr
 }
 
 pub fn state(value: &NavigationState) -> Result<(), ValidationError> {
-    let phase = Phase::try_from(value.phase)
-        .ok()
-        .filter(|phase| *phase != Phase::Unspecified)
-        .ok_or(ValidationError::InvalidEnum("phase"))?;
+    let phase = value.phase;
+    if phase == Phase::Unspecified {
+        return Err(ValidationError::InvalidEnum("phase"));
+    }
     if let Some(goal_id) = &value.active_goal_id {
         validate_id(goal_id, "active_goal_id")?;
     }
@@ -137,10 +131,10 @@ pub fn state(value: &NavigationState) -> Result<(), ValidationError> {
 
 pub fn finished(value: &GoalFinished) -> Result<(), ValidationError> {
     validate_id(&value.goal_id, "goal_id")?;
-    let outcome = GoalOutcome::try_from(value.outcome)
-        .ok()
-        .filter(|outcome| *outcome != GoalOutcome::Unspecified)
-        .ok_or(ValidationError::InvalidEnum("outcome"))?;
+    let outcome = value.outcome;
+    if outcome == GoalOutcome::Unspecified {
+        return Err(ValidationError::InvalidEnum("outcome"));
+    }
     unavailable_reasons(&value.unavailable_reasons)?;
     if outcome == GoalOutcome::Unavailable && value.unavailable_reasons.is_empty() {
         return Err(ValidationError::InvalidUnavailableReasons(
@@ -160,16 +154,10 @@ pub fn status_request(value: &GetGoalStatusRequest) -> Result<(), ValidationErro
 }
 
 pub fn status_response(value: &GetGoalStatusResponse) -> Result<(), ValidationError> {
-    match value
-        .status
-        .as_ref()
-        .ok_or(ValidationError::Missing("status"))?
-    {
-        get_goal_status_response::Status::Running(running) => {
-            validate_id(&running.goal_id, "goal_id")
-        }
-        get_goal_status_response::Status::Finished(value) => finished(value),
-        get_goal_status_response::Status::UnknownOrNoLongerRetained(value) => {
+    match value {
+        GetGoalStatusResponse::Running(running) => validate_id(&running.goal_id, "goal_id"),
+        GetGoalStatusResponse::Finished(value) => finished(value),
+        GetGoalStatusResponse::UnknownOrNoLongerRetained(value) => {
             validate_id(&value.goal_id, "goal_id")
         }
     }
@@ -189,7 +177,7 @@ fn validate_finite(value: f64, field: &'static str) -> Result<(), ValidationErro
         .ok_or(ValidationError::NonFinite(field))
 }
 
-fn unavailable_reasons(reasons: &[i32]) -> Result<(), ValidationError> {
+fn unavailable_reasons(reasons: &[UnavailableReason]) -> Result<(), ValidationError> {
     if reasons.len() > 4 {
         return Err(ValidationError::InvalidUnavailableReasons(
             "at most four reasons are allowed",
@@ -197,11 +185,10 @@ fn unavailable_reasons(reasons: &[i32]) -> Result<(), ValidationError> {
     }
     let mut unique = HashSet::with_capacity(reasons.len());
     for reason in reasons {
-        let reason = UnavailableReason::try_from(*reason)
-            .ok()
-            .filter(|reason| *reason != UnavailableReason::Unspecified)
-            .ok_or(ValidationError::InvalidEnum("unavailable_reasons"))?;
-        if !unique.insert(reason) {
+        if *reason == UnavailableReason::Unspecified {
+            return Err(ValidationError::InvalidEnum("unavailable_reasons"));
+        }
+        if !unique.insert(*reason) {
             return Err(ValidationError::InvalidUnavailableReasons(
                 "reasons must be distinct",
             ));
@@ -215,10 +202,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_missing_goal_status() {
-        assert_eq!(
-            status_response(&GetGoalStatusResponse { status: None }),
-            Err(ValidationError::Missing("status"))
-        );
+    fn payload_enum_variants_carry_their_own_presence() {
+        // A payload enum has no absent form: absence is rejected at the
+        // decoding boundary, so validation only sees selected variants.
+        let running = GetGoalStatusResponse::Running(crate::contract::GoalRunning {
+            goal_id: "goal".to_owned(),
+        });
+        assert_eq!(status_response(&running), Ok(()));
     }
 }

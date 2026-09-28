@@ -1,14 +1,13 @@
+use crate::config::{WorldConfig, validate_config};
 #[cfg(test)]
-use self::phoxal_provider::Inputs as WorldInputs;
-#[cfg(test)]
-use crate::api::types::phoxal::kinematics::v1::OdometryState;
-use crate::api::types::phoxal::world::v1::{
+use crate::contract::world_api::Inputs as WorldInputs;
+use crate::contract::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
     WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus,
-    window_response,
 };
-use crate::config::{WorldConfig, validate_config};
 use crate::validation;
+#[cfg(test)]
+use phoxal::contracts::robotics::OdometryState;
 #[cfg(test)]
 use phoxal::runtime::input::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
@@ -23,7 +22,7 @@ pub struct WorldState {
     belief: WorldBelief,
     revision: u64,
     available: bool,
-    unavailable_reasons: Vec<i32>,
+    unavailable_reasons: Vec<UnavailableReason>,
     snapshots: VecDeque<WorldSnapshot>,
 }
 
@@ -43,7 +42,7 @@ impl WorldState {
             config,
             revision: 0,
             available: false,
-            unavailable_reasons: vec![UnavailableReason::Pose as i32],
+            unavailable_reasons: vec![UnavailableReason::Pose],
             snapshots: VecDeque::new(),
         }
     }
@@ -68,10 +67,8 @@ impl WorldState {
         let covered = self.covered_bounds();
         // Localization establishes a pose, not traversability. Mapping must
         // supply measured occupancy before a planner can treat a cell as free.
-        let cells = vec![
-            Occupancy::Unknown as i32;
-            self.config.width as usize * self.config.height as usize
-        ];
+        let cells =
+            vec![Occupancy::Unknown; self.config.width as usize * self.config.height as usize];
         GridWindow {
             frame_id: self.config.frame_id.clone(),
             origin_x_m: self.config.origin_x_m,
@@ -109,7 +106,7 @@ impl WorldState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct World;
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::WorldApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for World {
     type Config = WorldConfig;
     type State = WorldState;
@@ -146,15 +143,15 @@ impl Runtime for World {
             });
         if pose.is_none() {
             state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::StalePose as i32];
+            state.unavailable_reasons = vec![UnavailableReason::StalePose];
             state.belief.available = false;
         } else if pose.is_some_and(|pose| validation::odometry(pose).is_err()) {
             state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::InvalidPose as i32];
+            state.unavailable_reasons = vec![UnavailableReason::InvalidPose];
             state.belief.available = false;
         } else if pose.is_some_and(|pose| !pose.available) {
             state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::Pose as i32];
+            state.unavailable_reasons = vec![UnavailableReason::Pose];
             state.belief.available = false;
         } else if let Some(pose) = pose {
             state.revision = state.revision.saturating_add(1);
@@ -188,7 +185,7 @@ impl Runtime for World {
     }
 }
 
-impl crate::api::projections::Projections for World {
+impl crate::contract::world_api::projections::Projections for World {
     type State = WorldState;
 
     /// Projects the current estimated spatial belief.
@@ -238,18 +235,11 @@ fn window_for(state: &WorldState, request: &WindowRequest) -> WindowResponse {
     }
     let mut selected = window.clone();
     selected.requested = Some(*requested);
-    WindowResponse {
-        result: Some(window_response::Result::Window(selected)),
-    }
+    WindowResponse::Window(selected)
 }
 
 fn unavailable(reason: WindowUnavailableReason, revision: u64) -> WindowResponse {
-    WindowResponse {
-        result: Some(window_response::Result::Unavailable(WindowUnavailable {
-            reason: reason as i32,
-            revision,
-        })),
-    }
+    WindowResponse::Unavailable(WindowUnavailable { reason, revision })
 }
 
 #[cfg(test)]
@@ -316,14 +306,11 @@ mod tests {
         };
         let response = window_for(&state, &request);
         validation::window_response(&response).expect("retained window response");
-        let Some(window_response::Result::Window(window)) = response.result else {
+        let WindowResponse::Window(window) = response else {
             panic!("available window")
         };
         assert!(
-            window
-                .cells
-                .iter()
-                .all(|cell| *cell == Occupancy::Unknown as i32),
+            window.cells.iter().all(|cell| *cell == Occupancy::Unknown),
             "a pose observation does not establish free space"
         );
     }
@@ -399,7 +386,7 @@ mod tests {
         assert_eq!(state.revision, 0);
         assert_eq!(
             state.unavailable_reasons,
-            vec![UnavailableReason::StalePose as i32]
+            vec![UnavailableReason::StalePose]
         );
     }
 

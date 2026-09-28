@@ -1,0 +1,6 @@
+<mujoco model="phoxal-adapter-scene">
+  <option timestep="0.01"/>
+  <worldbody>
+    <site name="robot_mount" pos="0 0 0" size="0.002"/>
+  </worldbody>
+</mujoco>

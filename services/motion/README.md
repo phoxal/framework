@@ -1,7 +1,8 @@
 # Motion service
 
 This executable owns final actuator intent, arm/disarm state, and emergency handling.
-Its local `api/` sources define the Protobuf messages and methods declared by [`motion.proto`](api/phoxal/motion/v1/motion.proto).
+Its Rust contract in `src/contract.rs` declares its endpoints and specialized payloads.
+Shared actuation records come from `phoxal::contracts`.
 Configuration, inputs, outputs, arbitration, and drive calculations live in separate executable modules.
 
 Configure `left_wheels` and `right_wheels` with one to four entries per side.

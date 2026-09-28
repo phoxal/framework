@@ -1,0 +1,40 @@
+// Independent Protobuf reference mirroring the SDK's authored
+// `phoxal::contracts::geometry` shapes, compiled by protoc for the
+// interop proof. The SDK owns the authoritative Rust definitions.
+syntax = "proto3";
+
+package phoxal.geometry.v1;
+
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Point3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double w = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+}
+
+message Pose {
+  Point3 position_m = 1;
+  Quaternion orientation = 2;
+}
+
+message Twist {
+  Vector3 linear_mps = 1;
+  Vector3 angular_radps = 2;
+}
+
+message Wrench {
+  Vector3 force_n = 1;
+  Vector3 torque_nm = 2;
+}

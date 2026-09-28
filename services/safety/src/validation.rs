@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use crate::api::types::phoxal::motion::v1::{
+use crate::contract::SafetyStatus;
+use crate::contract::{
     Constraint, ConstraintReason, ControlMode, MotionConstraints, MotionStatus, Permission,
 };
-use crate::api::types::phoxal::safety::v1::SafetyStatus;
-use crate::api::types::phoxal::world::v1::{WorldBelief, WorldRevision};
+use crate::contract::{WorldBelief, WorldRevision};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ValidationError {
@@ -43,10 +43,10 @@ pub fn world_revision(value: &WorldRevision) -> Result<(), ValidationError> {
 }
 
 pub fn motion_status(value: &MotionStatus) -> Result<(), ValidationError> {
-    let mode = ControlMode::try_from(value.mode)
-        .ok()
-        .filter(|mode| *mode != ControlMode::Unspecified)
-        .ok_or(ValidationError::InvalidValue)?;
+    let mode = value.mode;
+    if mode == ControlMode::Unspecified {
+        return Err(ValidationError::InvalidValue);
+    }
     if value
         .selected_owner_id
         .as_ref()
@@ -59,10 +59,10 @@ pub fn motion_status(value: &MotionStatus) -> Result<(), ValidationError> {
 }
 
 fn constraint(value: &Constraint) -> Result<(), ValidationError> {
-    let reason = ConstraintReason::try_from(value.reason)
-        .ok()
-        .filter(|reason| *reason != ConstraintReason::Unspecified)
-        .ok_or(ValidationError::InvalidValue)?;
+    let reason = value.reason;
+    if reason == ConstraintReason::Unspecified {
+        return Err(ValidationError::InvalidValue);
+    }
     for quantity in [
         value.max_linear_speed_mps,
         value.max_angular_speed_radps,
@@ -96,10 +96,10 @@ fn constraint(value: &Constraint) -> Result<(), ValidationError> {
 }
 
 pub fn constraints(value: &MotionConstraints) -> Result<(), ValidationError> {
-    let permission = Permission::try_from(value.permission)
-        .ok()
-        .filter(|permission| *permission != Permission::Unspecified)
-        .ok_or(ValidationError::InvalidValue)?;
+    let permission = value.permission;
+    if permission == Permission::Unspecified {
+        return Err(ValidationError::InvalidValue);
+    }
     if permission != Permission::Stopped
         && value
             .oldest_capture_time_nanos
@@ -114,8 +114,7 @@ pub fn constraints(value: &MotionConstraints) -> Result<(), ValidationError> {
     let mut has_limit = false;
     for item in &value.constraints {
         constraint(item)?;
-        let reason =
-            ConstraintReason::try_from(item.reason).map_err(|_| ValidationError::InvalidValue)?;
+        let reason = item.reason;
         if !reasons.insert(reason) {
             return Err(ValidationError::Inconsistent);
         }
@@ -143,10 +142,9 @@ pub fn status(value: &SafetyStatus) -> Result<(), ValidationError> {
     }
     let mut reasons = HashSet::with_capacity(value.reasons.len());
     for reason in &value.reasons {
-        let reason = ConstraintReason::try_from(*reason)
-            .ok()
-            .filter(|reason| *reason != ConstraintReason::Unspecified)
-            .ok_or(ValidationError::InvalidValue)?;
+        if *reason == ConstraintReason::Unspecified {
+            return Err(ValidationError::InvalidValue);
+        }
         if !reasons.insert(reason) {
             return Err(ValidationError::InvalidValue);
         }

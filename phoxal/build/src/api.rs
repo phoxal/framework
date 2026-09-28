@@ -1,4 +1,4 @@
-//! Offline generation from a package's `api/` tree and exact prepared inputs.
+//! Offline generation from a package's capabilities and exact prepared inputs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,8 +10,8 @@ use prost_reflect::DescriptorPool;
 use quote::ToTokens;
 use serde::Deserialize;
 
-use crate::manifest::{self, ResolvedService};
-use crate::{Error, compile_protos_impl};
+use crate::Error;
+use crate::manifest::{self, ResolvedMessage, ResolvedService};
 
 /// Configuration for the package-local API build helper.
 ///
@@ -25,7 +25,7 @@ pub struct BuildApiConfig {
 
 /// Generates the current package's API under Cargo's `OUT_DIR`.
 ///
-/// This function reads local and previously prepared Protobuf sources only.
+/// This function reads local prepared contract products and component capabilities only.
 /// Run `cargo phoxal prepare` first for registry and Git selections.
 pub fn api(_config: BuildApiConfig) -> Result<(), Error> {
     let package = std::env::var_os("CARGO_MANIFEST_DIR")
@@ -42,79 +42,6 @@ pub fn validate_project_api(package: &Path, robot_source: &[u8], out: &Path) -> 
     generate(package, out, Some(robot_source))
 }
 
-/// Loads, compiles, and validates the service declaration beside an `api/`
-/// root for composition checking, reusing the generation pipeline.
-///
-/// Returns `None` for legacy participants that declare endpoints only in
-/// compiled Protobuf services.
-pub fn participant_declaration(
-    api_root: &Path,
-) -> Result<Option<crate::manifest::DeclarationEvidence>, Error> {
-    let Some(package) = api_root.parent() else {
-        return Ok(None);
-    };
-    let Some(declaration) = unit_declaration(package)? else {
-        return Ok(None);
-    };
-    let scratch = unique_scratch("phoxal-declaration");
-    fs::create_dir_all(&scratch).map_err(|source| Error::Path {
-        path: scratch.clone(),
-        source,
-    })?;
-    let unit = Unit {
-        root: api_root.to_owned(),
-        label: api_root.display().to_string(),
-        declaration: Some(declaration),
-    };
-    let result = compile(&unit, &scratch, 0, false, None);
-    let descriptors = result
-        .as_ref()
-        .ok()
-        .and_then(|_| read(&scratch.join("phoxal-descriptors.bin")).ok())
-        .unwrap_or_default();
-    let cleaned = fs::remove_dir_all(&scratch);
-    let compiled = result?;
-    cleaned.map_err(|source| Error::Path {
-        path: scratch,
-        source,
-    })?;
-    Ok(compiled
-        .manifest
-        .map(|service| crate::manifest::DeclarationEvidence {
-            service,
-            descriptors,
-        }))
-}
-
-/// Checks a runnable participant's packaged API before preparation publishes it.
-pub fn validate_participant_api(api_root: &Path, out: &Path) -> Result<(), Error> {
-    fs::create_dir_all(out).map_err(|source| Error::Path {
-        path: out.to_owned(),
-        source,
-    })?;
-    let Some(package) = api_root.parent() else {
-        return Err(input(
-            api_root,
-            "runnable participant source has no package root",
-        ));
-    };
-    let declaration = unit_declaration(package)?;
-    let unit = Unit {
-        root: api_root.to_owned(),
-        label: api_root.display().to_string(),
-        declaration,
-    };
-    let result = compile(&unit, out, 0, false, None)?;
-    if result.manifest.is_none() {
-        return Err(input(
-            api_root,
-            "runnable participant owns no endpoint declaration \
-             (service.yaml or component.yaml sections)",
-        ));
-    }
-    Ok(())
-}
-
 /// The robot document as generation consumes it: the same authored surface
 /// the SDK's artifact DTO validates, with carrier fields the generator does
 /// not read kept as opaque values. Both parsers reject unknown fields so a
@@ -124,10 +51,19 @@ pub fn validate_participant_api(api_root: &Path, out: &Path) -> Result<(), Error
 struct Robot {
     schema: String,
     robot: RobotSection,
-    /// The brain's embedded endpoint declaration, if it declares one.
+    /// The brain's explicit binary selection; consumed by cargo-phoxal,
+    /// carried here so generation accepts the same document.
     #[serde(default)]
-    brain: Option<manifest::BrainSection>,
+    #[allow(
+        dead_code,
+        reason = "carrier field of the robot document; cargo-phoxal resolves the brain target"
+    )]
+    brain: Option<serde_yaml::Value>,
     #[serde(default)]
+    #[allow(
+        dead_code,
+        reason = "the key belongs to this document; the values are cargo-phoxal's to validate and resolve"
+    )]
     services: BTreeMap<String, Selection>,
     #[serde(default)]
     #[allow(
@@ -237,38 +173,47 @@ struct Unit {
     label: String,
     /// The unit's authored endpoint declaration, when it has one.
     declaration: Option<(manifest::ServiceDocument, PathBuf)>,
+    /// The participant's prepared Rust-contract products, when composition
+    /// prepared them from its compiled artifact.
+    prepared: Option<crate::prepared::PreparedContract>,
+    /// The package's own previously compiled products. Bindings only: the
+    /// unit's definitions neither validate against the selected
+    /// participants nor retain descriptor frames, so an edited brain or a
+    /// refreshed participant cannot conflict with the recorded copy while
+    /// the next compilation regenerates it.
+    bindings_only: bool,
 }
 
 /// Returns a package's authored endpoint declaration.
 ///
-/// A service package declares endpoints in `service.yaml`; a component
-/// package embeds the same sections in `component.yaml`. Declaring both is
-/// rejected: one package has exactly one endpoint authority.
+/// Only component capabilities contribute generated standard endpoints.
+/// Rust declarations own service and custom component endpoints.
 fn unit_declaration(
     package_root: &Path,
 ) -> Result<Option<(manifest::ServiceDocument, PathBuf)>, Error> {
-    let service = package_root.join(manifest::FILE_NAME);
+    // The component document is the one endpoint authority this package
+    // owns; unrelated adjacent files are ignored.
     let component = package_root.join(manifest::COMPONENT_FILE_NAME);
-    match (service.is_file(), component.is_file()) {
-        (true, true) => Err(input(
-            &service,
-            format!(
-                "this package declares endpoints in both {} and {}; \
-                 exactly one endpoint authority is allowed",
-                manifest::FILE_NAME,
-                manifest::COMPONENT_FILE_NAME
-            ),
-        )),
-        (true, false) => {
-            let document = manifest::parse_document(&read(&service)?, &service)?;
-            Ok(Some((document, service)))
-        }
-        (false, true) => {
-            let document = manifest::parse_component_document(&read(&component)?, &component)?;
-            Ok(Some((document, component)))
-        }
-        (false, false) => Ok(None),
+    if !component.is_file() {
+        return Ok(None);
     }
+    let surface = manifest::parse_component_surface(&read(&component)?, &component)?;
+    let Some(derived) = manifest::capability_document(&surface.capabilities, &component)? else {
+        return Ok(None);
+    };
+    Ok(Some((derived, component)))
+}
+
+/// The local unit's declaration, marking capability-derived documents.
+///
+/// A component's capabilities determine its standard endpoints without a
+/// second endpoint declaration: the derived document carries a capability
+/// mark so generation maps standard types to the SDK vocabulary.
+fn local_unit_declaration(
+    package_root: &Path,
+) -> Result<Option<(manifest::ServiceDocument, PathBuf, bool)>, Error> {
+    unit_declaration(package_root)
+        .map(|declaration| declaration.map(|(document, path)| (document, path, true)))
 }
 
 struct CompiledUnit {
@@ -290,13 +235,15 @@ struct Module {
 struct Assembled {
     units: Vec<Unit>,
     bindings: Vec<(String, usize)>,
-    /// The local unit is present (an `api/` tree or any declaration).
-    has_local_api: bool,
+    /// The package may bind its own prepared compiled products.
+    self_candidate: bool,
+    /// The package's own compiled contract products were found and bound as
+    /// a local unit; client bindings were generated from them.
+    self_prepared: bool,
 }
 
-/// Parses the robot document and collects every generation unit: the local
-/// unit first (the robot.yaml brain section for a robot project, otherwise
-/// the package's own declaration), then one unit per selected participant.
+/// Collects the package's capability or compiled contract unit, followed by
+/// the exact selected participant units of a robot project.
 fn assemble_units(
     package: &Path,
     robot_override: Option<&[u8]>,
@@ -304,7 +251,6 @@ fn assemble_units(
 ) -> Result<Assembled, Error> {
     let mut units = Vec::<Unit>::new();
     let mut bindings = Vec::<(String, usize)>::new();
-    let local_api = package.join("api");
     let robot_path = package.join("robot.yaml");
     let robot_source = if robot_path.exists() || robot_override.is_some() {
         let source = match robot_override {
@@ -319,11 +265,9 @@ fn assemble_units(
         None
     };
     // The owning document is decided by package role. A robot project's
-    // brain is instructed by robot.yaml: the brain section is the local
-    // unit's only endpoint authority — an empty brain has an empty contract,
-    // and unrelated declaration files beside robot.yaml belong to other
-    // operations: they are neither read nor rejected here. A non-robot
-    // package reads service.yaml or component.yaml.
+    // brain authors its contract in Rust; a robot.yaml carries no endpoint
+    // declaration and a non-robot package derives standard endpoints from
+    // component.yaml capabilities.
     let (robot, local_document) = match robot_source {
         Some(source) => {
             manifest::reject_duplicate_keys(&source, &robot_path, "robot.yaml")?;
@@ -342,31 +286,68 @@ fn assemble_units(
                     ),
                 ));
             }
-            let brain = parsed
-                .brain
-                .as_ref()
-                .map(manifest::BrainSection::document)
-                .unwrap_or_default();
-            (Some(parsed), Some((brain, robot_path.clone())))
+            (Some(parsed), None)
         }
         None => {
-            let local = unit_declaration(package)?;
-            if emit_changes && let Some((_, path)) = &local {
+            let local = local_unit_declaration(package)?;
+            if emit_changes && let Some((_, path, _)) = &local {
                 println!("cargo:rerun-if-changed={}", path.display());
             }
             (None, local)
         }
     };
-    let has_local_api = local_api.is_dir() || local_document.is_some();
-    if emit_changes {
-        println!("cargo:rerun-if-changed={}", local_api.display());
-    }
-    if has_local_api {
+    let has_capabilities = local_document.is_some();
+    if has_capabilities {
+        // The capability-derived local declaration is the unit; unrelated
+        // adjacent files are ignored.
+        let declaration = local_document.map(|(document, path, _)| (document, path));
         units.push(Unit {
-            root: local_api,
+            root: package.to_owned(),
             label: "local API".into(),
-            declaration: local_document,
+            declaration,
+            prepared: None,
+            bindings_only: false,
         });
+    }
+    // A declaration-less package binds through its own prepared binary.
+    // Standalone service tests use this for generated clients. A robot's
+    // adapter target uses it for the brain's private input/output types.
+    let self_candidate = !has_capabilities;
+    let mut self_prepared = false;
+    if self_candidate {
+        let prepared_dir = crate::prepared::self_prepared_dir(package);
+        if emit_changes {
+            // The self products are written only after this package's own
+            // binary has been built and extracted, so a first generation
+            // runs without them. Watch the prepared root — not just the
+            // self directory — so their later appearance reruns this
+            // script and the consumers compiled after it see them.
+            if let Some(root) = prepared_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_owned)
+            {
+                println!("cargo:rerun-if-changed={}", root.display());
+            }
+        }
+        if prepared_dir.join(crate::prepared::ENDPOINTS_FILE).is_file() {
+            if emit_changes {
+                println!("cargo:rerun-if-changed={}", prepared_dir.display());
+            }
+            let contract = crate::prepared::read_prepared(&prepared_dir)?;
+            let index = units.len();
+            units.push(Unit {
+                root: prepared_dir,
+                label: "self prepared".into(),
+                declaration: None,
+                prepared: Some(contract),
+                bindings_only: true,
+            });
+            if robot.is_some() {
+                bindings.push(("brain".to_owned(), index));
+            }
+            self_prepared = true;
+        }
     }
     if let Some(robot) = robot {
         for (instance, selection) in robot.services {
@@ -375,6 +356,7 @@ fn assemble_units(
                 &robot_path,
                 instance,
                 selection.source,
+                selection.binary.as_deref(),
                 &mut units,
                 &mut bindings,
             )?;
@@ -386,6 +368,7 @@ fn assemble_units(
                     &robot_path,
                     instance,
                     component.source,
+                    component.binary.as_deref(),
                     &mut units,
                     &mut bindings,
                 )?;
@@ -395,71 +378,93 @@ fn assemble_units(
     Ok(Assembled {
         units,
         bindings,
-        has_local_api,
+        self_candidate,
+        self_prepared,
     })
 }
 
-/// Resolves a robot project's brain declaration for composition checking.
-///
-/// Returns `None` when the brain declares no endpoints.  The brain's types
-/// resolve against the same union of participant schemas that code
-/// generation uses.
-pub fn brain_declaration(
-    package: &Path,
-    robot_source: &[u8],
-) -> Result<Option<crate::manifest::DeclarationEvidence>, Error> {
-    let assembled = assemble_units(package, Some(robot_source), false)?;
-    let units = &assembled.units;
-    if units
-        .first()
-        .and_then(|unit| unit.declaration.as_ref())
-        .is_none_or(|(document, _)| document.is_empty())
-    {
-        return Ok(None);
+/// Rejects an instance name that would shadow a generated module.
+fn emit_reserved_module_check(
+    public_names: &mut BTreeSet<String>,
+    instance: &str,
+) -> Result<(), Error> {
+    const RESERVED: &[&str] = &["api", "types", "service_methods"];
+    if RESERVED.contains(&instance) || !public_names.insert(instance.to_owned()) {
+        return Err(input(
+            Path::new("robot.yaml"),
+            format!("participant instance `{instance}` collides with a generated module"),
+        ));
     }
-    let union_pool = union_resolution_pool(units)?;
-    let scratch_root = unique_scratch("phoxal-brain");
-    let scratch = scratch_root.join("u0");
-    fs::create_dir_all(&scratch).map_err(|source| Error::Path {
-        path: scratch.clone(),
-        source,
-    })?;
-    let result = compile(&units[0], &scratch, 0, false, union_pool.as_ref());
-    // The brain's types resolve against the union of participant schemas, so
-    // its declaration evidence must carry that closure for cross-side
-    // definition agreement; without participants the local unit's own
-    // descriptor file is the closure.
-    let descriptors = union_pool
-        .as_ref()
-        .map(|pool| pool.encode_to_vec())
-        .or_else(|| {
-            result
-                .as_ref()
-                .ok()
-                .and_then(|_| read(&scratch.join("phoxal-descriptors.bin")).ok())
-        })
-        .unwrap_or_default();
-    let cleaned = fs::remove_dir_all(&scratch_root);
-    let compiled = result?;
-    cleaned.map_err(|source| Error::Path {
-        path: scratch_root,
-        source,
-    })?;
-    Ok(compiled
-        .manifest
-        .map(|service| crate::manifest::DeclarationEvidence {
-            service,
-            descriptors,
-        }))
+    Ok(())
+}
+
+/// Renders a component's derived standard endpoints in the authored
+/// endpoint-struct grammar so the `#[phoxal::endpoints]` macro can splice
+/// them into an explicitly authored contract.
+fn standard_endpoint_fragment(resolved: &manifest::ResolvedService) -> String {
+    let mut output = String::new();
+    for input in &resolved.inputs {
+        let wrapper = match input.delivery {
+            manifest::Delivery::Queue => "Queue",
+            manifest::Delivery::Latest => "Latest",
+        };
+        let mut options = Vec::<String>::new();
+        if let Some(value) = input.max_age_ms {
+            options.push(format!("max_age_ms = {value},"));
+        }
+        if let Some(value) = input.max_items {
+            options.push(format!("max_items = {value},"));
+        }
+        if let Some(value) = input.lease_valid_for_ms {
+            options.push(format!("lease_ms = {value},"));
+        }
+        options.push(format!("max_bytes = {}", input.max_bytes));
+        output.push_str(&format!(
+            "#[phoxal::input({})]\n{}: ::phoxal::contracts::{wrapper}<{}>,\n",
+            options.join(" "),
+            input.name,
+            input.message.rust_path,
+        ));
+    }
+    for endpoint in &resolved.outputs {
+        let wrapper = match endpoint.delivery {
+            manifest::Delivery::Queue => "Queue",
+            manifest::Delivery::Latest => "Latest",
+        };
+        let mut options = Vec::<String>::new();
+        if endpoint.projection {
+            options.push("projection = state,".to_owned());
+        }
+        if endpoint.bootstrap {
+            options.push("bootstrap,".to_owned());
+        }
+        if endpoint.on_change {
+            options.push("on_change,".to_owned());
+        }
+        if let Some(value) = endpoint.lease_valid_for_ms {
+            options.push(format!("lease_ms = {value},"));
+        }
+        if let Some(value) = endpoint.max_items {
+            options.push(format!("max_items = {value},"));
+        }
+        options.push(format!("max_bytes = {}", endpoint.max_bytes));
+        output.push_str(&format!(
+            "#[phoxal::output({})]\n{}: ::phoxal::contracts::{wrapper}<{}>,\n",
+            options.join(" "),
+            endpoint.name,
+            endpoint.message.rust_path,
+        ));
+    }
+    format!("{{{output}}}\n")
 }
 
 fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result<(), Error> {
     let Assembled {
         units,
         bindings,
-        has_local_api,
+        self_candidate,
+        self_prepared,
     } = assemble_units(package, robot_override, true)?;
-    let robot_path = package.join("robot.yaml");
 
     let candidate_root = out.join("phoxal-api-candidate");
     if candidate_root.exists() {
@@ -472,31 +477,57 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
         path: candidate_root.clone(),
         source,
     })?;
-    // YAML type references resolve against every unit's schemas so a brain
-    // can declare call requirements into a participant's message contracts.
-    let any_manifest = units.iter().any(|unit| unit.declaration.is_some());
-    let union_pool = if any_manifest {
-        union_resolution_pool(&units)?
-    } else {
-        None
-    };
-
     let mut tree = Module::default();
-    let mut compiled = Vec::with_capacity(units.len());
     let mut symbols = BTreeMap::<String, (String, Vec<u8>)>::new();
+    // Selected participants validate against each other and provide the
+    // generated definitions first, by fully qualified identity. The
+    // package's own recorded products compile last, as bindings only.
+    let mut provided = BTreeSet::<String>::new();
+    let mut slots: Vec<Option<CompiledUnit>> = units.iter().map(|_| None).collect();
     for (index, unit) in units.iter().enumerate() {
+        if unit.bindings_only {
+            continue;
+        }
         let target = candidate_root.join(format!("u{index}"));
         fs::create_dir_all(&target).map_err(|source| Error::Path {
             path: target.clone(),
             source,
         })?;
-        let result = compile(unit, &target, index, true, union_pool.as_ref())?;
+        let result = match &unit.prepared {
+            Some(prepared) => compile_prepared(prepared, &target, index)?,
+            None => compile(unit, &target, index)?,
+        };
         validate_symbols(&result.pool, &unit.label, &mut symbols)?;
+        collect_definitions(&result.pool, &mut provided);
         for (name, relative, content) in &result.packages {
             insert_package(&mut tree, name, relative, content, &unit.label)?;
         }
-        compiled.push(result);
+        slots[index] = Some(result);
     }
+    for (index, unit) in units.iter().enumerate() {
+        if !unit.bindings_only {
+            continue;
+        }
+        let target = candidate_root.join(format!("u{index}"));
+        fs::create_dir_all(&target).map_err(|source| Error::Path {
+            path: target.clone(),
+            source,
+        })?;
+        let prepared = unit.prepared.as_ref().ok_or_else(|| {
+            input(
+                &unit.root,
+                "a bindings-only unit always binds prepared products",
+            )
+        })?;
+        let result = compile_prepared_bindings_only(prepared, &target, index, &provided)?;
+        for (name, relative, content) in &result.packages {
+            insert_package(&mut tree, name, relative, content, &unit.label)?;
+        }
+        slots[index] = Some(result);
+    }
+    let Some(compiled) = slots.into_iter().collect::<Option<Vec<_>>>() else {
+        unreachable!("every unit compiles in exactly one pass")
+    };
     materialize_merged(&mut tree, &candidate_root, "")?;
 
     let mut output = format!(
@@ -536,62 +567,89 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
     for (instance, index) in bindings {
         let unit = &units[index];
         let compiled_unit = &compiled[index];
-        let binding = service_binding(compiled_unit, index).ok_or_else(|| Error::ApiInput {
-            path: unit.root.clone(),
-            message: format!(
-                "{} owns no deployable Protobuf service or service.yaml declaration",
-                unit.label
-            ),
-        })?;
-        emit_binding(&mut output, &mut public_names, &instance, &binding)?;
+        let Some(prepared) = &unit.prepared else {
+            return Err(input(
+                &unit.root,
+                format!(
+                    "{} binds through prepared contract products; run `cargo phoxal prepare` \
+                     from the robot project root",
+                    unit.label
+                ),
+            ));
+        };
+        let methods_root = format!("crate::api::service_methods::u{index}");
+        let module = crate::prepared::emit_instance_module(
+            &instance,
+            prepared,
+            &compiled_unit.pool,
+            "crate::api::types",
+            &methods_root,
+        )?;
+        emit_reserved_module_check(&mut public_names, &instance)?;
+        output.push_str(&module);
     }
-    if has_local_api && let Some(resolved) = &compiled[0].manifest {
-        // A robot project's brain is instructed by robot.yaml: it attaches
-        // its declared endpoints (binding instance "brain") exactly like any
-        // other runtime, and composition binds participants through the same
-        // document.  A standalone service package has no composition
-        // instance of its own; it is consumed through a composing project.
-        if robot_path.exists() || robot_override.is_some() {
-            let binding = service_binding(&compiled[0], 0).ok_or_else(|| Error::ApiInput {
-                path: units[0].root.clone(),
-                message: "resolved service declaration produced no binding".to_owned(),
-            })?;
-            emit_binding(&mut output, &mut public_names, "brain", &binding)?;
-            if !resolved.endpoint_names().is_empty() && compiled[0].methods.is_none() {
-                return Err(input(
-                    &units[0].root,
-                    "the brain declares endpoints but owns no api/ schemas; add the \
-                     referenced vocabulary beside the robot project",
-                ));
-            }
-        }
-        emit_calls_module(&mut output, resolved);
-        emit_projections_module(&mut output, resolved);
-        let provider = crate::provider::emit_provider(resolved);
+    let mut provider = String::new();
+    let mut fragment = String::new();
+    if let Some(resolved) = compiled.iter().find_map(|unit| unit.manifest.as_ref()) {
+        // The local capability unit attaches its standard provider glue.
+        provider = crate::provider::emit_provider(resolved);
         write_stable(&out.join("phoxal-provider.rs"), provider.as_bytes())?;
-    } else if has_local_api {
-        // A removed or renamed manifest must not leave stale attachment.
-        let stale = out.join("phoxal-provider.rs");
-        if stale.is_file() {
-            fs::remove_file(&stale).map_err(|source| Error::Path {
-                path: stale.clone(),
-                source,
-            })?;
+        // The standard endpoint surface also travels as a field fragment:
+        // an explicitly authored contract in this package splices it in, so
+        // standard capability endpoints and component-specific endpoints
+        // assemble into one Runtime contract without repetition.
+        fragment = standard_endpoint_fragment(resolved);
+        write_stable(
+            &out.join("phoxal-standard-endpoints.rs"),
+            fragment.as_bytes(),
+        )?;
+    } else {
+        // A removed or renamed manifest must not leave stale attachment of
+        // either generated file.
+        for name in ["phoxal-provider.rs", "phoxal-standard-endpoints.rs"] {
+            let stale = out.join(name);
+            if stale.is_file() {
+                fs::remove_file(&stale).map_err(|source| Error::Path {
+                    path: stale.clone(),
+                    source,
+                })?;
+            }
         }
     }
     sync_tree(&candidate_root, &out.join("phoxal-api"))?;
     fs::remove_dir_all(&candidate_root).map_err(|source| Error::Path {
-        path: candidate_root,
+        path: candidate_root.clone(),
         source,
     })?;
-    write_stable(&out.join("phoxal_api.rs"), output.as_bytes())
+    write_stable(&out.join("phoxal_api.rs"), output.as_bytes())?;
+    // OUT_DIR contents are invisible to Cargo's fingerprints, so a changed
+    // generated surface would otherwise leave this crate compiled against
+    // the previous one until a clean build. Digest the emitted surface into
+    // a build directive: the directive participates in the fingerprint, so
+    // capability and document changes reach warm rebuilds in both
+    // directions.
+    println!(
+        "cargo:rustc-env=PHOXAL_GENERATED_SURFACE={:016x}",
+        surface_digest(&[provider.as_bytes(), fragment.as_bytes(), output.as_bytes()])
+    );
+    if self_candidate {
+        // Consumers (integration tests) gate on this cfg so a package
+        // builds without its self-prepared products until they exist.
+        println!("cargo:rustc-check-cfg=cfg(phoxal_self_prepared)");
+        if self_prepared {
+            println!("cargo:rustc-cfg=phoxal_self_prepared");
+        }
+    }
+    Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn add_selection(
     package_root: &Path,
     robot_path: &Path,
     instance: String,
     source: Source,
+    binary: Option<&str>,
     units: &mut Vec<Unit>,
     bindings: &mut Vec<(String, usize)>,
 ) -> Result<(), Error> {
@@ -601,8 +659,18 @@ fn add_selection(
             format!("invalid participant `{instance}`"),
         ));
     }
-    let (root, label) = match source {
-        Source::Package(PackageSourceWrapper { package: source }) => {
+    if let Some(selected) = binary
+        && !identifier(selected)
+    {
+        return Err(input(
+            robot_path,
+            format!("{instance} selects binary `{selected}` with an invalid name"),
+        ));
+    }
+    let (root, label, prepared_dir) = match source {
+        Source::Package(PackageSourceWrapper {
+            package: ref source,
+        }) => {
             if !identifier(&source.name)
                 || !semver::Version::parse(&source.version)
                     .is_ok_and(|parsed| parsed.to_string() == source.version)
@@ -617,17 +685,18 @@ fn add_selection(
                 ));
             }
             let registry = source.registry.as_deref().unwrap_or("phoxal");
+            let tree = package_root
+                .join(".phoxal/registry")
+                .join(registry)
+                .join(&source.name)
+                .join(&source.version);
             (
-                package_root
-                    .join(".phoxal/registry")
-                    .join(registry)
-                    .join(&source.name)
-                    .join(&source.version)
-                    .join("api"),
+                tree.clone(),
                 format!("{} {}", source.name, source.version),
+                crate::prepared::remote_prepared_dir(&tree, binary),
             )
         }
-        Source::Git(GitSourceWrapper { git: source }) => {
+        Source::Git(GitSourceWrapper { git: ref source }) => {
             if !identifier(&source.name)
                 || source.url.trim().is_empty()
                 || source.rev.len() != 40
@@ -642,647 +711,172 @@ fn add_selection(
                     format!("{instance} needs a Git URL and complete commit"),
                 ));
             }
+            let tree = package_root
+                .join(".phoxal/git")
+                .join(&source.name)
+                .join(&source.rev);
             (
-                package_root
-                    .join(".phoxal/git")
-                    .join(&source.name)
-                    .join(&source.rev)
-                    .join("api"),
+                tree.clone(),
                 format!("{} @ {}", source.name, source.rev),
+                crate::prepared::remote_prepared_dir(&tree, binary),
             )
         }
-        Source::Path(PathSource { path }) => {
+        Source::Path(PathSource { ref path }) => {
             if path.as_os_str().is_empty() || !path.is_relative() {
                 return Err(input(
                     robot_path,
                     format!("{instance} local source must be a nonempty relative path"),
                 ));
             }
-            (package_root.join(path).join("api"), "local path".to_owned())
+            (
+                package_root.join(path),
+                "local path".to_owned(),
+                crate::prepared::local_prepared_dir(package_root, path, binary),
+            )
         }
     };
-    if root.is_dir() {
-        println!("cargo:rerun-if-changed={}", root.display());
-    }
-    // A built-in-only contract has no api/ directory; its declaration still
-    // selects the participant.  Track the declaration for rebuilds without
-    // leaving a permanently dirty marker on packages without one.
-    let package = root
-        .parent()
-        .ok_or_else(|| input(&root, format!("{instance} source has no package root")))?;
-    let declaration = unit_declaration(package)?;
-    if let Some((_, path)) = &declaration {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
-    if !root.is_dir() && declaration.is_none() {
-        let message = if root.starts_with(package_root.join(".phoxal")) {
-            format!(
-                "Phoxal contracts are not prepared for {instance} {label}. Run `cargo phoxal prepare` from the robot project root."
-            )
-        } else {
-            format!(
-                "local API directory for {instance} is missing: {}",
-                root.display()
-            )
-        };
-        return Err(input(&root, message));
-    }
-    let index = units
-        .iter()
-        .position(|unit| unit.root == root)
-        .unwrap_or_else(|| {
-            let index = units.len();
-            units.push(Unit {
-                root,
-                label: format!("{instance} {label}"),
-                declaration,
-            });
-            index
+    if prepared_dir.join(crate::prepared::ENDPOINTS_FILE).is_file() {
+        // Composition prepared this participant's Rust contract from its
+        // compiled artifact; the brain binds through those products.
+        let contract = crate::prepared::read_prepared(&prepared_dir)?;
+        println!("cargo:rerun-if-changed={}", prepared_dir.display());
+        let index = units.len();
+        units.push(Unit {
+            root: prepared_dir,
+            label: format!("{instance} {label}"),
+            declaration: None,
+            prepared: Some(contract),
+            bindings_only: false,
         });
-    bindings.push((instance, index));
-    Ok(())
+        bindings.push((instance, index));
+        return Ok(());
+    }
+    // A robot-owned adapter target selects the robot package itself; while
+    // that target is being built its own prepared products do not exist
+    // yet. Nothing in the robot's generated API needs the adapter's
+    // instance module, so the selection is skipped until preparation
+    // completes and a later build binds it.
+    if let Source::Path(PathSource { path }) = source {
+        let self_root = package_root
+            .canonicalize()
+            .unwrap_or_else(|_| package_root.to_path_buf());
+        if package_root
+            .join(path)
+            .canonicalize()
+            .is_ok_and(|selected| selected == self_root)
+        {
+            return Ok(());
+        }
+    }
+    Err(input(
+        &root,
+        format!(
+            "Phoxal contracts are not prepared for {instance} {label}. Run `cargo phoxal prepare` from the robot project root."
+        ),
+    ))
 }
 
-fn compile(
-    unit: &Unit,
+/// Generates one prepared unit's types and endpoint constants from its
+/// extracted descriptor closure, without protoc or authored sources.
+fn compile_prepared(
+    prepared: &crate::prepared::PreparedContract,
     target: &Path,
     index: usize,
-    track_changes: bool,
-    resolution_pool: Option<&DescriptorPool>,
 ) -> Result<CompiledUnit, Error> {
-    let declaration = unit.declaration.as_ref();
+    emit_prepared_unit(prepared, target, index, &BTreeSet::new(), false)
+}
 
-    let mut protos = Vec::new();
-    discover(&unit.root, &mut protos, track_changes)?;
-    let builtin_robotics = declaration
-        .is_some_and(|(document, _)| document.references_package("phoxal.robotics.v1"))
-        && !unit
-            .root
-            .join("phoxal/robotics/v1/robotics.proto")
-            .is_file();
-    let mut inputs = protos.clone();
-    if builtin_robotics {
-        // A YAML-only reference to the built-in robotics vocabulary supplies
-        // the canonical schema as a generation root so its descriptors stay
-        // in the retained closure without an authored copy.
-        inputs.push(crate::include_dir().join("phoxal/robotics/v1/robotics.proto"));
-        inputs.sort();
-    }
-    if inputs.is_empty() {
-        let manifest = declaration
-            .map(|(document, path)| {
-                manifest::resolve_document(
-                    document,
-                    resolution_pool.unwrap_or(&DescriptorPool::new()),
-                    path,
-                )
-            })
-            .transpose()?;
-        return Ok(CompiledUnit {
-            manifest,
-            methods: None,
-            pool: DescriptorPool::new(),
-            packages: Vec::new(),
-        });
-    }
-    let original = inputs
-        .iter()
-        .map(|path| Ok((path.clone(), read(path)?)))
-        .collect::<Result<Vec<_>, Error>>()?;
-    let extern_paths: &[(&str, &str)] = if declaration.is_some() {
-        &[(".phoxal.robotics.v1", "::phoxal::robotics")]
-    } else {
-        &[]
-    };
-    // A built-in-only unit has no api/ directory; its package root still
-    // anchors relative include resolution for the helper-supplied schemas.
-    let include_root = if unit.root.is_dir() {
-        unit.root.clone()
-    } else {
-        unit.root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| unit.root.clone())
-    };
-    compile_protos_impl(
-        &inputs,
-        &[include_root.as_path()],
-        target,
-        extern_paths,
-        "phoxal-descriptors.bin",
-        Some("::phoxal::generated::prost"),
-        track_changes,
+/// Compiles the package's own recorded products into bindings only: no
+/// descriptor frames are retained, and definitions the selected
+/// participants already provide are skipped by identity (nested
+/// definitions skip with their parent; other types sharing the package
+/// still emit), so the recorded copies never reach the authoring binary's
+/// compilation or extraction. The remaining generated types keep the
+/// bindings downstream adapters and clients compile against.
+fn compile_prepared_bindings_only(
+    prepared: &crate::prepared::PreparedContract,
+    target: &Path,
+    index: usize,
+    provided: &BTreeSet<String>,
+) -> Result<CompiledUnit, Error> {
+    emit_prepared_unit(prepared, target, index, provided, true)
+}
+
+/// Records every fully qualified definition a pool provides.
+fn collect_definitions(pool: &DescriptorPool, provided: &mut BTreeSet<String>) {
+    provided.extend(
+        pool.all_messages()
+            .map(|message| message.full_name().to_owned()),
+    );
+    provided.extend(
+        pool.all_enums()
+            .map(|enumeration| enumeration.full_name().to_owned()),
+    );
+}
+
+fn emit_prepared_unit(
+    prepared: &crate::prepared::PreparedContract,
+    target: &Path,
+    index: usize,
+    provided: &BTreeSet<String>,
+    bindings_only: bool,
+) -> Result<CompiledUnit, Error> {
+    let pool = DescriptorPool::decode(
+        crate::encode_file_descriptor_set(&prepared.descriptors).as_slice(),
     )?;
-    let mut current_paths = Vec::new();
-    discover(&unit.root, &mut current_paths, track_changes)?;
-    if current_paths != protos
-        || original
-            .iter()
-            .any(|(path, bytes)| !read(path).is_ok_and(|current| current == *bytes))
-    {
-        return Err(input(
-            &unit.root,
-            format!(
-                "{} API sources changed during generation; retry the build",
-                unit.label
-            ),
-        ));
-    }
-    let descriptors = read(&target.join("phoxal-descriptors.bin"))?;
-    let pool = DescriptorPool::decode(descriptors.as_slice())?;
-    let owned = inputs
-        .iter()
-        .filter_map(|path| path.strip_prefix(&unit.root).ok())
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect::<BTreeSet<_>>();
-    if pool
-        .services()
-        .any(|service| owned.contains(service.parent_file().name()))
-    {
-        return Err(input(
-            &unit.root,
-            format!(
-                "{} authors Protobuf service declarations; Protobuf files carry message \
-                 definitions only — declare endpoints in service.yaml, component.yaml \
-                 sections, or the robot.yaml brain section",
-                unit.label
-            ),
-        ));
-    }
-    let resolved_manifest = declaration
-        .map(|(document, path)| {
-            manifest::resolve_document(document, resolution_pool.unwrap_or(&pool), path)
-        })
-        .transpose()?;
-    let mut methods = None;
+    // Generated client types carry the same typed field surface, shared
+    // codec, schema, and retention contract as authored types: robot code
+    // sees typed enumeration fields with checked decoding instead of i32,
+    // and can declare runtime endpoints over generated payload types
+    // directly.
+    let typed = if bindings_only {
+        crate::typed::emit_typed_packages_with_skips(&pool, provided)
+    } else {
+        crate::typed::emit_typed_packages(&pool)
+    };
+    let schema_impls = if bindings_only {
+        crate::schema_impls::emit_schema_impls_without_frames(&pool, provided)
+    } else {
+        crate::schema_impls::emit_schema_impls(&pool)
+    };
     let mut packages = Vec::new();
-    for entry in fs::read_dir(target).map_err(|source| Error::Path {
-        path: target.to_owned(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Path {
-            path: target.to_owned(),
-            source,
-        })?;
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(package_name) = name.strip_suffix(".rs") else {
-            continue;
-        };
-        if package_name == "phoxal.api" || package_name == "google.protobuf" {
-            continue;
+    for (package, mut content) in typed {
+        if let Some(appendix) = schema_impls.get(&package) {
+            content.push_str(appendix);
         }
-        let content =
-            String::from_utf8(read(&path)?).map_err(|error| input(&path, error.to_string()))?;
-        write_stable(&path, content.as_bytes())?;
-        packages.push((
-            package_name.to_owned(),
-            format!("phoxal-api/u{index}/{name}"),
-            content,
-        ));
-    }
-    if let Some(resolved) = &resolved_manifest {
-        methods = Some(emit_methods_module(resolved, index, descriptors.len()));
+        let name = format!("{package}.rs");
+        write_stable(&target.join(&name), content.as_bytes())?;
+        packages.push((package, format!("phoxal-api/u{index}/{name}"), content));
     }
     packages.sort_by(|left, right| left.1.cmp(&right.1));
+    let methods = Some(crate::prepared::emit_prepared_methods(
+        prepared,
+        &pool,
+        "crate::api::types",
+    )?);
     Ok(CompiledUnit {
-        manifest: resolved_manifest,
+        manifest: None,
         methods,
         pool,
         packages,
     })
 }
 
-/// Builds one descriptor pool spanning every unit's Protobuf sources.
-///
-/// A robot project's brain may declare cross-service call requirements whose
-/// request and response messages belong to a selected participant's schema;
-/// YAML type references resolve against the whole composition, while code
-/// generation still emits per-unit trees exactly as before.
-///
-/// Each unit compiles against only its own package root — sharing roots in
-/// one invocation makes protoc reject units that author copies of the same
-/// relative schema path — and the per-unit descriptor sets fold into one
-/// pool.  Folding preserves package-local schema identity: equal relative
-/// file names from independent services rename instead of shadowing,
-/// identical duplicate definitions collapse onto their first provider, and
-/// different definitions under one qualified name are rejected explicitly.
-fn union_resolution_pool(units: &[Unit]) -> Result<Option<DescriptorPool>, Error> {
-    let mut merge = UnionMerge::default();
-    for (unit_index, unit) in units.iter().enumerate() {
-        let mut files = Vec::new();
-        discover(&unit.root, &mut files, false)?;
-        // A participant with no api/ directory still resolves YAML-only
-        // references against the packaged built-in vocabulary, so the union
-        // pool must carry the same schema the per-unit compile would add.
-        let document = unit
-            .declaration
-            .as_ref()
-            .map(|(document, _)| document.clone());
-        let builtin_robotics = document
-            .as_ref()
-            .is_some_and(|document| document.references_package("phoxal.robotics.v1"))
-            && !unit
-                .root
-                .join("phoxal/robotics/v1/robotics.proto")
-                .is_file();
-        if builtin_robotics {
-            files.push(crate::include_dir().join("phoxal/robotics/v1/robotics.proto"));
-        }
-        if files.is_empty() {
-            continue;
-        }
-        let include_root = if unit.root.is_dir() {
-            unit.root.clone()
-        } else {
-            unit.root
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| unit.root.clone())
-        };
-        let set = compile_descriptor_set(
-            &files,
-            &[include_root.as_path()],
-            "phoxal-union-descriptors.bin",
-        )?;
-        merge.fold(unit_index, set)?;
-    }
-    if merge.files.is_empty() {
-        return Ok(None);
-    }
-    let bytes =
-        prost::Message::encode_to_vec(&prost_types::FileDescriptorSet { file: merge.files });
-    DescriptorPool::decode(bytes.as_slice())
-        .map(Some)
-        .map_err(Error::Descriptor)
-}
-
-/// Bookkeeping for folding per-unit descriptor sets into one resolution pool.
-#[derive(Default)]
-struct UnionMerge {
-    files: Vec<prost_types::FileDescriptorProto>,
-    /// Qualified definition -> (providing pool file, kind-tagged identity).
-    definitions: BTreeMap<String, (String, Vec<u8>)>,
-    used_names: BTreeSet<String>,
-}
-
-impl UnionMerge {
-    /// Folds one unit's descriptor set, renaming colliding file names,
-    /// collapsing identical duplicate definitions, and rejecting conflicting
-    /// definitions under one qualified name.
-    fn fold(
-        &mut self,
-        unit_index: usize,
-        set: prost_types::FileDescriptorSet,
-    ) -> Result<(), Error> {
-        // Final names are decided for the whole set first so dependency
-        // rewrites see one consistent mapping; a file whose definitions are
-        // all already present keeps its name and is skipped as a duplicate.
-        let renames: BTreeMap<String, String> = set
-            .file
-            .iter()
-            .filter(|file| self.used_names.contains(file.name()))
-            .filter(|file| !self.definitions_covered(file))
-            .map(|file| {
-                (
-                    file.name().to_owned(),
-                    format!("phoxal-union-{unit_index}/{}", file.name()),
-                )
-            })
-            .collect();
-        let mut stripped: BTreeMap<String, String> = BTreeMap::new();
-        let first_pushed = self.files.len();
-        for mut file in set.file {
-            if let Some(renamed) = renames.get(file.name()).cloned() {
-                file.name = Some(renamed);
-                for dependency in &mut file.dependency {
-                    if let Some(renamed) = renames.get(dependency.as_str()) {
-                        *dependency = renamed.clone();
-                    }
-                }
-            }
-            self.merge_definitions(&mut file, &mut stripped)?;
-            // An emptied duplicate under a taken name disappears; any other
-            // file stays so in-set imports keep resolving (type references
-            // that lost their definitions gain provider edges below).
-            if definitions_remain(&file) || !self.used_names.contains(file.name()) {
-                self.used_names.insert(file.name().to_owned());
-                self.files.push(file);
-            }
-        }
-        // Type references resolve inside each file's dependency closure, so
-        // every file referencing a stripped duplicate gains an edge to the
-        // pool file that still provides that definition.
-        for file in &mut self.files[first_pushed..] {
-            add_provider_dependencies(file, &stripped);
-        }
-        Ok(())
-    }
-
-    fn merge_definitions(
-        &mut self,
-        file: &mut prost_types::FileDescriptorProto,
-        stripped: &mut BTreeMap<String, String>,
-    ) -> Result<(), Error> {
-        let package = file.package().to_owned();
-        let file_name = file.name().to_owned();
-        file.message_type = merge_entries(
-            std::mem::take(&mut file.message_type),
-            &package,
-            "message",
-            &file_name,
-            &mut self.definitions,
-            stripped,
-        )?;
-        file.enum_type = merge_entries(
-            std::mem::take(&mut file.enum_type),
-            &package,
-            "enum",
-            &file_name,
-            &mut self.definitions,
-            stripped,
-        )?;
-        file.service = merge_entries(
-            std::mem::take(&mut file.service),
-            &package,
-            "service",
-            &file_name,
-            &mut self.definitions,
-            stripped,
-        )?;
-        file.extension = merge_entries(
-            std::mem::take(&mut file.extension),
-            &package,
-            "extension",
-            &file_name,
-            &mut self.definitions,
-            stripped,
-        )?;
-        Ok(())
-    }
-
-    /// Whether every top-level definition of the file is already present with
-    /// an identical shape.
-    fn definitions_covered(&self, file: &prost_types::FileDescriptorProto) -> bool {
-        let package = file.package();
-        entries_covered(&file.message_type, package, "message", &self.definitions)
-            && entries_covered(&file.enum_type, package, "enum", &self.definitions)
-            && entries_covered(&file.service, package, "service", &self.definitions)
-            && entries_covered(&file.extension, package, "extension", &self.definitions)
-    }
-}
-
-/// Whether all entries already exist in the merged definitions with equal
-/// shape.
-fn entries_covered<T: prost::Message + NamedEntry>(
-    entries: &[T],
-    package: &str,
-    kind: &'static str,
-    definitions: &BTreeMap<String, (String, Vec<u8>)>,
-) -> bool {
-    entries.iter().all(|entry| {
-        definitions
-            .get(&qualified(package, entry.entry_name()))
-            .is_some_and(|(_, existing)| existing == &identity(kind, entry))
+fn compile(unit: &Unit, target: &Path, index: usize) -> Result<CompiledUnit, Error> {
+    // Capability types resolve from the SDK vocabulary. Adjacent source
+    // trees are unrelated to this generated standard surface.
+    let (document, path) = unit
+        .declaration
+        .as_ref()
+        .ok_or_else(|| input(&unit.root, "capability unit without a document"))?;
+    let manifest = manifest::resolve_standard_document(document, path)?;
+    let _ = target;
+    Ok(CompiledUnit {
+        methods: Some(emit_standard_methods_module(&manifest, index)),
+        manifest: Some(manifest),
+        pool: DescriptorPool::new(),
+        packages: Vec::new(),
     })
-}
-
-/// A named top-level descriptor entry (message, enum, service, extension),
-/// delegating to the generated Protobuf accessor.
-trait NamedEntry {
-    fn entry_name(&self) -> &str;
-}
-
-impl NamedEntry for prost_types::DescriptorProto {
-    fn entry_name(&self) -> &str {
-        self.name()
-    }
-}
-
-impl NamedEntry for prost_types::EnumDescriptorProto {
-    fn entry_name(&self) -> &str {
-        self.name()
-    }
-}
-
-impl NamedEntry for prost_types::ServiceDescriptorProto {
-    fn entry_name(&self) -> &str {
-        self.name()
-    }
-}
-
-impl NamedEntry for prost_types::FieldDescriptorProto {
-    fn entry_name(&self) -> &str {
-        self.name()
-    }
-}
-
-fn qualified(package: &str, name: &str) -> String {
-    format!("{package}.{name}")
-}
-
-/// Kind-tagged encoded identity of one definition; equal bytes mean equal
-/// shape, and the tag keeps a message and an enum of one name distinct.
-fn identity(kind: &str, entry: &impl prost::Message) -> Vec<u8> {
-    let mut identity = kind.as_bytes().to_vec();
-    identity.push(b':');
-    identity.extend_from_slice(&entry.encode_to_vec());
-    identity
-}
-
-fn merge_entries<T: prost::Message + NamedEntry>(
-    entries: Vec<T>,
-    package: &str,
-    kind: &'static str,
-    file_name: &str,
-    definitions: &mut BTreeMap<String, (String, Vec<u8>)>,
-    stripped: &mut BTreeMap<String, String>,
-) -> Result<Vec<T>, Error> {
-    let mut kept = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let qualified = qualified(package, entry.entry_name());
-        let identity = identity(kind, &entry);
-        match definitions.get(&qualified) {
-            Some((provider, existing)) if *existing == identity => {
-                stripped.insert(qualified, provider.clone());
-            }
-            Some((provider, _)) => {
-                return Err(Error::DescriptorConflict {
-                    identity: qualified,
-                    first: provider.clone(),
-                    second: file_name.to_owned(),
-                });
-            }
-            None => {
-                definitions.insert(qualified, (file_name.to_owned(), identity));
-                kept.push(entry);
-            }
-        }
-    }
-    Ok(kept)
-}
-
-/// Whether any top-level definition remains in the file.
-fn definitions_remain(file: &prost_types::FileDescriptorProto) -> bool {
-    !file.message_type.is_empty()
-        || !file.enum_type.is_empty()
-        || !file.service.is_empty()
-        || !file.extension.is_empty()
-}
-
-/// Appends dependency edges so references to stripped duplicates resolve
-/// within this file's closure.
-fn add_provider_dependencies(
-    file: &mut prost_types::FileDescriptorProto,
-    stripped: &BTreeMap<String, String>,
-) {
-    let mut providers: Vec<String> = Vec::new();
-    for reference in referenced_definitions(file) {
-        if let Some(provider) = stripped.get(&reference)
-            && !file.dependency.contains(provider)
-            && !providers.contains(provider)
-        {
-            providers.push(provider.clone());
-        }
-    }
-    file.dependency.extend(providers);
-}
-
-/// Fully-qualified type names referenced by fields, extensions, and service
-/// methods (protoc emits them with a leading dot).
-fn referenced_definitions(file: &prost_types::FileDescriptorProto) -> Vec<String> {
-    fn walk_message(message: &prost_types::DescriptorProto, references: &mut Vec<String>) {
-        for field in message.field.iter().chain(&message.extension) {
-            for name in field.type_name.iter().chain(&field.extendee) {
-                references.push(name.trim_start_matches('.').to_owned());
-            }
-        }
-        for nested in &message.nested_type {
-            walk_message(nested, references);
-        }
-    }
-    let mut references = Vec::new();
-    for message in &file.message_type {
-        walk_message(message, &mut references);
-    }
-    for field in &file.extension {
-        for name in field.type_name.iter().chain(&field.extendee) {
-            references.push(name.trim_start_matches('.').to_owned());
-        }
-    }
-    for service in &file.service {
-        for method in &service.method {
-            for name in method.input_type.iter().chain(&method.output_type) {
-                references.push(name.trim_start_matches('.').to_owned());
-            }
-        }
-    }
-    references
-}
-
-/// Scratch directory sequence: the process id is shared by every concurrent
-/// caller in one process (parallel tests, workspace builds) and the clock can
-/// repeat a tick, so uniqueness is decided by a counter.
-static SCRATCH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Returns a fresh scratch directory unique across concurrent callers.
-fn unique_scratch(prefix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        SCRATCH_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ))
-}
-
-/// Compiles one descriptor set for schema resolution only (no code emitted).
-fn compile_descriptor_set(
-    files: &[PathBuf],
-    include_roots: &[&Path],
-    descriptor_name: &str,
-) -> Result<prost_types::FileDescriptorSet, Error> {
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    let scratch = unique_scratch("phoxal-union");
-    fs::create_dir_all(&scratch).map_err(|source| Error::Path {
-        path: scratch.clone(),
-        source,
-    })?;
-    let result = (|| -> Result<prost_types::FileDescriptorSet, Error> {
-        let descriptor_path = scratch.join(descriptor_name);
-        let mut command = std::process::Command::new(&protoc);
-        command.arg("--include_imports").arg(format!(
-            "--descriptor_set_out={}",
-            descriptor_path.display()
-        ));
-        for root in include_roots {
-            command.arg(format!("--proto_path={}", root.display()));
-        }
-        command.arg(format!("--proto_path={}", crate::include_dir().display()));
-        command.arg(format!(
-            "--proto_path={}",
-            protoc_bin_vendored::include_path()?.display()
-        ));
-        command.args(files);
-        let output = command.output().map_err(|source| Error::Path {
-            path: scratch.clone(),
-            source,
-        })?;
-        let bytes = if output.status.success() {
-            fs::read(&descriptor_path).ok()
-        } else {
-            None
-        };
-        if !output.status.success() {
-            return Err(Error::ProtocFailed(
-                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            ));
-        }
-        let Some(bytes) = bytes.filter(|bytes| !bytes.is_empty()) else {
-            return Ok(prost_types::FileDescriptorSet::default());
-        };
-        prost::Message::decode(bytes.as_slice()).map_err(|error| {
-            Error::ProtocFailed(format!("union descriptor set is malformed: {error}"))
-        })
-    })();
-    fs::remove_dir_all(&scratch).map_err(|source| Error::Path {
-        path: scratch.clone(),
-        source,
-    })?;
-    result
-}
-
-fn discover(directory: &Path, files: &mut Vec<PathBuf>, track_changes: bool) -> Result<(), Error> {
-    if !directory.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(directory).map_err(|source| Error::Path {
-        path: directory.to_owned(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Path {
-            path: directory.to_owned(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|source| Error::Path {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(input(&path, "API sources may not contain symlinks"));
-        }
-        if metadata.is_dir() {
-            discover(&path, files, track_changes)?;
-        } else if metadata.is_file() && path.extension().is_some_and(|ext| ext == "proto") {
-            if track_changes {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
-            files.push(path);
-        }
-    }
-    files.sort();
-    Ok(())
 }
 
 fn insert_package(
@@ -1399,6 +993,9 @@ fn item_key(item: &syn::Item) -> Option<String> {
         syn::Item::Struct(value) => Some(format!("struct {}", value.ident)),
         syn::Item::Enum(value) => Some(format!("enum {}", value.ident)),
         syn::Item::Mod(value) => Some(format!("mod {}", value.ident)),
+        // Anonymous consts are per-definition retention frames: never
+        // deduplicated, since each guards a distinct schema record.
+        syn::Item::Const(value) if value.ident == "_" => None,
         syn::Item::Const(value) => Some(format!("const {}", value.ident)),
         syn::Item::Static(value) => Some(format!("static {}", value.ident)),
         syn::Item::Type(value) => Some(format!("type {}", value.ident)),
@@ -1430,171 +1027,31 @@ fn emit_tree(node: &Module, output: &mut String, depth: usize) {
     }
 }
 
-/// One robot-facing endpoint of a deployable service.
-enum BindingEndpoint {
-    Observation {
-        function: String,
-        constant: String,
-        response_path: String,
-    },
-    Call {
-        function: String,
-        constant: String,
-        request_path: String,
-        response_path: String,
-        leased: bool,
-    },
-}
-
-/// The normalized robot-facing shape of one resolved service document.
-struct ServiceBinding {
-    /// Crate path of the module holding this service's descriptor constants.
-    method_path: String,
-    message_types: BTreeMap<String, BTreeSet<String>>,
-    endpoints: Vec<BindingEndpoint>,
-}
-
-fn service_binding(unit: &CompiledUnit, index: usize) -> Option<ServiceBinding> {
-    let resolved = unit.manifest.as_ref()?;
-    let mut message_types: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for message in resolved
-        .outputs
-        .iter()
-        .map(|output| &output.message)
-        .chain(
-            resolved
-                .inputs
-                .iter()
-                .filter(|input| input.lease_valid_for_ms.is_some())
-                .map(|input| &input.message),
-        )
-        .chain(resolved.operations.iter().map(|op| &op.response))
-        .chain(resolved.operations.iter().map(|op| &op.request))
-    {
-        let short = message
-            .fqn
-            .rsplit('.')
-            .next()
-            .unwrap_or(&message.fqn)
-            .to_owned();
-        if message.fqn != "google.protobuf.Empty" {
-            message_types
-                .entry(short)
-                .or_default()
-                .insert(message.rust_path.clone());
-        }
-    }
-    let mut endpoints = Vec::new();
-    for output in &resolved.outputs {
-        endpoints.push(BindingEndpoint::Observation {
-            function: output.name.clone(),
-            constant: output.name.to_shouty_snake_case(),
-            response_path: output.message.rust_path.clone(),
-        });
-    }
-    for input in &resolved.inputs {
-        if input.lease_valid_for_ms.is_some() {
-            endpoints.push(BindingEndpoint::Call {
-                function: input.name.clone(),
-                constant: input.name.to_shouty_snake_case(),
-                request_path: input.message.rust_path.clone(),
-                response_path: "::phoxal::contract::Empty".to_owned(),
-                leased: true,
-            });
-        }
-    }
-    for operation in &resolved.operations {
-        endpoints.push(BindingEndpoint::Call {
-            function: operation.name.clone(),
-            constant: operation.name.to_shouty_snake_case(),
-            request_path: operation.request.rust_path.clone(),
-            response_path: operation.response.rust_path.clone(),
-            leased: false,
-        });
-    }
-    Some(ServiceBinding {
-        method_path: format!("crate::api::service_methods::u{index}"),
-        message_types,
-        endpoints,
-    })
-}
-
-fn emit_binding(
-    output: &mut String,
-    names: &mut BTreeSet<String>,
-    instance: &str,
-    binding: &ServiceBinding,
-) -> Result<(), Error> {
-    let module = instance.to_snake_case();
-    if ["types", "calls", "projections", "service_methods"].contains(&module.as_str()) {
-        return Err(input(
-            Path::new("robot.yaml"),
-            format!(
-                "API instance `{instance}` collides with the fixed generated module `{module}`"
-            ),
-        ));
-    }
-    if !names.insert(module.clone()) {
-        return Err(input(
-            Path::new("robot.yaml"),
-            format!("API instance `{instance}` collides with another generated module"),
-        ));
-    }
-    output.push_str(&format!("pub mod {module} {{\n"));
-    for paths in binding.message_types.values() {
-        if let Some(path) = (paths.len() == 1).then(|| paths.iter().next()).flatten() {
-            output.push_str(&format!("    pub use {path};\n"));
-        }
-    }
-    for endpoint in &binding.endpoints {
-        let method_path = &binding.method_path;
-        match endpoint {
-            BindingEndpoint::Observation {
-                function,
-                constant,
-                response_path,
-            } => {
-                output.push_str(&format!(
-                    "    /// The typed contract method behind [`{function}`].\n    pub const {constant}: ::phoxal::contract::ObservationMethod<{response_path}> = {method_path}::{constant};\n    #[must_use]\n    pub fn {function}() -> ::phoxal::contract::Observation<{response_path}> {{\n        {method_path}::{constant}.bind({instance:?})\n    }}\n"
-                ));
-            }
-            BindingEndpoint::Call {
-                function,
-                constant,
-                request_path,
-                response_path,
-                leased,
-            } => {
-                output.push_str(&format!(
-                    "    /// The typed contract method behind [`{function}`].\n    pub const {constant}: ::phoxal::contract::CallMethod<{request_path}, {response_path}> = {method_path}::{constant};\n    #[must_use]\n    pub fn {function}(request: {request_path}) -> ::phoxal::contract::Call<{request_path}, {response_path}> {{\n        {method_path}::{constant}.bind({instance:?}, request)\n    }}\n"
-                ));
-                if *leased {
-                    output.push_str(&format!(
-                        "    #[must_use]\n    pub fn withdraw_{function}() -> ::phoxal::contract::Withdraw<{request_path}, {response_path}> {{\n        {method_path}::{constant}.withdraw({instance:?})\n    }}\n"
-                    ));
-                }
-            }
-        }
-    }
-    output.push_str("}\n");
-    Ok(())
-}
-
-/// Generates one unit's endpoint descriptor constants.
-///
-/// Data endpoints, leased inputs, operations, and calls each receive one
 /// inert descriptor constant so robot builds and provider builds share one
 /// endpoint identity.  Data endpoints are keyed by their qualified message
 /// identity; operations and calls are keyed by their declared contract.
-fn emit_methods_module(resolved: &ResolvedService, index: usize, descriptor_len: usize) -> String {
+/// Emits the endpoint constants of a capability-derived unit.
+///
+/// Standard types carry no compiled descriptor sets: the vocabulary's
+/// schema frames are linker-retained through the generated retention
+/// function, so the artifact's descriptor closure is assembled from those
+/// frames exactly like a Rust-authored contract's.
+fn emit_standard_methods_module(resolved: &ResolvedService, _index: usize) -> String {
     let mut output = String::from("// @generated by phoxal-build; do not edit.\n");
-    output.push_str(&format!(
-        "#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\npub(crate) static DESCRIPTOR_SET: [u8; {}] = ::phoxal::contract::descriptor_frame::<{}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/phoxal-api/u{index}/phoxal-descriptors.bin\")));\n",
-        descriptor_len + 16,
-        descriptor_len + 16,
-    ));
-    let descriptor = "&crate::api::service_methods::u{index}::DESCRIPTOR_SET";
-    let descriptor = descriptor.replace("{index}", &index.to_string());
+    let mut retained = BTreeSet::<&str>::new();
+    let mut retention = Vec::new();
+    fn retain<'a>(
+        message: &'a ResolvedMessage,
+        retained: &mut BTreeSet<&'a str>,
+        retention: &mut Vec<String>,
+    ) {
+        if retained.insert(message.fqn.as_str()) {
+            retention.push(format!(
+                "    <{} as ::phoxal::schema::MessageSchema>::retain_schema()\n",
+                message.rust_path
+            ));
+        }
+    }
     for output_endpoint in &resolved.outputs {
         let name = &output_endpoint.name;
         let constant = name.to_shouty_snake_case();
@@ -1603,7 +1060,7 @@ fn emit_methods_module(resolved: &ResolvedService, index: usize, descriptor_len:
             .lease_valid_for_ms
             .map_or_else(|| "None".to_owned(), |value| format!("Some({value})"));
         output.push_str(&format!(
-            "pub const {constant}: ::phoxal::contract::ObservationMethod<{}> = ::phoxal::contract::ObservationMethod::new({:?}, {:?}, {:?}, \"google.protobuf.Empty\", {:?}, {}, {}, {descriptor});\n",
+            "pub const {constant}: ::phoxal::contracts::ObservationMethod<{}> = ::phoxal::contracts::ObservationMethod::new({:?}, {:?}, {:?}, \"google.protobuf.Empty\", {:?}, {}, {}, &[]);\n",
             message.rust_path,
             message.fqn,
             name,
@@ -1612,6 +1069,7 @@ fn emit_methods_module(resolved: &ResolvedService, index: usize, descriptor_len:
             output_endpoint.retained_latest,
             lease
         ));
+        retain(message, &mut retained, &mut retention);
     }
     for input in &resolved.inputs {
         let Some(valid_for_ms) = input.lease_valid_for_ms else {
@@ -1620,88 +1078,29 @@ fn emit_methods_module(resolved: &ResolvedService, index: usize, descriptor_len:
         let name = &input.name;
         let constant = name.to_shouty_snake_case();
         output.push_str(&format!(
-            "pub const {constant}: ::phoxal::contract::CallMethod<{}, ::phoxal::contract::Empty> = ::phoxal::contract::CallMethod::new({:?}, {:?}, {:?}, {:?}, \"google.protobuf.Empty\", Some({valid_for_ms}), {descriptor});\n",
+            "pub const {constant}: ::phoxal::contracts::CallMethod<{}, ::phoxal::contracts::Empty> = ::phoxal::contracts::CallMethod::new({:?}, {:?}, {:?}, {:?}, \"google.protobuf.Empty\", Some({valid_for_ms}), &[]);\n",
             input.message.rust_path,
             input.message.fqn,
             name,
             name,
             input.message.fqn
         ));
+        retain(&input.message, &mut retained, &mut retention);
     }
-    for endpoint in resolved.operations.iter().chain(resolved.calls.iter()) {
-        let name = &endpoint.name;
-        let constant = name.to_shouty_snake_case();
-        output.push_str(&format!(
-            "pub const {constant}: ::phoxal::contract::CallMethod<{}, {}> = ::phoxal::contract::CallMethod::new({:?}, {:?}, {:?}, {:?}, {:?}, None, {descriptor});\n",
-            endpoint.request.rust_path,
-            endpoint.response.rust_path,
-            endpoint.contract,
-            name,
-            name,
-            endpoint.request.fqn,
-            endpoint.response.fqn
-        ));
+    if !retention.is_empty() {
+        let first = retention.remove(0);
+        output.push_str(
+            "\n#[doc(hidden)]\n#[allow(dead_code, reason = \"retains the standard vocabulary schema frames in this artifact\")]\npub(crate) fn retain_standard_schemas() -> usize {\n",
+        );
+        output.push_str(first.trim_start());
+        for line in retention {
+            output.push_str(&format!("    +{line}"));
+        }
+        output.push_str(
+            "\n}\n#[used]\nstatic PHOXAL_STANDARD_SCHEMA_RETENTION: fn() -> usize = retain_standard_schemas;\n",
+        );
     }
     output
-}
-
-/// Emits the author-facing module of composition-bound requirement handles
-/// declared by the local service document.
-fn emit_calls_module(output: &mut String, resolved: &ResolvedService) {
-    if resolved.calls.is_empty() {
-        return;
-    }
-    output.push_str(
-        "/// Composition-bound requirement handles declared by this package's\n\
-         /// service document.  Each call stays inert until the output\n\
-         /// transaction accepts it; `robot.yaml` selects the provider\n\
-         /// instance and the typed completion arrives in a later input cut.\n\
-         pub mod calls {\n",
-    );
-    for call in &resolved.calls {
-        let constant = call.name.to_shouty_snake_case();
-        output.push_str(&format!(
-            "    /// Stages one call on the composition-bound `{}` requirement.\n    #[must_use]\n    pub fn {name}(request: {request}) -> ::phoxal::contract::Call<{request}, {response}> {{\n        super::service_methods::u0::{constant}.bind(\"\", request)\n    }}\n",
-            call.name,
-            name = call.name,
-            request = call.request.rust_path,
-            response = call.response.rust_path,
-        ));
-    }
-    output.push_str("}\n");
-}
-
-/// Emits the author-facing projection hooks for a service document that
-/// declares projected outputs.
-fn emit_projections_module(output: &mut String, resolved: &ResolvedService) {
-    let projections: Vec<_> = resolved
-        .outputs
-        .iter()
-        .filter(|endpoint| endpoint.projection)
-        .collect();
-    if projections.is_empty() {
-        return;
-    }
-    output.push_str(
-        "/// State-projection hooks owned by the service implementation.\n\
-         /// The generator owns registration, bounds, and invocation timing;\n\
-         /// each hook owns payload construction from private state.\n\
-         pub mod projections {\n    pub trait Projections {\n        /// The runtime state these hooks project from.\n        type State;\n",
-    );
-    for endpoint in &projections {
-        let returns = if endpoint.lease_valid_for_ms.is_some() {
-            format!("::std::option::Option<{}>", endpoint.message.rust_path)
-        } else {
-            endpoint.message.rust_path.clone()
-        };
-        output.push_str(&format!(
-            "        /// Projects the `{}` output.\n        fn {name}(&self, state: &Self::State) -> {returns};\n",
-            endpoint.name,
-            name = endpoint.name,
-            returns = returns,
-        ));
-    }
-    output.push_str("    }\n}\n");
 }
 
 fn identifier(value: &str) -> bool {
@@ -1739,6 +1138,23 @@ fn write_stable(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         path: path.to_owned(),
         source,
     })
+}
+
+/// FNV-1a digest over the generated surface pieces, separated so adjacent
+/// piece boundaries cannot alias. Change detection only; not cryptographic.
+fn surface_digest(parts: &[&[u8]]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for part in parts {
+        for byte in *part {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 fn sync_tree(candidate: &Path, published: &Path) -> Result<(), Error> {
@@ -1815,422 +1231,41 @@ mod tests {
         );
         assert!(invalid.is_err());
     }
-
-    #[test]
-    fn equivalent_shared_messages_merge_across_manifest_services()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        for (name, extra) in [
-            ("alpha", ""),
-            ("beta", "message Additional { string value = 1; }"),
-        ] {
-            let package = directory.path().join(name);
-            fs::create_dir_all(package.join("api"))?;
-            fs::write(
-                package.join("api/shared.proto"),
-                format!(
-                    "syntax = \"proto3\"; package proof.shared.v1; message Shared {{ string value = 1; }} {extra}"
-                ),
-            )?;
-            fs::write(
-                package.join("api/service.proto"),
-                format!(
-                    "syntax = \"proto3\"; package proof.{name}.v1; import \"shared.proto\"; message Reading {{ proof.shared.v1.Shared shared = 1; }}"
-                ),
-            )?;
-            fs::write(
-                package.join("service.yaml"),
-                "schema: phoxal/service/v0\noutputs:\n  reading:\n    type: proof.{name}.v1.Reading\n    delivery: latest\n    retained_latest: true\n    max_bytes: 1024\n"
-                    .replace("{name}", name),
-            )?;
-        }
-        let robot = directory.path().join("robot");
-        let out = directory.path().join("out");
-        fs::create_dir_all(&robot)?;
-        fs::create_dir_all(&out)?;
-        fs::write(
-            robot.join("robot.yaml"),
-            "schema: phoxal/robot/v0\nrobot: { id: rover }\nservices:\n  alpha:\n    source: { path: ../alpha }\n  beta:\n    source: { path: ../beta }\n",
-        )?;
-        generate(&robot, &out, None)?;
-        let merged = fs::read_to_string(out.join("phoxal-api/merged/proof.shared.v1.rs"))?;
-        assert_eq!(merged.matches("pub struct Shared").count(), 1);
-        assert_eq!(merged.matches("pub struct Additional").count(), 1);
-        fs::write(
-            directory.path().join("beta/api/shared.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Shared { int64 value = 1; } message Additional { string value = 1; }",
-        )?;
-        let error = generate(&robot, &out, None).expect_err("conflicting shared symbol must fail");
-        let message = error.to_string();
-        assert!(
-            message.contains("proof.shared.v1.Shared"),
-            "the rejection names the conflicting symbol, got: {message}"
-        );
-        Ok(())
-    }
-
-    /// Writes one manifest-authored service whose output references its own
-    /// qualified `Reading` message from the given relative proto file.
-    fn manifest_service(
-        directory: &Path,
-        name: &str,
-        file_name: &str,
-        proto: &str,
-    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-        let package = directory.join(name);
-        fs::create_dir_all(package.join("api"))?;
-        fs::write(package.join("api").join(file_name), proto)?;
-        fs::write(
-            package.join("service.yaml"),
-            format!(
-                "schema: phoxal/service/v0\noutputs:\n  reading:\n    type: proof.{name}.v1.Reading\n    delivery: latest\n    retained_latest: true\n    max_bytes: 1024\n"
-            ),
-        )?;
-        Ok(package)
-    }
-
-    fn compose(directory: &Path, services: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-        let robot = directory.join("robot");
-        let out = directory.join("out");
-        fs::create_dir_all(&robot)?;
-        fs::create_dir_all(&out)?;
-        let selections = services
-            .iter()
-            .map(|name| format!("  {name}:\n    source: {{ path: ../{name} }}\n"))
-            .collect::<String>();
-        fs::write(
-            robot.join("robot.yaml"),
-            format!("schema: phoxal/robot/v0\nrobot: {{ id: rover }}\nservices:\n{selections}"),
-        )?;
-        generate(&robot, &out, None)?;
-        Ok(())
-    }
-
-    #[test]
-    fn compatible_shared_definitions_merge_across_manifest_services()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        // alpha owns the shared vocabulary; beta carries an identical copy
-        // under a different relative filename and references it.
-        manifest_service(
-            directory.path(),
-            "alpha",
-            "messages.proto",
-            "syntax = \"proto3\"; package proof.alpha.v1; import \"common.proto\"; message Reading { double value = 1; proof.shared.v1.Common common = 2; }\n",
-        )?;
-        fs::write(
-            directory.path().join("alpha/api/common.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Common { string value = 1; }\n",
-        )?;
-        manifest_service(
-            directory.path(),
-            "beta",
-            "messages.proto",
-            "syntax = \"proto3\"; package proof.beta.v1; import \"shared.proto\"; message Reading { double value = 1; proof.shared.v1.Common common = 2; }\n",
-        )?;
-        fs::write(
-            directory.path().join("beta/api/shared.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Common { string value = 1; }\n",
-        )?;
-        // gamma carries the shared copy under alpha's relative filename: the
-        // whole-file duplicate collapses onto the kept provider.
-        manifest_service(
-            directory.path(),
-            "gamma",
-            "messages.proto",
-            "syntax = \"proto3\"; package proof.gamma.v1; import \"common.proto\"; message Reading { double value = 1; proof.shared.v1.Common common = 2; }\n",
-        )?;
-        fs::write(
-            directory.path().join("gamma/api/common.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Common { string value = 1; }\n",
-        )?;
-        compose(directory.path(), &["alpha", "beta", "gamma"])?;
-        let api = fs::read_to_string(directory.path().join("out/phoxal_api.rs"))?;
-        assert_eq!(
-            api.matches("proof.shared.v1.rs").count(),
-            1,
-            "identical shared definitions collapse to one included module: {api}"
-        );
-        for instance in ["alpha", "beta", "gamma"] {
-            assert!(
-                api.contains(&format!("pub mod {instance}")),
-                "every service binds through the merged pool"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn conflicting_shared_definitions_are_rejected_explicitly()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        manifest_service(
-            directory.path(),
-            "alpha",
-            "messages.proto",
-            "syntax = \"proto3\"; package proof.alpha.v1; import \"common.proto\"; message Reading { double value = 1; proof.shared.v1.Common common = 2; }\n",
-        )?;
-        fs::write(
-            directory.path().join("alpha/api/common.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Common { string value = 1; }\n",
-        )?;
-        manifest_service(
-            directory.path(),
-            "beta",
-            "messages.proto",
-            "syntax = \"proto3\"; package proof.beta.v1; import \"shared.proto\"; message Reading { double value = 1; proof.shared.v1.Common common = 2; }\n",
-        )?;
-        fs::write(
-            directory.path().join("beta/api/shared.proto"),
-            "syntax = \"proto3\"; package proof.shared.v1; message Common { int64 value = 1; }\n",
-        )?;
-        let error = compose(directory.path(), &["alpha", "beta"])
-            .expect_err("conflicting shared definition must fail");
-        assert!(
-            error.to_string().contains("proof.shared.v1.Common"),
-            "the rejection names the conflicting symbol, got: {error}"
-        );
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod manifest_tests {
     use super::*;
 
-    const CONSUMER_PROTO: &str = "syntax = \"proto3\"; package example.contract_evaluation.v1; message ConsumerStatus { string phase = 1; }\n";
-    const CONSUMER_MANIFEST: &str = "schema: phoxal/service/v0\ninputs:\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    delivery: latest\n    required: true\n    max_age_ms: 100\n    max_bytes: 1024\noutputs:\n  status:\n    type: example.contract_evaluation.v1.ConsumerStatus\n    delivery: latest\n    retained_latest: true\n    max_bytes: 4096\noperations:\n  inspect:\n    contract: example.contract_evaluation.v1.InspectConsumer\n    request: google.protobuf.Empty\n    response: example.contract_evaluation.v1.ConsumerStatus\n    max_items: 8\n    max_bytes: 4096\ncalls:\n  read_encoder:\n    contract: example.contract_evaluation.v1.ReadEncoder\n    request: google.protobuf.Empty\n    response: phoxal.robotics.v1.EncoderSample\n    required: true\n    max_items: 8\n    max_bytes: 1024\n";
-
-    fn manifest_package(
-        directory: &std::path::Path,
-    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-        let package = directory.join("consumer");
-        fs::create_dir_all(package.join("api/example/contract_evaluation/v1"))?;
-        fs::write(
-            package.join("api/example/contract_evaluation/v1/messages.proto"),
-            CONSUMER_PROTO,
-        )?;
-        fs::write(package.join("service.yaml"), CONSUMER_MANIFEST)?;
-        Ok(package)
-    }
-
-    fn generate_package(package: &Path) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let out = package.parent().unwrap().join("out");
-        fs::create_dir_all(&out)?;
-        generate(package, &out, None)?;
-        Ok((
-            fs::read_to_string(out.join("phoxal_api.rs"))?,
-            fs::read_to_string(out.join("phoxal-provider.rs"))?,
-        ))
-    }
-
-    #[test]
-    fn manifest_generates_provider_and_instance_bindings() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let directory = tempfile::tempdir()?;
-        let package = manifest_package(directory.path())?;
-        let (api, provider) = generate_package(&package)?;
-        assert!(
-            provider.contains("pub struct Inputs"),
-            "provider module declares the generated input transaction"
-        );
-        assert!(provider.contains("Latest<::phoxal::robotics::EncoderSample>"));
-        assert!(provider.contains("commands_port()"));
-        assert!(provider.contains("Completions"));
-        assert!(
-            api.contains("pub mod calls"),
-            "requirement handles live in the documented calls module"
-        );
-        assert!(api.contains("pub fn read_encoder(request"));
-        assert!(api.contains("bind(\"\", request)"));
-        assert!(
-            !api.contains("pub mod consumer"),
-            "a standalone manifest service has no composition instance of its own"
-        );
-        assert!(!api.contains("withdraw_"), "no leased endpoints exist");
-        assert!(
-            api.contains("example.contract_evaluation.v1.InspectConsumer"),
-            "operation identity uses the declared contract"
-        );
-        assert!(
-            api.contains("__phoxal_desc"),
-            "descriptor frames are embedded"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn endpoint_rename_changes_generated_surface() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let package = manifest_package(directory.path())?;
-        let (api, _provider) = generate_package(&package)?;
-        let edited = CONSUMER_MANIFEST.replace("read_encoder:", "sample_encoder:");
-        fs::write(package.join("service.yaml"), edited)?;
-        let (api_renamed, provider_renamed) = generate_package(&package)?;
-        assert!(api.contains("pub fn read_encoder"));
-        assert!(api_renamed.contains("pub fn sample_encoder"));
-        assert!(!api_renamed.contains("read_encoder"));
-        assert!(!provider_renamed.contains("read_encoder"));
-        Ok(())
-    }
-
-    #[test]
-    fn manifest_removal_stops_provider_generation() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let package = manifest_package(directory.path())?;
-        let (_, provider) = generate_package(&package)?;
-        assert!(provider.contains("Inputs"));
-        fs::remove_file(package.join("service.yaml"))?;
-        let out = directory.path().join("out");
-        generate(&package, &out, None)?;
-        assert!(
-            !out.join("phoxal-provider.rs").exists(),
-            "removing the manifest must remove provider attachment"
-        );
-        assert!(!fs::read_to_string(out.join("phoxal_api.rs"))?.contains("pub mod calls"));
-        Ok(())
-    }
-
-    #[test]
-    fn conflicting_protobuf_service_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let package = manifest_package(directory.path())?;
-        fs::write(
-            package.join("api/example/contract_evaluation/v1/service.proto"),
-            "syntax = \"proto3\"; package example.contract_evaluation.v1; import \"google/protobuf/empty.proto\"; message PokeRequest { } service Extra { rpc Poke(PokeRequest) returns (google.protobuf.Empty); }\n",
-        )?;
-        let out = directory.path().join("out");
-        fs::create_dir_all(&out)?;
-        let error = match generate(&package, &out, None) {
-            Err(error) => error.to_string(),
-            Ok(()) => panic!("two endpoint authorities must be rejected"),
-        };
-        assert!(
-            error.contains("Protobuf files carry message definitions only"),
-            "unexpected error: {error}"
-        );
-        Ok(())
-    }
-
     #[test]
     fn robot_document_schema_must_be_a_supported_generation()
     -> Result<(), Box<dyn std::error::Error>> {
-        // The schema line is a consumed value: it selects the document
-        // generation, so an unsupported one is rejected instead of read as
-        // the wrong generation — on the generation path just as the SDK
-        // robot DTO rejects it.
         let directory = tempfile::tempdir()?;
-        let package = directory.path().join("robot");
-        fs::create_dir_all(&package)?;
-        fs::write(
-            package.join("robot.yaml"),
-            "schema: phoxal/robot/v9\nrobot: { id: rover }\n",
-        )?;
+        let robot = directory.path().join("robot.yaml");
+        fs::write(&robot, "schema: phoxal/robot/v9\nrobot: { id: rover }\n")?;
         let out = directory.path().join("out");
-        fs::create_dir_all(&out)?;
-        let error = match generate(&package, &out, None) {
-            Err(error) => error.to_string(),
-            Ok(()) => panic!("unsupported robot schema must be rejected"),
-        };
+        let error = generate(directory.path(), &out, None)
+            .expect_err("an unsupported robot schema must fail");
         assert!(
-            error.contains("robot.yaml declares schema"),
-            "unsupported robot schema produced {error}"
+            error.to_string().contains("phoxal/robot/v9"),
+            "the rejection names the authored schema"
         );
         Ok(())
     }
 
     #[test]
-    fn empty_brain_generates_an_empty_contract() -> Result<(), Box<dyn std::error::Error>> {
+    fn robot_without_a_brain_section_generates_no_local_endpoint_surface()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let package = directory.path().join("robot");
-        fs::create_dir_all(&package)?;
         fs::write(
-            package.join("robot.yaml"),
+            directory.path().join("robot.yaml"),
             "schema: phoxal/robot/v0\nrobot: { id: rover }\n",
         )?;
         let out = directory.path().join("out");
-        fs::create_dir_all(&out)?;
-        generate(&package, &out, None)?;
-        let provider = fs::read_to_string(out.join("phoxal-provider.rs"))?;
-        assert!(
-            provider.contains("Inputs"),
-            "empty brain keeps its provider"
-        );
+        generate(directory.path(), &out, None)?;
         let api = fs::read_to_string(out.join("phoxal_api.rs"))?;
-        assert!(
-            !api.contains("service_methods"),
-            "an empty brain declares no endpoint constants"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_documents_fail_with_exact_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
-        let cases: &[(&str, &str, &str)] = &[
-            (
-                "unknown-field",
-                "schema: phoxal/service/v0\noutputs:\n  status:\n    type: a.b.S\n    delivery: latest\n    retained_latest: true\n    max_bytes: 10\n    freshness_ms: 5\n",
-                "unknown field",
-            ),
-            (
-                "wrong-schema",
-                "schema: phoxal/service/v9\n",
-                "supports \"phoxal/service/v0\"",
-            ),
-            (
-                "duplicate-endpoint",
-                "schema: phoxal/service/v0\ninputs:\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    max_bytes: 10\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    max_bytes: 10\n",
-                "more than once in one mapping",
-            ),
-            (
-                "missing-bound",
-                "schema: phoxal/service/v0\ninputs:\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    max_bytes: 0\n",
-                "max_bytes > 0",
-            ),
-            (
-                "unresolved-type",
-                "schema: phoxal/service/v0\noutputs:\n  status:\n    type: no.such.Message\n    delivery: latest\n    retained_latest: true\n    max_bytes: 10\n",
-                "no message definition resolves",
-            ),
-            (
-                "non-retained-latest",
-                "schema: phoxal/service/v0\noutputs:\n  status:\n    type: phoxal.robotics.v1.EncoderSample\n    delivery: latest\n    retained_latest: false\n    max_bytes: 10\n",
-                "retained by definition",
-            ),
-            (
-                "reserved-name",
-                "schema: phoxal/service/v0\ninputs:\n  methods:\n    type: phoxal.robotics.v1.EncoderSample\n    max_bytes: 10\n",
-                "reserved by generated provider glue",
-            ),
-            (
-                "queue-lease-conflict",
-                "schema: phoxal/service/v0\ninputs:\n  events:\n    type: phoxal.robotics.v1.EncoderSample\n    delivery: queue\n    max_items: 4\n    max_bytes: 10\n    lease: { valid_for_ms: 100 }\n",
-                "queued delivery cannot carry a lease",
-            ),
-            (
-                "optional-input",
-                "schema: phoxal/service/v0\ninputs:\n  encoder:\n    type: phoxal.robotics.v1.EncoderSample\n    required: false\n    max_bytes: 10\n",
-                "optional inputs are not supported",
-            ),
-            (
-                "optional-call",
-                "schema: phoxal/service/v0\ncalls:\n  read:\n    contract: a.b.Read\n    request: google.protobuf.Empty\n    response: phoxal.robotics.v1.EncoderSample\n    required: false\n    max_bytes: 10\n",
-                "optional requirements are not supported",
-            ),
-        ];
-        for (name, document, expected) in cases {
-            let directory = tempfile::tempdir()?;
-            let package = directory.path().join("consumer");
-            fs::create_dir_all(package.join("api"))?;
-            fs::write(package.join("service.yaml"), document)?;
-            let out = directory.path().join("out");
-            fs::create_dir_all(&out)?;
-            let error = match generate(&package, &out, None) {
-                Err(error) => error.to_string(),
-                Ok(()) => panic!("{name} must be rejected"),
-            };
-            assert!(error.contains(expected), "{name} produced {error}");
-        }
+        assert!(!api.contains("pub mod service_methods"));
+        assert!(!out.join("phoxal-provider.rs").is_file());
         Ok(())
     }
 }

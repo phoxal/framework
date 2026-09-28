@@ -1,0 +1,12 @@
+[package]
+name = "identity-owner-b"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "driver"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { path = "../../../phoxal", default-features = false }

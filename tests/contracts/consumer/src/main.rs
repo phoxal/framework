@@ -1,12 +1,68 @@
-//! Manifest-authored consumer fixture: every endpoint comes from
-//! `service.yaml`; this file owns only configuration, state, and behavior.
+//! Rust-authored consumer fixture: endpoints and payloads are declared once
+//! in this file; behavior owns only configuration, state, and stepping.
 
-phoxal::api!();
-
-use crate::api::types::example::contract_evaluation::v1::ConsumerStatus;
-use phoxal::contract::Empty;
-use phoxal::robotics::EncoderSample;
+use phoxal::contracts::component::encoder::EncoderSample;
+use phoxal::contracts::{Empty, Latest, Queue, RequestReply};
 use phoxal::runtime::{CallTicket, InitContext, Runtime, StepContext};
+
+#[phoxal::message(package = "example.contract_evaluation.v1")]
+pub struct ConsumerStatus {
+    /// Lifecycle phase reported by the consumer.
+    #[phoxal(tag = 1)]
+    pub phase: String,
+    /// Count of accepted encoder observations since initialization.
+    #[phoxal(tag = 2)]
+    pub observed: u64,
+    /// Count of completed read_encoder calls since initialization.
+    #[phoxal(tag = 3)]
+    pub readings: u64,
+    /// Last encoder position reported by the current provider, if any.
+    #[phoxal(tag = 4)]
+    pub position_rad: Option<f64>,
+    /// Count of accepted queued tick batches since initialization.
+    #[phoxal(tag = 5)]
+    pub ticks: u64,
+    /// Count of completed read_backup calls since initialization.
+    #[phoxal(tag = 6)]
+    pub backups: u64,
+    /// Last encoder position reported by the backup provider, if any.
+    #[phoxal(tag = 7)]
+    pub backup_position_rad: Option<f64>,
+}
+
+/// The consumer's endpoint contract.
+#[phoxal::endpoints]
+pub struct ConsumerApi {
+    #[phoxal::input(max_age_ms = 100, max_bytes = 1024)]
+    encoder: Latest<EncoderSample>,
+
+    #[phoxal::input(max_items = 4, max_bytes = 4096)]
+    ticks: Queue<EncoderSample>,
+
+    #[phoxal::output(max_bytes = 4096)]
+    status: Latest<ConsumerStatus>,
+
+    #[phoxal::operation(
+        contract = "example.contract_evaluation.v1.InspectConsumer",
+        max_items = 8,
+        max_bytes = 4096
+    )]
+    inspect: RequestReply<Empty, ConsumerStatus>,
+
+    #[phoxal::call(
+        contract = "example.contract_evaluation.v1.ReadEncoder",
+        max_items = 8,
+        max_bytes = 1024
+    )]
+    read_encoder: RequestReply<Empty, EncoderSample>,
+
+    #[phoxal::call(
+        contract = "example.contract_evaluation.v1.ReadEncoder",
+        max_items = 8,
+        max_bytes = 1024
+    )]
+    read_backup: RequestReply<Empty, EncoderSample>,
+}
 
 #[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
 struct ConsumerConfig {
@@ -79,7 +135,7 @@ fn observe(state: &mut ConsumerState, inputs: &<Consumer as Runtime>::Inputs, ct
     }
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = ConsumerApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Consumer {
     type Config = ConsumerConfig;
     type State = ConsumerState;
@@ -166,11 +222,11 @@ impl Runtime for Consumer {
             && (state.steps - READ_WARMUP_STEPS).is_multiple_of(READ_EVERY_STEPS)
         {
             if state.pending_read.is_none() {
-                let ticket = outputs.send(ctx, crate::api::calls::read_encoder(Empty {}))?;
+                let ticket = outputs.send(ctx, consumer_api::calls::read_encoder(Empty {}))?;
                 state.pending_read = Some(ticket);
             }
             if state.pending_backup.is_none() {
-                let ticket = outputs.send(ctx, crate::api::calls::read_backup(Empty {}))?;
+                let ticket = outputs.send(ctx, consumer_api::calls::read_backup(Empty {}))?;
                 state.pending_backup = Some(ticket);
             }
         }

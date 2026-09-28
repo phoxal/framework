@@ -311,7 +311,7 @@ pub trait ObservationOperation {
     fn into_capture(self, name: &str, policy: CapturePolicy) -> crate::Result<super::Capture>;
 }
 
-impl<Request, Response> SendOperation for crate::contract::Call<Request, Response>
+impl<Request, Response> SendOperation for crate::contracts::Call<Request, Response>
 where
     Request: Message,
     Response: ScenarioValue,
@@ -344,7 +344,7 @@ where
     }
 }
 
-impl<Request, Response> SendOperation for crate::contract::Withdraw<Request, Response> {
+impl<Request, Response> SendOperation for crate::contracts::Withdraw<Request, Response> {
     type Response = NoReply;
 
     fn into_action(self, _label: &str) -> crate::Result<Action> {
@@ -356,7 +356,7 @@ impl<Request, Response> SendOperation for crate::contract::Withdraw<Request, Res
     }
 }
 
-impl<Value> ObservationOperation for crate::contract::Observation<Value>
+impl<Value> ObservationOperation for crate::contracts::Observation<Value>
 where
     Value: ScenarioValue,
 {
@@ -383,7 +383,7 @@ where
 }
 
 fn contract_port_signature(
-    signature: crate::contract::MethodSignature,
+    signature: crate::contracts::MethodSignature,
     kind: PortKind,
 ) -> PortSignature {
     PortSignature::from_method(signature, kind)

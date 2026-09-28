@@ -298,7 +298,6 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
         executable_sha256: "00".repeat(32),
         config: Value::Null,
         connections: BTreeMap::new(),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
@@ -615,42 +614,16 @@ fn invocation_deadline_faults_the_owner_without_publishing() {
     assert_eq!(runner.status(), RuntimeStatus::Failed);
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[crate::message(package = "phoxal.runtime.test")]
 struct TransportRequest {
-    #[prost(uint32, tag = "1")]
+    #[phoxal(tag = 1)]
     value: u32,
 }
 
-impl prost::Name for TransportRequest {
-    const NAME: &'static str = "TransportRequest";
-    const PACKAGE: &'static str = "phoxal.runtime.test";
-
-    fn full_name() -> String {
-        "phoxal.runtime.test.TransportRequest".to_owned()
-    }
-
-    fn type_url() -> String {
-        "/phoxal.runtime.test.TransportRequest".to_owned()
-    }
-}
-
-#[derive(Clone, PartialEq, Message)]
+#[crate::message(package = "phoxal.runtime.test")]
 struct TransportResponse {
-    #[prost(uint32, tag = "1")]
+    #[phoxal(tag = 1)]
     value: u32,
-}
-
-impl prost::Name for TransportResponse {
-    const NAME: &'static str = "TransportResponse";
-    const PACKAGE: &'static str = "phoxal.runtime.test";
-
-    fn full_name() -> String {
-        "phoxal.runtime.test.TransportResponse".to_owned()
-    }
-
-    fn type_url() -> String {
-        "/phoxal.runtime.test.TransportResponse".to_owned()
-    }
 }
 
 const TRANSPORT_PORT: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
@@ -1340,7 +1313,6 @@ fn request_client_manifest() -> RuntimeLaunchManifest {
             "request-client.request".to_owned(),
             vec!["server.transport-commands".to_owned()],
         )]),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::from([(
             "server".to_owned(),
@@ -1575,16 +1547,18 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
     Ok(())
 }
 
-const GENERATED_TRANSPORT_METHOD: crate::contract::CallMethod<TransportRequest, TransportResponse> =
-    crate::contract::CallMethod::new(
-        "phoxal.runtime.test",
-        "Transport",
-        "transport-commands",
-        "phoxal.runtime.test.TransportRequest",
-        "phoxal.runtime.test.TransportResponse",
-        None,
-        &[],
-    );
+const GENERATED_TRANSPORT_METHOD: crate::contracts::CallMethod<
+    TransportRequest,
+    TransportResponse,
+> = crate::contracts::CallMethod::new(
+    "phoxal.runtime.test",
+    "Transport",
+    "transport-commands",
+    "phoxal.runtime.test.TransportRequest",
+    "phoxal.runtime.test.TransportResponse",
+    None,
+    &[],
+);
 
 #[crate::runtime::inputs]
 struct GeneratedCallInputs {
@@ -1706,7 +1680,6 @@ fn generated_call_manifest() -> RuntimeLaunchManifest {
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::from([("caller".to_owned(), caller), ("server".to_owned(), server)]),
         scenario_producers: BTreeMap::new(),
@@ -2534,42 +2507,16 @@ async fn runner_stop_escalates_when_operation_outlives_its_retirement_grace() ->
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[crate::message(package = "phoxal.runtime.test")]
 struct ReadRequest {
-    #[prost(uint32, tag = "1")]
+    #[phoxal(tag = 1)]
     value: u32,
 }
 
-impl prost::Name for ReadRequest {
-    const NAME: &'static str = "ReadRequest";
-    const PACKAGE: &'static str = "phoxal.runtime.test";
-
-    fn full_name() -> String {
-        "phoxal.runtime.test.ReadRequest".to_owned()
-    }
-
-    fn type_url() -> String {
-        "/phoxal.runtime.test.ReadRequest".to_owned()
-    }
-}
-
-#[derive(Clone, PartialEq, Message)]
+#[crate::message(package = "phoxal.runtime.test")]
 struct ReadResponse {
-    #[prost(uint32, tag = "1")]
+    #[phoxal(tag = 1)]
     value: u32,
-}
-
-impl prost::Name for ReadResponse {
-    const NAME: &'static str = "ReadResponse";
-    const PACKAGE: &'static str = "phoxal.runtime.test";
-
-    fn full_name() -> String {
-        "phoxal.runtime.test.ReadResponse".to_owned()
-    }
-
-    fn type_url() -> String {
-        "/phoxal.runtime.test.ReadResponse".to_owned()
-    }
 }
 
 const READ_PORT: crate::port::Read<ReadRequest, ReadResponse> = crate::port::Read::with_signature(
@@ -2826,7 +2773,6 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts,
         scenario_producers: BTreeMap::new(),
@@ -3103,7 +3049,6 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
@@ -3172,23 +3117,10 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[crate::message(package = "phoxal.runtime.test")]
 struct TypedState {
-    #[prost(int32, tag = "1")]
+    #[phoxal(tag = 1)]
     value: i32,
-}
-
-impl prost::Name for TypedState {
-    const NAME: &'static str = "TypedState";
-    const PACKAGE: &'static str = "phoxal.runtime.test";
-
-    fn full_name() -> String {
-        "phoxal.runtime.test.TypedState".to_owned()
-    }
-
-    fn type_url() -> String {
-        "/phoxal.runtime.test.TypedState".to_owned()
-    }
 }
 
 #[crate::runtime::inputs]
@@ -3357,7 +3289,6 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts,
         scenario_producers: BTreeMap::new(),
@@ -3484,7 +3415,6 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             ack_leg: "delivery-ack".to_owned(),
             cancel: cancel.clone(),
             reply_admission: None,
-            projection: None,
         })));
     }
     for boundary in [1, 2] {
@@ -3538,7 +3468,6 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::from([("caller.read".to_owned(), vec!["reader.read".to_owned()])]),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
@@ -3772,7 +3701,6 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
-        projections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),

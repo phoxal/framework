@@ -9,24 +9,19 @@ description = "Phoxal official driver: zed_f9p - GNSS."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["api/**", "build.rs", "src/**", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
+include = ["src/**", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-component-zed_f9p"
 path = "src/main.rs"
-required-features = ["runtime"]
-
-[features]
-default = ["runtime"]
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
-
-[dependencies]
-phoxal = { workspace = true, default-features = false, features = ["contract"] }
-anyhow = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+anyhow.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

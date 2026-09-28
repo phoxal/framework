@@ -51,8 +51,8 @@ Local paths are relative to the robot root and use the selected Cargo package's 
 Registry selections require an exact package name and semantic version; omitting `registry` selects the Phoxal registry.
 Git selections require a package name and full commit revision, with an optional package path below the checkout; Cargo reads that package's version from the pinned checkout.
 Registry and Git runnable packages are installed into the managed Phoxal home.
-It copies registry and Git package Protobuf sources into the project's ignored `.phoxal/` tree, while local path sources remain at their authored paths.
-Managed installations retain the required API and component model resources, not another copy of the package source tree.
+It extracts compiled endpoint records and schemas into the project's ignored `.phoxal/` tree.
+Managed installations retain the selected binary and any component model resources needed for composition.
 Local path participants are built by Cargo in their own workspace when a runtime bundle is needed.
 Preparation preserves the authored selection and leaves the robot's Cargo manifest unchanged.
 The check, build, run, test, bundle, and simulation entry points prepare these exact selections automatically.
@@ -61,13 +61,13 @@ Each command discovers the nearest robot project, validates explicit composition
 Registry and Git runnable participant packages install through Cargo into the managed Phoxal home outside the robot's dependency graph.
 Only the robot application, supervisor, and passive data packages remain in its root Cargo graph.
 
-`cargo phoxal check` validates the authored document, prepares selected APIs, and runs Cargo check for the requested robot code.
-It does not build runtime executables or inspect their compiled contracts.
+`cargo phoxal check` prepares exact selections, builds the brain and any generated adapter, validates their compiled contracts and connections, then checks the robot code.
+When selected endpoints have different latest-observation payloads, preparation generates a robot-owned adapter binary that calls the robot's ordinary `From` or `TryFrom` implementation in `src/conversions.rs`.
 
 `cargo phoxal build` assembles the selected brain, service and component-driver executables, and mandatory supervisor into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
 The bundle contains the selected executables, the full compiled `robot.yaml`, and a manifest that maps service instances to executable paths and retains the runtime contracts needed for admission.
 Simulation bundles also contain the model assets needed by the simulator.
-Bundle files carry no checksum or provenance records.
+Selected executables carry the artifact metadata used to validate the graph.
 
 `cargo phoxal run` independently prepares and validates the hardware bundle, then launches the selected supervisor with the isolated `local` scope and `local` supervisor identity.
 It does not launch simulation or claim domain readiness or physical safety.
@@ -103,10 +103,10 @@ An explicit `--simulator <path>` remains available for simulator source developm
 
 `cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a `.crate` archive in isolated temporary staging.
 The command prints the archive checksum and size without creating a review inventory, source provenance record, or checksum sidecar.
-Supported roles are `component`, `service`, `preset`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
+Supported roles are `component`, `service`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
 
 The developer selects the publication role in the command instead of repeating it in package metadata.
-`cargo-phoxal` verifies that selection from standard project structure: `component.yaml` identifies a component, `service.yaml` identifies a service preset, and Cargo target shape distinguishes ordinary libraries, procedural macros, applications, simulators, and tools.
+`cargo-phoxal` verifies that selection from standard project structure: `component.yaml` identifies a component, and Cargo target shape distinguishes runnable services, libraries, procedural macros, applications, simulators, and tools.
 Runtime composition derives service and component roles from `robot.yaml` source selections.
 No Phoxal-specific package metadata table is required.
 

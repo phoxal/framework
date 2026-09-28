@@ -9,24 +9,17 @@ description = "Phoxal kinematics service executable and packaged API."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["src/**", "api/**", "build.rs", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md"]
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [[bin]]
 name = "phoxal-service-kinematics"
 path = "src/main.rs"
 
-[features]
-default = ["runtime"]
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:thiserror"]
-
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["contract", "robotics"] }
-thiserror = { workspace = true, optional = true }
-anyhow = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

@@ -242,8 +242,8 @@ impl RecordBuilder {
         self.push_quoted(signature.method);
         self.push_str(",\"shape\":");
         self.push_quoted(match signature.shape {
-            crate::contract::MethodShape::Call => "call",
-            crate::contract::MethodShape::Observation => "observation",
+            crate::contracts::MethodShape::Call => "call",
+            crate::contracts::MethodShape::Observation => "observation",
         });
         self.push_str(",\"request\":");
         self.push_quoted(signature.request);

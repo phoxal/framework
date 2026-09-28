@@ -12,52 +12,38 @@ const COUNTER_READ: phoxal::macro_support::Read<CounterReadRequest, CounterReadR
 const READER_STATUS: phoxal::macro_support::State<ReaderStatus> =
     phoxal::macro_support::State::new("reader-status");
 
-#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
+#[phoxal::message(package = "phoxal.tests.runtime")]
 struct CounterStatus {
-    #[prost(uint64, tag = "1")]
+    #[phoxal(tag = 1)]
     inspected_count: u64,
 }
 
-impl prost::Name for CounterStatus {
-    const NAME: &'static str = "CounterStatus";
-    const PACKAGE: &'static str = "phoxal.tests.runtime";
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
+#[phoxal::message(package = "phoxal.tests.runtime")]
 struct CounterReadRequest {
-    #[prost(bool, tag = "1")]
+    #[phoxal(tag = 1)]
     include_count: bool,
 }
 
-impl prost::Name for CounterReadRequest {
-    const NAME: &'static str = "CounterReadRequest";
-    const PACKAGE: &'static str = "phoxal.tests.runtime";
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
+#[phoxal::message(package = "phoxal.tests.runtime")]
 struct CounterReadResponse {
-    #[prost(uint64, tag = "1")]
+    #[phoxal(tag = 1)]
     inspected_count: u64,
 }
 
-impl prost::Name for CounterReadResponse {
-    const NAME: &'static str = "CounterReadResponse";
-    const PACKAGE: &'static str = "phoxal.tests.runtime";
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
+#[phoxal::message(package = "phoxal.tests.runtime")]
 struct ReaderStatus {
-    #[prost(uint64, optional, tag = "1")]
+    #[phoxal(tag = 1)]
     last_count: Option<u64>,
-    #[prost(bool, tag = "2")]
+    #[phoxal(tag = 2)]
     finished: bool,
-    #[prost(bool, tag = "3")]
+    #[phoxal(tag = 3)]
     last_attempt_failed: bool,
 }
 
-impl prost::Name for ReaderStatus {
-    const NAME: &'static str = "ReaderStatus";
-    const PACKAGE: &'static str = "phoxal.tests.runtime";
+#[phoxal::message(package = "phoxal.tests.runtime")]
+struct Increment {
+    #[phoxal(tag = 1)]
+    value: u64,
 }
 
 struct Counter;
@@ -65,7 +51,7 @@ struct Counter;
 #[phoxal::runtime::inputs]
 struct CounterInputs {
     #[phoxal::runtime::input(max_items = 4, max_bytes = 64)]
-    increments: Events<u64>,
+    increments: Events<Increment>,
 }
 
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
@@ -89,7 +75,9 @@ impl Runtime for Counter {
             .increments
             .items()
             .iter()
-            .fold(state, |total, increment| total.saturating_add(*increment));
+            .fold(state, |total, increment| {
+                total.saturating_add(increment.value)
+            });
         Ok((next, ()))
     }
 }
@@ -299,19 +287,14 @@ const VALUES: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
 const SUM_STATUS: phoxal::macro_support::State<SumStatus> =
     phoxal::macro_support::State::new("sum-status");
 
-#[derive(Clone, Copy, PartialEq, prost::Message)]
+#[phoxal::message(package = "phoxal.tests.runtime")]
 struct SumStatus {
-    #[prost(uint32, tag = "1")]
+    #[phoxal(tag = 1)]
     processed: u32,
-    #[prost(double, tag = "2")]
+    #[phoxal(tag = 2)]
     total: f64,
-    #[prost(bool, tag = "3")]
+    #[phoxal(tag = 3)]
     complete: bool,
-}
-
-impl prost::Name for SumStatus {
-    const NAME: &'static str = "SumStatus";
-    const PACKAGE: &'static str = "phoxal.tests.runtime";
 }
 
 struct IncrementalSum;
@@ -390,7 +373,7 @@ fn counter_and_read_fixture_keep_projection_and_read_pure() {
         &context(0, 20),
         state,
         &CounterInputs {
-            increments: Events::new(vec![2, 3]),
+            increments: Events::new(vec![Increment { value: 2 }, Increment { value: 3 }]),
         },
     )
     .expect("counter step");
@@ -541,6 +524,70 @@ fn compiled_input_records_retain_concrete_owner_message_names() {
     let RuntimeRecord::V0 { inputs, .. } = &counter;
     assert_eq!(
         inputs[0].response_fqn.as_deref(),
-        Some("google.protobuf.UInt64Value")
+        Some("phoxal.tests.runtime.Increment")
     );
+}
+
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
+#[serde(deny_unknown_fields)]
+struct ScrambledConfig {
+    limit: u32,
+}
+
+/// An implementation whose members appear in a deliberately scrambled
+/// order — the arrangement an IDE member-order quick fix produces when it
+/// reorders authored source. The runtime attachment accepts any authored
+/// order; only its own expansion places generated associated types before
+/// methods.
+struct ScrambledOrder;
+
+#[phoxal::runtime::outputs]
+impl ScrambledOrder {}
+
+#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
+impl Runtime for ScrambledOrder {
+    fn step(
+        &self,
+        _ctx: &StepContext,
+        state: Self::State,
+        _inputs: &Self::Inputs,
+    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
+        Ok((state.saturating_add(1), ()))
+    }
+
+    type Outputs = ();
+
+    fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
+        if config.limit == 0 {
+            return Err(phoxal::anyhow!("limit must be positive"));
+        }
+        Ok(())
+    }
+
+    type State = u32;
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
+        Ok(0)
+    }
+
+    type Inputs = ();
+
+    type Config = ScrambledConfig;
+}
+
+#[test]
+fn scrambled_member_order_keeps_validation_and_step_behavior() {
+    assert!(
+        <ScrambledOrder as Runtime>::validate_config(&ScrambledConfig { limit: 0 }).is_err(),
+        "validate_config still rejects an invalid config in any member order"
+    );
+    let state = initialize(
+        &ScrambledOrder,
+        ExecutionTime::from_nanos(0),
+        ScrambledConfig { limit: 4 },
+    )
+    .expect("scrambled-order init");
+    let (state, ()) =
+        invoke(&ScrambledOrder, &context(0, 20), state, &()).expect("scrambled-order step");
+    assert_eq!(state, 1);
 }

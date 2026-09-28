@@ -15,36 +15,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use prost::Message;
 
 use super::{ExecutionTime, ObservationStamp, StepContext};
+use crate::contracts::ProstPayload;
 use crate::port::{PortKind, PortSignature};
 
-/// The generated-message capability required by a typed Runtime input.
-///
-/// Keeping this capability behind `phoxal` means a consuming service can use
-/// an imported contract type without taking a second direct dependency on the
-/// Prost crate merely because the attribute macro names the bound.
-pub trait ProstPayload: Message + prost::Name + Default + Send + Sync + 'static {}
-
-impl<T> ProstPayload for T where T: Message + prost::Name + Default + Send + Sync + 'static {}
-
-/// Encode one generated Prost message using its standard message encoding.
+/// Encode one endpoint payload through its Prost wire form.
 pub fn encode_prost<T: ProstPayload>(value: &T) -> Result<Vec<u8>, prost::EncodeError> {
-    let mut bytes = Vec::with_capacity(value.encoded_len());
-    value.encode(&mut bytes)?;
+    let wire = value.to_wire();
+    let mut bytes = Vec::with_capacity(wire.encoded_len());
+    wire.encode(&mut bytes)?;
     Ok(bytes)
 }
 
-/// Decode one generated Prost message using its standard message encoding.
+/// Decode one endpoint payload through its Prost wire form, failing when
+/// the wire form carries no valid value (for example a payload enum whose
+/// envelope selected no variant).
 pub fn decode_prost<T: ProstPayload>(bytes: &[u8]) -> Result<T, prost::DecodeError> {
-    T::decode(bytes)
+    T::try_from_wire(<T::Wire as Message>::decode(bytes)?)
 }
 
 /// Zenoh's standard encoding identifier for Runtime port payloads.
 pub const PROTOBUF_ENCODING: &str = "application/protobuf";
-
-/// Maximum encoded size of one projected observation body produced by a
-/// receiver-side field mapping; the declared input bound still governs
-/// admission after the conversion.
-pub(crate) const MAX_PROJECTED_OBSERVATION_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Maximum attachment size accepted by one Runtime port sample.
 const MAX_METADATA_BYTES: usize = 1024;
@@ -386,16 +376,6 @@ impl WireSample {
             metadata,
             key: key.into(),
         }
-    }
-
-    /// Returns the same observation with a converted payload body.
-    ///
-    /// Used by the receiver-side projection at the admission boundary; every
-    /// metadata field — capture identity, sequence, producer, boundary — is
-    /// preserved exactly as published.
-    pub(crate) fn with_payload(mut self, payload: Vec<u8>) -> Self {
-        self.payload = payload;
-        self
     }
 
     /// Converts one Zenoh sample after validating encoding, attachment, and
@@ -1188,7 +1168,7 @@ pub fn decode_request<T: ProstPayload>(
     max_bytes: u64,
 ) -> Result<T, TransportError> {
     validate_request(signature, sample, max_bytes)?;
-    T::decode(sample.payload()).map_err(|error| TransportError::PayloadDecode {
+    decode_prost(sample.payload()).map_err(|error| TransportError::PayloadDecode {
         port: signature.name.to_owned(),
         detail: error.to_string(),
     })
@@ -1245,7 +1225,7 @@ where
             ),
         });
     }
-    T::decode(sample.payload()).map_err(|error| TransportError::PayloadDecode {
+    decode_prost(sample.payload()).map_err(|error| TransportError::PayloadDecode {
         port: binding.name.clone(),
         detail: error.to_string(),
     })
@@ -1259,8 +1239,8 @@ pub fn validate_publication_binding<T>(
 where
     T: ProstPayload,
 {
-    let response = T::full_name();
-    validate_binding(binding, expected_kind, "google.protobuf.Empty", &response)
+    let response = <T as crate::schema::MessageSchema>::WIRE_NAME;
+    validate_binding(binding, expected_kind, "google.protobuf.Empty", response)
 }
 
 /// Validate a request/response binding against generated Prost payload types.
@@ -1272,9 +1252,9 @@ where
     Request: ProstPayload,
     Response: ProstPayload,
 {
-    let request = Request::full_name();
-    let response = Response::full_name();
-    validate_binding(binding, expected_kind, &request, &response)
+    let request = <Request as crate::schema::MessageSchema>::WIRE_NAME;
+    let response = <Response as crate::schema::MessageSchema>::WIRE_NAME;
+    validate_binding(binding, expected_kind, request, response)
 }
 
 /// Validate that an input route retained the exact generated descriptor that

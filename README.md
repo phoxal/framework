@@ -15,12 +15,22 @@ This repository and its source are the authority for current framework implement
 - `phoxal/cargo/` - the registry-aware project and publication command
 - `tests/` - internal compile-contract fixtures and one four-wheel native qualification robot
 
-Each runnable package authors its endpoints once in a service declaration: services in `service.yaml`, components in the endpoint sections of their `component.yaml`, and a robot's brain in the `brain` section of `robot.yaml`.
-The owning document is decided by package role — building a robot reads its brain contract from `robot.yaml`, an adjacent `service.yaml` or `component.yaml` is unrelated to that build and is never a fallback source, and an empty brain section declares an empty contract.
-Protobuf files in the `api/` tree carry message definitions only; the declaration generates the provider inputs/outputs, requirement handles, projections, and robot instance APIs.
-Each package builds one executable with an ordinary Cargo build script.
-Robot projects select each participant with a local path, exact registry package version, or pinned Git revision in `robot.yaml` and use `cargo phoxal prepare` to install remote binaries and prepare registry or Git API sources.
-The robot's `build.rs` calls `phoxal::build::api`, and `phoxal::api!();` attaches the generated instance-first API to its crate root.
+### Fixture purposes under `tests/`
+
+Participant fixtures are binary-only: `tests/supervisor-runtime`, `tests/contracts/robot`, `tests/hardware/driver`, and `tests/robot` each own their contract and runtime modules behind the executable, because a participant's public surface is its compiled binary, not a distributable library.
+Integration tests that need the same authored contract include it with a local `#[path]` attribute instead of adding a library target.
+The one exception is `tests/contracts/schema-proof`: its library is an unpublished codec/descriptor oracle shared by its proof executable and tests, not a service API; do not copy that shape for runtime participants.
+`tests/adapted-robot` is a deliberately standalone Cargo workspace (its own lockfile) proving robot-owned conversion adapters end to end.
+At least one client fixture (`tests/contracts/client`) always consumes bindings generated from a selected compiled artifact, so local source sharing cannot conceal a generation defect.
+
+Runnable packages author endpoint contracts and payloads in Rust with `#[phoxal::endpoints]` and `#[phoxal::message]`.
+`phoxal::contracts` supplies shared robotics and component contracts, while each service owns its specialized exported records and private input expectations.
+A driver's `component.yaml` declares its native model and capabilities; those capabilities derive standard endpoints.
+The robot's `robot.yaml` selects exact participants and connects endpoint names without duplicating their types.
+`cargo phoxal prepare` obtains selected participant binaries, extracts their compiled contracts, and generates local robot bindings before the robot builds.
+The robot's `build.rs` calls `phoxal::build::api`, and `phoxal::api!();` attaches the generated instance API to its crate root.
+For differently typed latest observations, ordinary `From` or `TryFrom` code in the robot's `src/conversions.rs` is compiled into a generated robot-owned adapter runtime.
+Identical contract connections remain direct.
 No selected service or component library is added to the robot's Cargo dependencies for communication.
 
 Hardware-only projects and `cargo-phoxal` build and run without MuJoCo or a simulator installation.
@@ -71,7 +81,7 @@ An existing official MuJoCo distribution can be selected explicitly with `--mujo
 
 The repository intentionally has no maintained user examples while its pre-1.0 authoring and runtime contracts are still changing.
 Before pushing a change that can affect project preparation, runtime transport, components, or simulation, use the internal four-wheel robot in the root Cargo workspace.
-It contains only four actuator/encoder components, a disarmed brain, a small robot-local controller, and the finite `ForwardTurnStop` scenario.
+It contains four actuator/encoder components, a disarmed brain, a robot-local controller, World and Navigation services, one robot-owned revision conversion, and the finite `ForwardTurnStop` scenario.
 
 Build the current framework tool, then run the ordinary Cargo test workflow:
 

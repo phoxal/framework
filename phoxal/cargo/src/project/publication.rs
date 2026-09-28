@@ -35,10 +35,8 @@ const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 pub enum PublicationKind {
     /// A component package, including a passive data-only component.
     Component,
-    /// A service implementation or configuration preset package.
+    /// A runnable service implementation package.
     Service,
-    /// A configuration preset for one service implementation.
-    Preset,
     /// A reusable library package.
     Library,
     /// A procedural macro package.
@@ -60,7 +58,6 @@ impl PublicationKind {
         match self {
             Self::Component => "component",
             Self::Service => "service",
-            Self::Preset => "preset",
             Self::Library => "library",
             Self::ProcMacro => "proc-macro",
             Self::SimulatorApplication => "simulator",
@@ -69,17 +66,8 @@ impl PublicationKind {
         }
     }
 
-    const fn accepts(self, actual: Self) -> bool {
-        match self {
-            Self::Component => matches!(actual, Self::Component),
-            Self::Service => matches!(actual, Self::Service | Self::Preset),
-            Self::Preset => matches!(actual, Self::Preset),
-            Self::Library => matches!(actual, Self::Library),
-            Self::ProcMacro => matches!(actual, Self::ProcMacro),
-            Self::SimulatorApplication => matches!(actual, Self::SimulatorApplication),
-            Self::Application => matches!(actual, Self::Application),
-            Self::Tool => matches!(actual, Self::Tool),
-        }
+    fn accepts(self, actual: Self) -> bool {
+        self == actual
     }
 }
 
@@ -236,7 +224,6 @@ enum PackageRole {
     PassiveComponent,
     RustComponent,
     Service,
-    Preset,
     Library,
     ProcMacro,
     SimulatorApplication,
@@ -259,7 +246,6 @@ impl PackageRole {
         match self {
             Self::PassiveComponent | Self::RustComponent => PublicationKind::Component,
             Self::Service => PublicationKind::Service,
-            Self::Preset => PublicationKind::Preset,
             Self::Library => PublicationKind::Library,
             Self::ProcMacro => PublicationKind::ProcMacro,
             Self::SimulatorApplication => PublicationKind::SimulatorApplication,
@@ -272,7 +258,6 @@ impl PackageRole {
         match self {
             Self::PassiveComponent | Self::RustComponent => "component",
             Self::Service => "service",
-            Self::Preset => "preset",
             Self::Library => "library",
             Self::ProcMacro => "proc-macro",
             Self::SimulatorApplication => "simulator",
@@ -288,7 +273,6 @@ impl std::fmt::Display for PackageRole {
             Self::PassiveComponent => "passive component",
             Self::RustComponent => "component",
             Self::Service => "service",
-            Self::Preset => "service preset",
             Self::Library => "library",
             Self::ProcMacro => "procedural macro",
             Self::SimulatorApplication => "simulator",
@@ -547,29 +531,9 @@ fn classify_package(
         }
         .into());
     }
-    if source_root.join("service.yaml").is_file()
-        && !matches!(
-            requested,
-            PublicationKind::Service | PublicationKind::Preset
-        )
-    {
-        let actual = if targets.binaries {
-            PackageRole::Service
-        } else {
-            PackageRole::Preset
-        };
-        return Err(PublicationError::WrongPublicationKind {
-            package: package.to_owned(),
-            path: source_root.to_owned(),
-            actual: actual.to_string(),
-            requested,
-        }
-        .into());
-    }
     if matches!(requested, PublicationKind::Component) {
         require_component_definition(source_root, package, manifest)?;
         return if targets.binaries && !targets.library {
-            require_participant_api(source_root, package, "component")?;
             Ok(PackageRole::RustComponent)
         } else if targets.library || has_authored_target(source_root, manifest) {
             Err(PublicationError::InvalidPackageShape {
@@ -586,26 +550,11 @@ fn classify_package(
     }
     let (role, requirement) = match requested {
         PublicationKind::Service if targets.binaries && !targets.library => {
-            require_participant_api(source_root, package, "service")?;
             return Ok(PackageRole::Service);
-        }
-        PublicationKind::Service
-            if !targets.binaries && source_root.join("service.yaml").is_file() =>
-        {
-            return Ok(PackageRole::Preset);
         }
         PublicationKind::Service => (
             PackageRole::Service,
             "service packages must expose a runnable binary and packaged API",
-        ),
-        PublicationKind::Preset
-            if !targets.binaries && source_root.join("service.yaml").is_file() =>
-        {
-            return Ok(PackageRole::Preset);
-        }
-        PublicationKind::Preset => (
-            PackageRole::Preset,
-            "configuration presets must contain service.yaml and cannot expose a binary target",
         ),
         PublicationKind::Library if targets.library && !targets.proc_macro => {
             return Ok(PackageRole::Library);
@@ -646,41 +595,17 @@ fn classify_package(
     .into())
 }
 
-fn require_participant_api(source_root: &Path, package: &str, kind: &str) -> Result<(), Error> {
-    let api = source_root.join("api");
-    // A built-in-only manifest contract packages service.yaml without an
-    // api/ directory; either layout is a runnable contract input set.
-    if !source_root.join("build.rs").is_file()
-        || (!api.is_dir() && !source_root.join("service.yaml").is_file())
-    {
-        return Err(PublicationError::InvalidPackageShape {
-            package: package.to_owned(),
-            kind: kind.to_owned(),
-            requirement: "runnable participants must package build.rs and api/ (or service.yaml)"
-                .to_owned(),
-        }
-        .into());
-    }
-    let validation = tempfile::tempdir().map_err(|source| PublicationError::CaptureSource {
-        path: std::env::temp_dir(),
-        source,
-    })?;
-    phoxal_build::validate_participant_api(&api, validation.path()).map_err(|error| {
-        PublicationError::InvalidPackageShape {
-            package: package.to_owned(),
-            kind: kind.to_owned(),
-            requirement: format!("invalid packaged API: {error}"),
-        }
-    })?;
-    Ok(())
-}
-
 /// Validates a package selected as a runtime service or component.
 ///
 /// Publication owns the canonical package-role classifier, including the
 /// requested runtime role, target shape, and component definition root checks.
 /// Project selection calls this boundary instead of maintaining a second
 /// interpretation of package structure.
+///
+/// A runnable participant owns its endpoint surface in Rust; the compiled
+/// artifact's contract is extracted and validated when the participant is
+/// prepared, so package shape validation covers targets and the component
+/// definition, not authored endpoint documents.
 pub(crate) fn validate_runtime_package(
     manifest: &Path,
     package: &str,
@@ -1360,9 +1285,6 @@ fn classify_targetless(
     if source_root.join("component.yaml").is_file() {
         return classify_package(source_root, manifest, package, PublicationKind::Component)
             .map(Some);
-    }
-    if source_root.join("service.yaml").is_file() && is_targetless(source_root, manifest) {
-        return classify_package(source_root, manifest, package, PublicationKind::Preset).map(Some);
     }
     Ok(None)
 }
@@ -2490,7 +2412,7 @@ fn stage_package(
             expected.insert(path_string(relative));
         }
     }
-    if selected.role == PackageRole::PassiveComponent || selected.role == PackageRole::Preset {
+    if selected.role == PackageRole::PassiveComponent {
         let authored_files = walk_files(&selected.source_root)?;
         if let Some(rust_file) = authored_files.iter().find(|path| {
             path.extension()
@@ -2577,11 +2499,7 @@ fn stage_package(
                     })?;
             phoxal.insert(
                 "kind".to_owned(),
-                toml::Value::String(if selected.role == PackageRole::Preset {
-                    "preset".to_owned()
-                } else {
-                    "component".to_owned()
-                }),
+                toml::Value::String("component".to_owned()),
             );
             if let Some(definition) = definition {
                 phoxal.insert(
@@ -2689,10 +2607,6 @@ fn definition_for_package(selected: &SelectedPackage) -> Result<Option<PathBuf>,
         | PackageRole::SimulatorApplication
         | PackageRole::Application
         | PackageRole::Tool => Ok(None),
-        PackageRole::Preset => {
-            let path = selected.source_root.join("service.yaml");
-            Ok(path.is_file().then_some(path))
-        }
     }
 }
 
@@ -3136,9 +3050,7 @@ fn verify_archive(
             .into());
         }
     }
-    if matches!(role, PackageRole::PassiveComponent | PackageRole::Preset)
-        && !archived_paths.contains(GENERATED_LIB)
-    {
+    if role == PackageRole::PassiveComponent && !archived_paths.contains(GENERATED_LIB) {
         return Err(PublicationError::MissingArchivedAsset {
             package: package.to_owned(),
             asset: GENERATED_LIB.to_owned(),
@@ -3374,7 +3286,6 @@ mod tests {
         for (kind, expected) in [
             (PublicationKind::Component, "component"),
             (PublicationKind::Service, "service"),
-            (PublicationKind::Preset, "preset"),
             (PublicationKind::Library, "library"),
             (PublicationKind::ProcMacro, "proc-macro"),
             (PublicationKind::SimulatorApplication, "simulator"),
@@ -3386,29 +3297,6 @@ mod tests {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn service_publication_requires_a_packaged_api_and_exact_binary()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        write(
-            &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"bin-only-service\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"bin-only-service\"\npath = \"src/main.rs\"\n",
-        )?;
-        write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
-        let error = select_package(&PublicationOptions {
-            kind: PublicationKind::Service,
-            name: "bin-only-service".to_owned(),
-            path: Some(directory.path().to_owned()),
-            dry_run: true,
-        })
-        .expect_err("a service without its packaged API must fail");
-        assert!(matches!(
-            error,
-            Error::Publication(PublicationError::InvalidPackageShape { .. })
-        ));
-        Ok(())
     }
 
     #[test]
@@ -3498,21 +3386,12 @@ mod tests {
     }
 
     #[test]
-    fn real_service_dry_run_preserves_api_and_binary_target()
+    fn real_service_dry_run_preserves_the_rust_contract_binary()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
             "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
-        )?;
-        write(&directory.path().join("build.rs"), "fn main() {}\n")?;
-        write(
-            &directory.path().join("service.yaml"),
-            "schema: phoxal/service/v0\noperations:\n  run:\n    contract: example.v1.Run\n    request: example.v1.Request\n    response: example.v1.Request\n    max_items: 4\n    max_bytes: 1024\n",
-        )?;
-        write(
-            &directory.path().join("api/example.proto"),
-            "syntax = \"proto3\"; package example.v1; message Request {}\n",
         )?;
         write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
         let result = prepare_publication(&PublicationOptions {
@@ -3523,7 +3402,6 @@ mod tests {
         })?;
         assert_eq!(result.kind(), PublicationKind::Service);
         let paths = archive_paths(&result)?;
-        assert!(paths.contains("api/example.proto"));
         assert!(paths.contains("src/main.rs"));
         assert!(!paths.contains(GENERATED_LIB));
         Ok(())

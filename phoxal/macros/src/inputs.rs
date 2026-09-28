@@ -120,7 +120,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 let request = generic_type(&ty, 1, field)?;
                 (
                     message_type(&request),
-                    message_type(&syn::parse_quote!(::phoxal::contract::Empty)),
+                    message_type(&syn::parse_quote!(::phoxal::contracts::Empty)),
                 )
             }
             _ => (quote!(None), message_type(&generic_type(&ty, 1, field)?)),
@@ -970,7 +970,7 @@ fn expand_transport_decoder(
                 quote! {
                     ::phoxal::runtime::transport::validate_exchange_binding::<
                         #payload,
-                        ::phoxal::contract::Empty,
+                        ::phoxal::contracts::Empty,
                     >(binding, ::phoxal::macro_support::PortKind::Setpoint)?;
                 }
             } else {
@@ -1670,7 +1670,7 @@ fn expand_transport_sink(
 
 fn prost_bound<T: quote::ToTokens>(ty: &T) -> TokenStream {
     quote! {
-        #ty: ::phoxal::runtime::transport::ProstPayload,
+        #ty: ::phoxal::contracts::ProstPayload,
     }
 }
 

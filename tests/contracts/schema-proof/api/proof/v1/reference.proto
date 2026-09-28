@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package proof.v1;
+
+import "phoxal/robotics/v1/robotics.proto";
+import "phoxal/geometry/v1/geometry.proto";
+import "phoxal/component/battery/v1/battery.proto";
+import "phoxal/component/lidar/v1/lidar.proto";
+
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_MANUAL = 2;
+}
+
+enum Reason {
+  REASON_UNSPECIFIED = 0;
+  REASON_UNAVAILABLE = 1;
+  REASON_DEGRADED = 3;
+}
+
+message Target {
+  string actuator_id = 1;
+  proof.v1.Control control = 2;
+}
+
+message Control {
+  oneof phoxal_envelope {
+    double velocity_radps = 1;
+    double torque_nm = 2;
+  }
+}
+
+message Command {
+  Mode mode = 1;
+  optional string owner = 2;
+  repeated Target targets = 3;
+  bytes payload = 4;
+  uint32 count = 5;
+  repeated uint32 depth_mm = 6;
+  phoxal.robotics.v1.EncoderSample encoder = 7;
+  repeated Reason reasons = 8;
+}
+
+message Numbers {
+  repeated uint32 values = 1;
+}
+
+message Gains {
+  repeated float values = 1;
+}
+
+message Child {
+  uint32 a = 1;
+  uint32 b = 2;
+}
+
+message Parent {
+  oneof phoxal_envelope {
+    Child child = 1;
+    string text = 2;
+  }
+}
+
+message Telemetry {
+  phoxal.geometry.v1.Pose pose = 1;
+  phoxal.geometry.v1.Twist twist = 2;
+  phoxal.component.battery.v1.BatterySample battery = 3;
+  phoxal.component.lidar.v1.LaserScan scan = 4;
+}

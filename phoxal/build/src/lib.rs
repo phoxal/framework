@@ -1,13 +1,9 @@
-//! Build-time generation for service-owned Phoxal Protobuf contracts.
+//! Build-time generation from compiled Rust contract products.
 //!
-//! [`api`] is the package-local generation entry point: one authored service
-//! declaration (`service.yaml`, the sections embedded in a component's
-//! `component.yaml`, or a robot project's brain section in `robot.yaml`) is
-//! the sole endpoint authority, and Protobuf files carry message definitions
-//! only. [`compile_protos`] supplies the pinned Protobuf compiler and
-//! descriptor retention for message-only compilations such as the SDK's own
-//! protocol packages; [`compile_protos_with_output`] names the descriptor
-//! file when one build script performs more than one compilation.
+//! [`api`] reads local prepared participant products and component capability
+//! declarations. [`compile_protos`] supplies the pinned Protobuf compiler for
+//! the SDK's own protocol packages; [`compile_protos_with_output`] names the
+//! descriptor file when one build script performs more than one compilation.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,24 +12,40 @@ use prost_reflect::DescriptorPool;
 
 mod api;
 mod manifest;
+mod prepared;
 mod provider;
+mod schema_impls;
+mod typed;
 
+pub use api::validate_project_api;
 pub use api::{BuildApiConfig, api};
-pub use api::{
-    brain_declaration, participant_declaration, validate_participant_api, validate_project_api,
-};
-pub use manifest::{
-    COMPONENT_FILE_NAME, COMPONENT_SCHEMA, DeclarationEvidence, Delivery, EndpointSide, FILE_NAME,
-    ROBOT_SCHEMA, ResolvedService, SCHEMA, ServiceDocument, check_call_binding, check_data_binding,
-    check_projection_binding, parse_component_document, parse_document, resolve_document,
+pub use prepared::{
+    DESCRIPTORS_FILE, ENDPOINTS_FILE, PROVENANCE_FILE, PreparedContract,
+    encode_selection_component, local_prepared_dir, read_prepared, remote_prepared_dir,
+    self_prepared_dir,
 };
 
 /// Framework version whose generated API contract this helper implements.
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Rust path of a built-in payload identity in generated robot code.
+#[must_use]
+pub fn sdk_type_path(fqn: &str) -> Option<String> {
+    if fqn == "google.protobuf.Empty" {
+        return Some("::phoxal::contracts::Empty".to_owned());
+    }
+    schema_impls::sdk_owned_path(fqn).map(str::to_owned)
+}
+
 const DESCRIPTOR_FILE: &str = "phoxal-descriptors.bin";
 const MAX_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DESCRIPTOR_FILES: usize = 1_024;
+
+/// Encodes one descriptor set for pool decoding.
+pub(crate) fn encode_file_descriptor_set(set: &prost_types::FileDescriptorSet) -> Vec<u8> {
+    use prost::Message as _;
+    set.encode_to_vec()
+}
 
 /// Returns the packaged Protobuf include root containing the built-in
 /// robotics vocabulary.
@@ -285,7 +297,7 @@ fn compile_protos_impl(
     if let Some(path) = prost_path {
         config.prost_path(path);
     }
-    config.extern_path(".google.protobuf.Empty", "::phoxal::contract::Empty");
+    config.extern_path(".google.protobuf.Empty", "::phoxal::contracts::Empty");
     for (proto_package, rust_path) in extern_paths {
         config.extern_path(*proto_package, *rust_path);
     }

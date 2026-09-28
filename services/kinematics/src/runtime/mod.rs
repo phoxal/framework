@@ -1,13 +1,14 @@
 mod measurements;
 
-use crate::api::types::phoxal::kinematics::v1::{
-    FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
-    OdometryState, UnavailableReason,
-};
 use crate::config::{KinematicsConfig, validate_config};
+use crate::contract::{
+    FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
+    UnavailableReason,
+};
 use crate::validation;
 #[cfg(test)]
-use phoxal::robotics::EncoderSample;
+use phoxal::contracts::component::encoder::EncoderSample;
+use phoxal::contracts::robotics::OdometryState;
 #[cfg(test)]
 use phoxal::runtime::Sample;
 #[cfg(test)]
@@ -27,7 +28,7 @@ pub struct KinematicsState {
     revision: u64,
     oldest_capture_time_nanos: Option<u64>,
     available: bool,
-    unavailable_reasons: Vec<i32>,
+    unavailable_reasons: Vec<UnavailableReason>,
     frame_history: VecDeque<FrameTree>,
 }
 
@@ -44,7 +45,7 @@ impl KinematicsState {
             revision: 0,
             oldest_capture_time_nanos: None,
             available: false,
-            unavailable_reasons: vec![UnavailableReason::Encoder as i32],
+            unavailable_reasons: vec![UnavailableReason::Encoder],
             frame_history: VecDeque::new(),
         }
     }
@@ -106,7 +107,7 @@ impl KinematicsState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kinematics;
 
-impl crate::api::projections::Projections for Kinematics {
+impl crate::contract::kinematics_api::projections::Projections for Kinematics {
     type State = KinematicsState;
 
     fn odometry(&self, state: &KinematicsState) -> OdometryState {
@@ -122,7 +123,7 @@ impl crate::api::projections::Projections for Kinematics {
     }
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::KinematicsApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Kinematics {
     type Config = KinematicsConfig;
     type State = KinematicsState;
@@ -187,7 +188,7 @@ impl Runtime for Kinematics {
                 state.available = false;
                 state.linear_x_mps = 0.0;
                 state.angular_z_radps = 0.0;
-                state.unavailable_reasons = vec![reason as i32];
+                state.unavailable_reasons = vec![reason];
             }
         }
         validation::odometry(&state.odometry()).map_err(|error| anyhow::anyhow!(error))?;

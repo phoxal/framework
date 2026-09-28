@@ -6,28 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 description = "Production-shaped Runtime fixture for hardware driver acceptance."
-include = [
-    "src/**",
-    "api/**",
-    "build.rs",
-    "Cargo.toml",
-    "component.yaml",
-    "model.xml",
-]
+include = ["src/**", "build.rs", "Cargo.toml", "model.xml", "component.yaml", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-hardware-driver-fixture"
 path = "src/main.rs"
 
-[features]
-default = ["runtime"]
-runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
-
 [dependencies]
-anyhow = { workspace = true, optional = true }
-phoxal = { workspace = true, default-features = false, features = ["contract"] }
-serde = { workspace = true, optional = true }
-
+anyhow.workspace = true
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+serde.workspace = true
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }

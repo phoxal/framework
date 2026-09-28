@@ -9,6 +9,7 @@ homepage = "https://github.com/phoxal/framework"
 repository = "https://github.com/phoxal/framework"
 
 [workspace]
+exclude = ["tests/adapted-robot"]
 resolver = "3"
 # The framework runtime, its proc-macros, official services, and suite
 # component crates. The project compiler and installation helper are
@@ -22,6 +23,10 @@ members = [
     "tests/contracts/encoder-b",
     "tests/contracts/foreign-reading",
     "tests/contracts/robot",
+    "tests/contracts/identity-owner-a",
+    "tests/contracts/identity-owner-b",
+    "tests/contracts/schema-proof",
+    "tests/contracts/standard-plus-custom",
     "tests/hardware/driver",
     "tests/robot",
     "tests/robot/controller",

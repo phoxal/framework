@@ -34,8 +34,9 @@ pub use phoxal::artifact::{InputRecord, MethodSignature};
 
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
+const SCHEMA_SECTION_NAMES: [&str; 2] = [".phoxal_schema", "__phoxal_schema"];
 const ARTIFACT_MAGIC: &[u8; 8] = b"PHXART0\n";
-const DESCRIPTOR_MAGIC: &[u8; 8] = &phoxal::contract::DESCRIPTOR_FRAME_MAGIC;
+const DESCRIPTOR_MAGIC: &[u8; 8] = &phoxal::contracts::DESCRIPTOR_FRAME_MAGIC;
 const MAX_SECTION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 65_536;
 const MAX_RECORDS: usize = 64;
@@ -48,6 +49,8 @@ pub struct ArtifactContract {
     pub runtime: RuntimeRecord,
     /// Original descriptor closures embedded by generated contract owners.
     pub descriptors: Vec<DescriptorInfo>,
+    /// Schema records retained by Rust-authored messages in this artifact.
+    pub schemas: Vec<phoxal::schema::DecodedRecord>,
 }
 
 impl ArtifactContract {
@@ -78,6 +81,12 @@ pub struct DescriptorInfo {
 }
 
 impl DescriptorInfo {
+    /// Returns the retained descriptor-set bytes.
+    #[must_use]
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+
     fn summary(&self) -> DescriptorSummary {
         DescriptorSummary {
             sha256: self.sha256.clone(),
@@ -144,6 +153,7 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
     let file = object::File::parse(bytes).map_err(|error| Error::Object(error.to_string()))?;
     let mut artifact_sections = Vec::new();
     let mut descriptor_sections = Vec::new();
+    let mut schema_sections = Vec::new();
     for section in file.sections() {
         let name = section.name().unwrap_or_default();
         if ARTIFACT_SECTION_NAMES.contains(&name) {
@@ -154,6 +164,12 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
             );
         } else if DESCRIPTOR_SECTION_NAMES.contains(&name) {
             descriptor_sections.push(
+                section
+                    .data()
+                    .map_err(|error| Error::Object(error.to_string()))?,
+            );
+        } else if SCHEMA_SECTION_NAMES.contains(&name) {
+            schema_sections.push(
                 section
                     .data()
                     .map_err(|error| Error::Object(error.to_string()))?,
@@ -184,6 +200,50 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
     }
     let runtime: RuntimeRecord = serde_json::from_slice(records[0])?;
     validate_runtime(&runtime)?;
+    let schemas = schema_sections
+        .iter()
+        .try_fold(Vec::new(), |mut schemas, section| {
+            if section.len() > MAX_SECTION_BYTES {
+                return Err(Error::SectionTooLarge {
+                    section: ".phoxal_schema",
+                    bytes: section.len(),
+                });
+            }
+            schemas.extend(phoxal::schema::decode_section(section).map_err(|error| {
+                Error::MalformedFrame {
+                    kind: "schema",
+                    message: error.to_string(),
+                }
+            })?);
+            Ok(schemas)
+        })?;
+    // Rust-authored schema records assemble into one additional standard
+    // descriptor closure for this artifact, exactly like a compiled
+    // descriptor set would be retained.
+    let assembled_descriptors = if schemas.is_empty() {
+        Vec::new()
+    } else {
+        let set = phoxal::schema::assemble_file_descriptors(&schemas)
+            .map_err(|error| Error::InvalidContract(error.to_string()))?;
+        let raw = prost::Message::encode_to_vec(&set);
+        let pool = DescriptorPool::decode(raw.as_slice())?;
+        let files = pool
+            .files()
+            .map(|file| file.name().to_owned())
+            .collect::<Vec<_>>();
+        vec![DescriptorInfo {
+            sha256: {
+                let mut hasher = Sha256::new();
+                hasher.update(&raw);
+                format!("{:x}", hasher.finalize())
+            },
+            bytes: raw.len() as u64,
+            files,
+            raw,
+        }]
+    };
+    let assembled_sections = assembled_descriptors_into_sections(assembled_descriptors);
+    descriptor_sections.extend(assembled_sections.iter().map(|bytes| bytes.as_slice()));
     let descriptors =
         descriptor_sections
             .iter()
@@ -224,7 +284,22 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
     Ok(ArtifactContract {
         runtime,
         descriptors,
+        schemas,
     })
+}
+
+/// Wraps assembled descriptor bytes as pseudo-sections for the shared
+/// descriptor-frame fold.
+fn assembled_descriptors_into_sections(infos: Vec<DescriptorInfo>) -> Vec<Vec<u8>> {
+    infos
+        .into_iter()
+        .map(|info| {
+            let mut section = phoxal::contracts::DESCRIPTOR_FRAME_MAGIC.to_vec();
+            section.extend_from_slice(&(info.bytes.to_le_bytes()));
+            section.extend_from_slice(&info.raw);
+            section
+        })
+        .collect()
 }
 
 fn parse_artifact_records(section: &[u8]) -> Result<Vec<&[u8]>, Error> {
@@ -602,7 +677,7 @@ mod tests {
     #[test]
     fn reads_the_descriptor_frame_emitted_by_the_sdk() {
         let descriptor = descriptor("shared.proto", field_descriptor_proto::Type::String);
-        let mut section = phoxal::contract::DESCRIPTOR_FRAME_MAGIC.to_vec();
+        let mut section = phoxal::contracts::DESCRIPTOR_FRAME_MAGIC.to_vec();
         section.extend_from_slice(&(descriptor.raw.len() as u64).to_le_bytes());
         section.extend_from_slice(&descriptor.raw);
         let parsed = parse_descriptor_frames(&section).expect("SDK descriptor frame parses");
@@ -690,6 +765,7 @@ connections:
                 }],
             },
             descriptors: Vec::new(),
+            schemas: Vec::new(),
         };
         let consumer = ArtifactContract {
             runtime: RuntimeRecord::V0 {
@@ -713,6 +789,7 @@ connections:
                 service_outputs: Vec::new(),
             },
             descriptors: Vec::new(),
+            schemas: Vec::new(),
         };
         let contracts = BTreeMap::from([
             ("consumer".to_owned(), consumer),
@@ -728,6 +805,7 @@ connections:
         let contract = |descriptor| ArtifactContract {
             runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
             descriptors: vec![descriptor],
+            schemas: Vec::new(),
         };
         let consumer = contract(descriptor(
             "example/shared/v1/shared.proto",
@@ -750,6 +828,7 @@ connections:
         let contract = |descriptor| ArtifactContract {
             runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
             descriptors: vec![descriptor],
+            schemas: Vec::new(),
         };
         let consumer = contract(descriptor(
             "example/shared/v1/shared.proto",

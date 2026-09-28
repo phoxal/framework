@@ -6,23 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 description = "Robot-local controller for the internal four-wheel qualification fixture."
-include = ["api/**", "build.rs", "src/**", "Cargo.toml", "Cargo.lock"]
+include = ["src/**", "Cargo.toml", "Cargo.lock"]
 
 [[bin]]
 name = "phoxal-test-controller"
 path = "src/main.rs"
-required-features = ["runtime"]
-
-[features]
-default = ["runtime"]
-runtime = ["phoxal/runtime", "phoxal/robotics", "dep:anyhow"]
 
 [dependencies]
-anyhow = { workspace = true, optional = true }
-phoxal = { workspace = true, default-features = false, features = ["contract"] }
-
-[build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
+anyhow.workspace = true
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
 
 [lints]
 workspace = true

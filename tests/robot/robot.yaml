@@ -44,21 +44,23 @@ robot:
           port: /dev/ttyUSB0
           baud: 115200
         config: { id: 4 }
-brain:
-  outputs:
-    manual:
-      type: phoxal.motion.v1.MotionIntent
-      delivery: latest
-      lease: { valid_for_ms: 100 }
-      projection: state
-      max_bytes: 256
 
 services:
   controller:
     source:
       path: controller
+  navigation:
+    source:
+      path: ../../services/navigation
+    config: { max_expansions_per_step: 32, goal_tolerance_m: 0.1 }
+  world:
+    source:
+      path: ../../services/world
 
 connections:
+  navigation.localization: brain.odometry
+  navigation.map: world.revision
+  world.pose: brain.odometry
   controller.manual: brain.manual
   controller.encoders:
     - front_left_drive.encoder

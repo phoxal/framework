@@ -12,7 +12,7 @@ name = "contract-robot-brain"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["contract", "runtime", "robotics"] }
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
 phoxal-supervisor = { path = "../../../supervisor" }
 
 [build-dependencies]

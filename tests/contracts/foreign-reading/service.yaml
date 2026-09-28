@@ -1,8 +1,0 @@
-schema: phoxal/service/v0
-
-outputs:
-  reading:
-    type: example.foreign.v1.ForeignReading
-    delivery: latest
-    retained_latest: true
-    max_bytes: 1024

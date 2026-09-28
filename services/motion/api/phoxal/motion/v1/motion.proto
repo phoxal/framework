@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-package phoxal.motion.v1;
-
-import "google/protobuf/empty.proto";
-import "phoxal/kinematics/v1/odometry.proto";
-import "phoxal/motion/v1/types.proto";

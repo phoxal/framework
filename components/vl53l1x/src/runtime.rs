@@ -39,13 +39,15 @@ impl Runtime for Vl53l1x {
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_UNAVAILABLE, Vl53l1x, Vl53l1xConfig};
-    use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::contracts::MethodShape;
+    use phoxal::contracts::component::range;
     use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
+    use phoxal::schema::MessageSchema;
 
     #[test]
-    fn generated_range_method_has_a_retained_descriptor() {
+    fn derived_range_method_retains_the_standard_schema() {
         assert_eq!(
             crate::api::service_methods::u0::RANGE.signature().endpoint,
             "range"
@@ -58,12 +60,7 @@ mod tests {
             crate::api::service_methods::u0::RANGE.signature().shape,
             MethodShape::Observation
         );
-        assert!(
-            !crate::api::service_methods::u0::RANGE
-                .signature()
-                .descriptor_set()
-                .is_empty()
-        );
+        assert!(range::RangeSample::retain_schema() > 0);
         assert_eq!(<Vl53l1x as Runtime>::Outputs::FIELDS[0].name, "range");
         assert_eq!(<Vl53l1x as Runtime>::Outputs::FIELDS[0].port, Some("range"));
         assert!(

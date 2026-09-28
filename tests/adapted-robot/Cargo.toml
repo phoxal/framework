@@ -1,0 +1,26 @@
+[package]
+name = "phoxal-adapted-robot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT"
+description = "Robot-owned typed conversion proof over the real world and navigation services."
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
+
+[dependencies]
+phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.3" }
+phoxal = { path = "../../phoxal", default-features = false, features = ["runtime", "session"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+libc = "0.2"
+
+[build-dependencies]
+phoxal = { path = "../../phoxal", default-features = false, features = ["build"] }
+
+[lints.rust]
+warnings = "deny"

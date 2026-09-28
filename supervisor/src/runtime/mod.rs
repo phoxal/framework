@@ -427,8 +427,8 @@ fn artifact_signature(
         service: signature.service.to_owned(),
         method: signature.method.to_owned(),
         shape: match signature.shape {
-            phoxal::contract::MethodShape::Call => phoxal::artifact::MethodShape::Call,
-            phoxal::contract::MethodShape::Observation => {
+            phoxal::contracts::MethodShape::Call => phoxal::artifact::MethodShape::Call,
+            phoxal::contracts::MethodShape::Observation => {
                 phoxal::artifact::MethodShape::Observation
             }
         },

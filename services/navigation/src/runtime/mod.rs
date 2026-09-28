@@ -1,14 +1,13 @@
-use self::phoxal_provider::Inputs as NavigationInputs;
-use crate::api::types::phoxal::kinematics::v1::OdometryState;
-use crate::api::types::phoxal::navigation::v1::{
-    ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
-    GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
-    UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
-};
-#[cfg(test)]
-use crate::api::types::phoxal::world::v1::WorldRevision;
 use crate::config::{NavigationConfig, validate_navigation_config};
+#[cfg(test)]
+use crate::contract::MapState;
+use crate::contract::navigation_api::Inputs as NavigationInputs;
+use crate::contract::{
+    ApplyCommand, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse, GoalFinished,
+    GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason, UnavailableReason,
+};
 use crate::validation;
+use phoxal::contracts::robotics::OdometryState;
 #[cfg(test)]
 use phoxal::runtime::Sample;
 #[cfg(test)]
@@ -30,7 +29,7 @@ pub struct PlannerState {
     active_goal_id: Option<String>,
     target: Option<GoalTarget>,
     map_revision: Option<u64>,
-    unavailable_reasons: Vec<i32>,
+    unavailable_reasons: Vec<UnavailableReason>,
     search_steps_remaining: u32,
     terminal_results: VecDeque<GoalFinished>,
 }
@@ -53,11 +52,7 @@ impl PlannerState {
         !self.unavailable_reasons.is_empty()
     }
 
-    fn set_active_goal(
-        &mut self,
-        goal: &crate::api::types::phoxal::navigation::v1::StartGoal,
-        map_revision: u64,
-    ) {
+    fn set_active_goal(&mut self, goal: &crate::contract::StartGoal, map_revision: u64) {
         self.phase = Phase::Searching;
         self.active_goal_id = Some(goal.goal_id.clone());
         self.target = goal.target.clone();
@@ -85,7 +80,7 @@ impl PlannerState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Navigation;
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::NavigationApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Navigation {
     type Config = NavigationConfig;
     type State = PlannerState;
@@ -155,7 +150,7 @@ impl Runtime for Navigation {
             if let Some(goal_id) = state.active_goal_id.take() {
                 let finished = GoalFinished {
                     goal_id,
-                    outcome: GoalOutcome::Unavailable.into(),
+                    outcome: GoalOutcome::Unavailable,
                     unavailable_reasons: state.unavailable_reasons.clone(),
                 };
                 state.clear_active();
@@ -170,7 +165,7 @@ impl Runtime for Navigation {
             {
                 let finished = GoalFinished {
                     goal_id,
-                    outcome: GoalOutcome::Reached.into(),
+                    outcome: GoalOutcome::Reached,
                     unavailable_reasons: Vec::new(),
                 };
                 state.clear_active();
@@ -185,7 +180,7 @@ impl Runtime for Navigation {
     }
 }
 
-impl crate::api::projections::Projections for Navigation {
+impl crate::contract::navigation_api::projections::Projections for Navigation {
     type State = PlannerState;
 
     /// Projects the private planner state to its public status port.
@@ -196,51 +191,41 @@ impl crate::api::projections::Projections for Navigation {
 
 fn goal_status(state: &PlannerState, request: &GetGoalStatusRequest) -> GetGoalStatusResponse {
     if validation::status_request(request).is_err() {
-        return GetGoalStatusResponse {
-            status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-                crate::api::types::phoxal::navigation::v1::GoalUnknownOrNoLongerRetained {
-                    goal_id: request.goal_id.clone(),
-                },
-            )),
-        };
+        return GetGoalStatusResponse::UnknownOrNoLongerRetained(
+            crate::contract::GoalUnknownOrNoLongerRetained {
+                goal_id: request.goal_id.clone(),
+            },
+        );
     }
     if state.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
-        return GetGoalStatusResponse {
-            status: Some(get_goal_status_response::Status::Running(
-                crate::api::types::phoxal::navigation::v1::GoalRunning {
-                    goal_id: request.goal_id.clone(),
-                },
-            )),
-        };
+        return GetGoalStatusResponse::Running(crate::contract::GoalRunning {
+            goal_id: request.goal_id.clone(),
+        });
     }
     if let Some(finished) = state
         .terminal_results
         .iter()
         .find(|finished| finished.goal_id == request.goal_id)
     {
-        return GetGoalStatusResponse {
-            status: Some(get_goal_status_response::Status::Finished(finished.clone())),
-        };
+        return GetGoalStatusResponse::Finished(finished.clone());
     }
-    GetGoalStatusResponse {
-        status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-            crate::api::types::phoxal::navigation::v1::GoalUnknownOrNoLongerRetained {
-                goal_id: request.goal_id.clone(),
-            },
-        )),
-    }
+    GetGoalStatusResponse::UnknownOrNoLongerRetained(
+        crate::contract::GoalUnknownOrNoLongerRetained {
+            goal_id: request.goal_id.clone(),
+        },
+    )
 }
 
 fn public_status(state: &PlannerState) -> NavigationState {
     NavigationState {
-        phase: state.phase.into(),
+        phase: state.phase,
         active_goal_id: state.active_goal_id.clone(),
         map_revision: state.map_revision,
         unavailable_reasons: state.unavailable_reasons.clone(),
     }
 }
 
-fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32> {
+fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<UnavailableReason> {
     let mut reasons = Vec::with_capacity(2);
     let localization_ready = inputs
         .localization
@@ -255,7 +240,7 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32
                 )
         });
     if !localization_ready {
-        reasons.push(UnavailableReason::Localization.into());
+        reasons.push(UnavailableReason::Localization);
     }
     let map_ready = inputs.map.is_fresh_at(now, Some(MAP_MAX_AGE_MS))
         && inputs.map.value().is_some_and(|revision| {
@@ -268,7 +253,7 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32
                 )
         });
     if !map_ready {
-        reasons.push(UnavailableReason::Map.into());
+        reasons.push(UnavailableReason::Map);
     }
     reasons
 }
@@ -295,48 +280,33 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
         .flatten()
 }
 
-fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
-    ApplyCommandResponse {
-        decision: Some(apply_command_response::Decision::Refused(
-            crate::api::types::phoxal::navigation::v1::Refused {
-                reason: RefusalReason::Unavailable.into(),
-                unavailable_reasons: reasons.to_vec(),
-            },
-        )),
-    }
+fn unavailable_response(reasons: &[UnavailableReason]) -> ApplyCommandResponse {
+    ApplyCommandResponse::Refused(crate::contract::Refused {
+        reason: RefusalReason::Unavailable,
+        unavailable_reasons: reasons.to_vec(),
+    })
 }
 
 fn refused(reason: RefusalReason) -> ApplyCommandResponse {
-    ApplyCommandResponse {
-        decision: Some(apply_command_response::Decision::Refused(
-            crate::api::types::phoxal::navigation::v1::Refused {
-                reason: reason.into(),
-                unavailable_reasons: Vec::new(),
-            },
-        )),
-    }
+    ApplyCommandResponse::Refused(crate::contract::Refused {
+        reason,
+        unavailable_reasons: Vec::new(),
+    })
 }
 
 fn accepted() -> ApplyCommandResponse {
-    ApplyCommandResponse {
-        decision: Some(apply_command_response::Decision::Accepted(
-            crate::api::types::phoxal::navigation::v1::Accepted {},
-        )),
-    }
+    ApplyCommandResponse::Accepted
 }
 
 fn apply_command(
     state: &mut PlannerState,
-    request: &ApplyCommandRequest,
+    command: &ApplyCommand,
 ) -> (ApplyCommandResponse, Option<GoalFinished>) {
-    if validation::command_request(request).is_err() {
+    if validation::command_request(command).is_err() {
         return (refused(RefusalReason::InvalidGoal), None);
     }
-    let Some(command) = request.command.as_ref() else {
-        return (refused(RefusalReason::InvalidGoal), None);
-    };
     match command {
-        apply_command_request::Command::Start(goal) => {
+        ApplyCommand::Start(goal) => {
             if goal
                 .target
                 .as_ref()
@@ -351,14 +321,14 @@ fn apply_command(
             }
             let replaced = state.active_goal_id.take().map(|goal_id| GoalFinished {
                 goal_id,
-                outcome: GoalOutcome::Replaced.into(),
+                outcome: GoalOutcome::Replaced,
                 unavailable_reasons: Vec::new(),
             });
             let map_revision = state.map_revision.unwrap_or_default();
             state.set_active_goal(goal, map_revision);
             (accepted(), replaced)
         }
-        apply_command_request::Command::Cancel(cancel) => {
+        ApplyCommand::Cancel(cancel) => {
             let Some(active_goal_id) = state.active_goal_id.as_deref() else {
                 return (refused(RefusalReason::UnknownGoal), None);
             };
@@ -367,7 +337,7 @@ fn apply_command(
             }
             let finished = GoalFinished {
                 goal_id: cancel.goal_id.clone(),
-                outcome: GoalOutcome::Cancelled.into(),
+                outcome: GoalOutcome::Cancelled,
                 unavailable_reasons: Vec::new(),
             };
             state.clear_active();
@@ -420,9 +390,9 @@ pub fn odometry(value: OdometryState, at: ExecutionTime) -> Latest<OdometryState
 #[cfg(test)]
 /// Construct a stamped world revision for direct Runtime tests and adapters.
 #[must_use]
-pub fn map_revision(revision: u64, at: ExecutionTime) -> Latest<WorldRevision> {
+pub fn map_revision(revision: u64, at: ExecutionTime) -> Latest<MapState> {
     Latest::from_sample(Sample::new(
-        WorldRevision {
+        MapState {
             revision,
             available: true,
             oldest_capture_time_nanos: Some(at.as_nanos()),
@@ -450,35 +420,25 @@ mod tests {
         }
     }
 
-    fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommandRequest {
-        ApplyCommandRequest {
-            command: Some(apply_command_request::Command::Start(
-                crate::api::types::phoxal::navigation::v1::StartGoal {
-                    goal_id: goal_id.to_owned(),
-                    target: Some(GoalTarget {
-                        frame_id: "map".to_owned(),
-                        x_m,
-                        y_m,
-                        final_heading_rad: None,
-                    }),
-                },
-            )),
-        }
+    fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommand {
+        ApplyCommand::Start(crate::contract::StartGoal {
+            goal_id: goal_id.to_owned(),
+            target: Some(GoalTarget {
+                frame_id: "map".to_owned(),
+                x_m,
+                y_m,
+                final_heading_rad: None,
+            }),
+        })
     }
 
-    fn cancel(goal_id: &str) -> ApplyCommandRequest {
-        ApplyCommandRequest {
-            command: Some(apply_command_request::Command::Cancel(
-                crate::api::types::phoxal::navigation::v1::CancelGoal {
-                    goal_id: goal_id.to_owned(),
-                },
-            )),
-        }
+    fn cancel(goal_id: &str) -> ApplyCommand {
+        ApplyCommand::Cancel(crate::contract::CancelGoal {
+            goal_id: goal_id.to_owned(),
+        })
     }
 
-    fn inputs(
-        commands: Vec<Command<ApplyCommandRequest, ApplyCommandResponse>>,
-    ) -> NavigationInputs {
+    fn inputs(commands: Vec<Command<ApplyCommand, ApplyCommandResponse>>) -> NavigationInputs {
         NavigationInputs {
             apply_command: Commands::new(commands),
             get_goal_status: Default::default(),
@@ -531,10 +491,7 @@ mod tests {
             finished.extend(accepted.outputs().finished.iter().cloned());
         }
         assert_eq!(finished.len(), 1);
-        assert_eq!(
-            GoalOutcome::try_from(finished[0].outcome),
-            Ok(GoalOutcome::Reached)
-        );
+        assert_eq!(finished[0].outcome, GoalOutcome::Reached);
     }
 
     #[test]
@@ -558,8 +515,8 @@ mod tests {
             .expect("accept cancellation");
         assert_eq!(accepted.outputs().finished.len(), 1);
         assert_eq!(
-            GoalOutcome::try_from(accepted.outputs().finished[0].outcome),
-            Ok(GoalOutcome::Cancelled)
+            accepted.outputs().finished[0].outcome,
+            GoalOutcome::Cancelled
         );
         let accepted = owner
             .accept(&context(2, 40_000_000), &inputs(Vec::new()))
@@ -585,9 +542,9 @@ mod tests {
             .expect("unavailability is a typed refusal");
         let response = accepted.outputs().apply_command_replies[0].response();
         assert!(matches!(
-            response.decision.as_ref(),
-            Some(apply_command_response::Decision::Refused(refused))
-                if refused.reason == RefusalReason::Unavailable as i32
+            response,
+            ApplyCommandResponse::Refused(refused)
+                if refused.reason == RefusalReason::Unavailable
         ));
         assert_eq!(owner.status(), phoxal::runtime::RuntimeStatus::Ready);
     }
@@ -610,7 +567,7 @@ mod tests {
             .outputs()
             .finished
             .iter()
-            .map(|finished| GoalOutcome::try_from(finished.outcome).expect("known outcome"))
+            .map(|finished| finished.outcome)
             .collect::<Vec<_>>();
         assert_eq!(outcomes, [GoalOutcome::Replaced, GoalOutcome::Cancelled]);
     }
@@ -643,15 +600,14 @@ mod tests {
                 &GetGoalStatusRequest {
                     goal_id: "running".to_owned()
                 }
-            )
-            .status,
-            Some(get_goal_status_response::Status::Running(_))
+            ),
+            GetGoalStatusResponse::Running(_)
         ));
 
         state.clear_active();
         state.retain_terminal(GoalFinished {
             goal_id: "finished".to_owned(),
-            outcome: GoalOutcome::Cancelled.into(),
+            outcome: GoalOutcome::Cancelled,
             unavailable_reasons: Vec::new(),
         });
         assert!(matches!(
@@ -660,9 +616,8 @@ mod tests {
                 &GetGoalStatusRequest {
                     goal_id: "finished".to_owned()
                 }
-            )
-            .status,
-            Some(get_goal_status_response::Status::Finished(_))
+            ),
+            GetGoalStatusResponse::Finished(_)
         ));
         assert!(matches!(
             goal_status(
@@ -670,11 +625,8 @@ mod tests {
                 &GetGoalStatusRequest {
                     goal_id: "evicted".to_owned()
                 }
-            )
-            .status,
-            Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-                _
-            ))
+            ),
+            GetGoalStatusResponse::UnknownOrNoLongerRetained(_)
         ));
     }
 }

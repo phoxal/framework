@@ -44,7 +44,7 @@ fn world_revision(at_ms: u64) -> Latest<WorldRevision> {
 fn motion(at_ms: u64) -> Latest<MotionStatus> {
     Latest::from_sample(Sample::new(
         MotionStatus {
-            mode: crate::api::types::phoxal::motion::v1::ControlMode::Disarmed as i32,
+            mode: crate::contract::ControlMode::Disarmed,
             emergency_latched: false,
             selected_owner_id: None,
             protective_state_clear: false,
@@ -88,7 +88,7 @@ fn fresh_evidence_produces_clear_expiring_constraints() {
     let (state, _) = Safety
         .step(&context(0, 20, None), state, &clear_inputs(20))
         .expect("fresh evidence");
-    assert_eq!(state.constraints.permission, Permission::Clear as i32);
+    assert_eq!(state.constraints.permission, Permission::Clear);
     assert_eq!(state.status.sequence, 1);
     assert!(state.constraints.expires_at_nanos > state.constraints.valid_from_nanos);
 }
@@ -111,19 +111,19 @@ fn missing_world_or_motion_fails_closed() {
             },
         )
         .expect("missing evidence is a valid protective transition");
-    assert_eq!(state.constraints.permission, Permission::Stopped as i32);
+    assert_eq!(state.constraints.permission, Permission::Stopped);
     assert!(!state.status.protective_state_clear);
     assert!(
         state
             .status
             .reasons
-            .contains(&(ConstraintReason::WorldUnavailable as i32))
+            .contains(&ConstraintReason::WorldUnavailable)
     );
     assert!(
         state
             .status
             .reasons
-            .contains(&(ConstraintReason::MotionUnavailable as i32))
+            .contains(&ConstraintReason::MotionUnavailable)
     );
 }
 
@@ -145,7 +145,7 @@ fn close_range_stops_and_midrange_limits() {
             },
         )
         .expect("close range");
-    assert_eq!(state.constraints.permission, Permission::Stopped as i32);
+    assert_eq!(state.constraints.permission, Permission::Stopped);
 
     let (state, _) = Safety
         .step(
@@ -159,7 +159,7 @@ fn close_range_stops_and_midrange_limits() {
             },
         )
         .expect("midrange range");
-    assert_eq!(state.constraints.permission, Permission::Limited as i32);
+    assert_eq!(state.constraints.permission, Permission::Limited);
     assert_eq!(
         state.constraints.constraints[0].max_linear_speed_mps,
         Some(SafetyConfig::default().proximity_linear_limit_mps)
@@ -175,13 +175,13 @@ fn a_slow_range_capture_does_not_clear_a_stop_between_samples() {
     let mut inputs = clear_inputs(20);
     inputs.ranges = Samples::new(vec![range("front", 0.2, 20)]);
     let (state, _) = Safety.step(&context(0, 20, None), state, &inputs).unwrap();
-    assert_eq!(state.constraints.permission, Permission::Stopped as i32);
+    assert_eq!(state.constraints.permission, Permission::Stopped);
     let mut inputs = clear_inputs(40);
     inputs.ranges = Samples::default();
     let (state, _) = Safety
         .step(&context(1, 40, Some(20)), state, &inputs)
         .unwrap();
-    assert_eq!(state.constraints.permission, Permission::Stopped as i32);
+    assert_eq!(state.constraints.permission, Permission::Stopped);
 }
 
 #[test]
@@ -211,12 +211,12 @@ fn every_configured_range_source_must_remain_fresh_and_valid() {
         (state, _) = Safety
             .step(&context(index, now, now.checked_sub(20)), state, &inputs)
             .unwrap();
-        assert_eq!(state.constraints.permission, expected as i32, "at {now}ms");
+        assert_eq!(state.constraints.permission, expected, "at {now}ms");
         assert!(state.ranges.len() <= config.ranges.len());
     }
     let reset = SafetyState::new(config);
     assert!(reset.ranges.is_empty());
-    assert_eq!(reset.constraints.permission, Permission::Stopped as i32);
+    assert_eq!(reset.constraints.permission, Permission::Stopped);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn derived_world_capture_age_and_retained_ranges_bound_the_constraint_expiry() {
             &input,
         )
         .unwrap();
-    assert_eq!(state.constraints.permission, Permission::Clear as i32);
+    assert_eq!(state.constraints.permission, Permission::Clear);
     assert_eq!(state.constraints.oldest_capture_time_nanos, Some(0));
     assert_eq!(state.constraints.expires_at_nanos, 100_000_000);
     for stale_revision in [false, true] {
@@ -274,7 +274,7 @@ fn derived_world_capture_age_and_retained_ranges_bound_the_constraint_expiry() {
                 &input,
             )
             .unwrap();
-        assert_eq!(state.constraints.permission, Permission::Stopped as i32);
+        assert_eq!(state.constraints.permission, Permission::Stopped);
         assert_eq!(state.constraints.expires_at_nanos, 200_000_000);
     }
 }
@@ -316,7 +316,7 @@ fn downward_range_requires_ground_inside_its_authored_distance_envelope() {
             )
             .unwrap();
         assert_eq!(
-            state.constraints.permission, permission as i32,
+            state.constraints.permission, permission,
             "ground distance {distance}"
         );
     }

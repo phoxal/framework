@@ -4,7 +4,7 @@
 phoxal::api!();
 
 use api::consumer;
-use phoxal::contract::{Call, Empty, MethodShape, Observation};
+use phoxal::contracts::{Call, Empty, MethodShape, Observation};
 
 fn main() {
     // Instance bindings carry the same contract identities without naming a

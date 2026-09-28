@@ -1,8 +1,7 @@
 //! Differential-drive body twist to motor shaft velocity, in SI units.
-use crate::api::types::phoxal::motion::v1::{
-    ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target,
-};
 use crate::config::MotionConfig;
+use crate::contract::MotionIntent;
+use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget, Control};
 
 pub(super) fn stopped_setpoint(config: &MotionConfig) -> ActuatorSetpoint {
     setpoint_from_twist(0.0, 0.0, config)
@@ -32,7 +31,7 @@ pub(super) fn setpoint_from_twist(
             (linear + side * angular * config.wheel_base_m / 2.0) / config.wheel_radius_m;
         targets.extend(wheels.iter().map(|wheel| ActuatorTarget {
             actuator_id: wheel.actuator_id.clone(),
-            control: Some(actuator_target::Control::VelocityRadps(
+            control: Some(Control::VelocityRadps(
                 wheel_rate * wheel.gear_ratio * f64::from(wheel.direction_sign),
             )),
         }));

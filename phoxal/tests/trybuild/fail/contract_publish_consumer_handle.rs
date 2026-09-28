@@ -1,4 +1,4 @@
-use phoxal::contract::ObservationMethod;
+use phoxal::contracts::ObservationMethod;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Status {

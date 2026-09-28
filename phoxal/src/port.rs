@@ -72,7 +72,7 @@ pub struct PortSignature {
     /// Semantic port kind.
     pub kind: PortKind,
     /// Cardinality-derived public method shape.
-    pub shape: crate::contract::MethodShape,
+    pub shape: crate::contracts::MethodShape,
     /// Fully-qualified request message name.
     pub request: &'static str,
     /// Fully-qualified response message name.
@@ -148,10 +148,10 @@ impl PortSignature {
             kind,
             shape: match kind {
                 PortKind::Setpoint | PortKind::Read | PortKind::Commands => {
-                    crate::contract::MethodShape::Call
+                    crate::contracts::MethodShape::Call
                 }
                 PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream => {
-                    crate::contract::MethodShape::Observation
+                    crate::contracts::MethodShape::Observation
                 }
             },
             request,
@@ -164,7 +164,7 @@ impl PortSignature {
 
     /// Creates an internal runtime endpoint from a generated method contract.
     #[must_use]
-    pub const fn from_method(method: crate::contract::MethodSignature, kind: PortKind) -> Self {
+    pub const fn from_method(method: crate::contracts::MethodSignature, kind: PortKind) -> Self {
         Self {
             name: method.endpoint,
             service: method.service,

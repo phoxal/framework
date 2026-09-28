@@ -38,38 +38,41 @@ impl Runtime for OakDLite {
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_UNAVAILABLE, OakDLite, OakDLiteConfig};
-    use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::contracts::component::{camera, imu};
+    use phoxal::contracts::{MethodDescriptor, MethodShape};
     use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
+    use phoxal::schema::MessageSchema;
 
     #[test]
-    fn generated_methods_cover_every_declared_capability() {
+    fn derived_methods_cover_every_declared_capability() {
         fn assert_observation_method<P: MethodDescriptor>(method: P, payload: &str) {
             assert_eq!(method.signature().shape, MethodShape::Observation);
             assert_eq!(method.signature().service, payload);
-            assert!(!method.signature().descriptor_set().is_empty());
         }
-        let camera = "phoxal.component.oak_d_lite.v1.CameraFrame";
-        assert_observation_method(crate::api::service_methods::u0::LEFT_MONO, camera);
-        assert_observation_method(crate::api::service_methods::u0::RGB, camera);
-        assert_observation_method(crate::api::service_methods::u0::RIGHT_MONO, camera);
+        let frame = "phoxal.component.camera.v1.CameraFrame";
+        assert_observation_method(crate::api::service_methods::u0::LEFT_MONO, frame);
+        assert_observation_method(crate::api::service_methods::u0::RGB, frame);
+        assert_observation_method(crate::api::service_methods::u0::RIGHT_MONO, frame);
         assert_observation_method(
             crate::api::service_methods::u0::DEPTH,
-            "phoxal.component.oak_d_lite.v1.DepthFrame",
+            "phoxal.component.camera.v1.DepthFrame",
         );
         assert_observation_method(
             crate::api::service_methods::u0::IMU,
-            "phoxal.component.oak_d_lite.v1.ImuSample",
+            "phoxal.component.imu.v1.ImuSample",
         );
         assert_observation_method(
             crate::api::service_methods::u0::ACCELEROMETER,
-            "phoxal.component.oak_d_lite.v1.AccelerometerSample",
+            "phoxal.component.imu.v1.AccelerometerSample",
         );
         assert_observation_method(
             crate::api::service_methods::u0::GYROSCOPE,
-            "phoxal.component.oak_d_lite.v1.GyroscopeSample",
+            "phoxal.component.imu.v1.GyroscopeSample",
         );
+        assert!(camera::CameraFrame::retain_schema() > 0);
+        assert!(imu::ImuSample::retain_schema() > 0);
         assert_eq!(
             <OakDLite as Runtime>::Outputs::FIELDS
                 .iter()

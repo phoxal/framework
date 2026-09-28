@@ -1386,27 +1386,7 @@ fn input_sources(
         if instance != consumer_instance || !inputs.iter().any(|input| input.name == port) {
             continue;
         }
-        let source_values = match sources {
-            serde_json::Value::String(source) => vec![source.as_str()],
-            serde_json::Value::Array(sources) => sources
-                .iter()
-                .map(|source| {
-                    source.as_str().ok_or_else(|| {
-                        anyhow::anyhow!("connection `{consumer}` contains a non-string source")
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-            serde_json::Value::Object(mapping) => vec![
-                mapping
-                    .get("from")
-                    .and_then(|source| source.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("projection connection `{consumer}` has no `from` source")
-                    })?,
-            ],
-            _ => bail!("connection `{consumer}` must contain a source or source list"),
-        };
-        for source in source_values {
+        for source in connection_source_values(consumer, sources)? {
             let Some((source_instance, source_port)) = source.split_once('.') else {
                 bail!("connection source `{source}` has no port separator");
             };
@@ -1446,15 +1426,6 @@ fn connection_source_values<'a>(
                 })
             })
             .collect(),
-        serde_json::Value::Object(mapping) => {
-            // An explicit projection connection names its foreign source
-            // under `from`; the receiver applies the compiled field mapping.
-            mapping
-                .get("from")
-                .and_then(|source| source.as_str())
-                .map(|source| vec![source])
-                .with_context(|| format!("projection connection `{consumer}` has no `from` source"))
-        }
         _ => bail!("connection `{consumer}` must contain a source or source list"),
     }
 }

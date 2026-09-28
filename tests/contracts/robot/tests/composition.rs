@@ -12,12 +12,16 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "acceptance test")]
 
+#[path = "../src/contract.rs"]
+mod contract;
+
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use phoxal::communication::session::SupervisorState;
-use phoxal::contract::Empty;
+use phoxal::contracts::Empty;
 use phoxal::session::{
     CallOutcome, Connection, ConnectionConfig, ObservationItem, Supervisor, connect,
 };
@@ -25,6 +29,7 @@ use phoxal::session::{
 phoxal::api!();
 
 use api::consumer::ConsumerStatus;
+use contract::brain_api;
 
 const STARTUP: Duration = Duration::from_secs(30);
 const SHUTDOWN: Duration = Duration::from_secs(15);
@@ -50,14 +55,16 @@ impl SupervisorProcess {
             .filter(|mode| mode == "controlled" || mode == "hardware")
             .unwrap_or_else(|| "hardware".to_owned());
         command.args(["--launch-mode", &launch_mode]);
+        // The supervisor leads its own process group, assigned atomically at
+        // exec: a parent-side setpgid races the child's exec and silently
+        // loses (EACCES), which leaves the whole tree in this test runner's
+        // group and makes the group cleanup below a no-op.
+        command.process_group(0);
         let child = command.spawn().expect("launch supervisor executable");
-        let pid = child.id() as i32;
-        // SAFETY: move the supervisor into its own process group before any
-        // runtime child can join it, so cleanup kills the whole tree.
-        unsafe {
-            libc::setpgid(pid, pid);
+        Self {
+            group: child.id() as i32,
+            child,
         }
-        Self { child, group: pid }
     }
 
     fn is_finished(&mut self) -> bool {
@@ -90,9 +97,12 @@ impl SupervisorProcess {
 
 impl Drop for SupervisorProcess {
     fn drop(&mut self) {
-        // SAFETY: kill only this test's process group, including runtimes.
+        // SAFETY: kill the leader's own group (supervisor plus every runtime
+        // it spawned) and then the leader itself, so a group that never
+        // formed cannot leave the child alive under a blocking wait.
         unsafe {
             libc::kill(-self.group, libc::SIGKILL);
+            libc::kill(self.group, libc::SIGKILL);
         }
         let _ = self.child.wait();
     }
@@ -262,7 +272,7 @@ async fn manifest_composition_exchanges_operations_and_observations_across_proce
         loop {
             let brain = execution.service("brain").await.expect("brain service");
             let report = brain
-                .method(api::brain::report(Empty {}).method())
+                .method(brain_api::REPORT.bind("brain", Empty {}).method())
                 .await
                 .expect("bind report");
             if let CallOutcome::Received(tally) = report
@@ -327,102 +337,6 @@ async fn wait_until_ready(
             _ => tokio::time::sleep(Duration::from_millis(20)).await,
         }
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "set PHOXAL_PROJECTION_BUNDLE to a compiled projection composition bundle"]
-async fn foreign_observation_projects_into_the_standard_consumer() {
-    let Some(bundle) = std::env::var_os("PHOXAL_PROJECTION_BUNDLE").map(PathBuf::from) else {
-        eprintln!("skipping: PHOXAL_PROJECTION_BUNDLE is not set");
-        return;
-    };
-    let root = bundle.canonicalize().expect("bundle root canonicalizes");
-    let endpoint = format!(
-        "unixsock-stream/{}",
-        root.join(".phoxal/run/supervisor.sock").display()
-    );
-
-    let mut supervisor = SupervisorProcess::launch(&root);
-    let connection = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &mut supervisor))
-        .await
-        .expect("the supervisor binds its public session endpoint");
-    let session = tokio::time::timeout(STARTUP, async {
-        connection
-            .supervisor("composition-e2e")
-            .await
-            .expect("the supervisor accepts the public session")
-    })
-    .await
-    .expect("public session opens");
-    tokio::time::timeout(STARTUP, wait_until_ready(&session, &mut supervisor))
-        .await
-        .expect("every runtime reaches Ready before the startup deadline")
-        .expect("the composition stays healthy while reaching Ready");
-
-    let execution_id = tokio::time::timeout(STARTUP, async {
-        loop {
-            let executions = session
-                .management()
-                .executions()
-                .await
-                .expect("execution inventory");
-            if let Some(execution) = executions.first() {
-                return execution.execution_id.clone();
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("an execution is admitted");
-    let execution = tokio::time::timeout(STARTUP, session.execution(&execution_id))
-        .await
-        .expect("select execution")
-        .expect("execution resolves");
-
-    // The unchanged consumer must see foreign shaft values (base 5.0, wire
-    // numbers 2/5) arrive as standard EncoderSample positions (wire numbers
-    // 1/2) through the receiver-side projection.
-    let mut first: Option<ConsumerStatus> = None;
-    let status = tokio::time::timeout(PROGRESS, async {
-        loop {
-            let consumer = execution
-                .service("consumer")
-                .await
-                .expect("consumer service");
-            let inspect = consumer
-                .method(api::consumer::inspect(Empty {}).method())
-                .await
-                .expect("bind inspect");
-            if let Ok(CallOutcome::Received(status)) = inspect.call(Empty {}, STARTUP).await {
-                let status: ConsumerStatus = status;
-                if first.is_none() {
-                    first = Some(status.clone());
-                    eprintln!("projection status at first inspect: {status:?}");
-                }
-                if status.observed > 0
-                    && status
-                        .position_rad
-                        .is_some_and(|position| (5.0..6.0).contains(&position))
-                {
-                    return status;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "projection did not reach the consumer within {:?}; first inspect saw {:?}",
-            PROGRESS,
-            first.expect("at least one inspect completed")
-        )
-    });
-    eprintln!(
-        "projected observation position: {:?} (foreign producer base 5.0)",
-        status.position_rad
-    );
-    supervisor.shutdown();
 }
 
 /// Sequential A/B provider substitution, live run B: the unchanged consumer

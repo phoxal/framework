@@ -1,42 +1,63 @@
-//! Disarmed default brain for the internal qualification robot, instructed
-//! by `robot.yaml`: the endpoint surface is generated; this file owns only
-//! the disarmed intent.
+//! Disarmed default brain for the internal qualification robot: the leased
+//! manual intent's type is generated from the controller's prepared
+//! compiled contract and carries the same schema and codec contract as an
+//! authored message; the brain owns only the disarmed projection.
 
+use phoxal::contracts::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-
 phoxal::api!();
 
-use crate::api::types::phoxal::motion::v1::MotionIntent;
+/// The brain's endpoint contract: one leased manual projection over the
+/// controller's generated payload type.
+#[phoxal::endpoints]
+pub struct BrainApi {
+    #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 256)]
+    manual: Latest<crate::api::types::phoxal::motion::v1::MotionIntent>,
+    #[phoxal::output(projection = state, bootstrap, max_bytes = 512)]
+    odometry: Latest<::phoxal::contracts::robotics::OdometryState>,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Brain;
 
-impl crate::api::projections::Projections for Brain {
-    type State = ();
+impl brain_api::projections::Projections for Brain {
+    type State = ::phoxal::contracts::robotics::OdometryState;
 
     /// The normal robot starts stopped.
     /// The local scenario substitutes the controller's manual input without
     /// turning the qualification program into deployed robot behavior.
-    fn manual(&self, _state: &()) -> Option<MotionIntent> {
+    fn manual(
+        &self,
+        _state: &Self::State,
+    ) -> Option<crate::api::types::phoxal::motion::v1::MotionIntent> {
         None
+    }
+
+    fn odometry(&self, state: &Self::State) -> ::phoxal::contracts::robotics::OdometryState {
+        *state
     }
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = BrainApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Brain {
     type Config = ();
-    type State = ();
+    type State = ::phoxal::contracts::robotics::OdometryState;
 
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<()> {
-        Ok(())
+    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
+        Ok(Self::State {
+            available: true,
+            ..Self::State::default()
+        })
     }
 
     fn step(
         &self,
-        _ctx: &StepContext,
-        state: (),
+        ctx: &StepContext,
+        mut state: Self::State,
         _inputs: &Self::Inputs,
-    ) -> phoxal::Result<((), Self::Outputs)> {
+    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
+        state.revision = state.revision.saturating_add(1);
+        state.oldest_capture_time_nanos = Some(ctx.now().as_nanos());
         Ok((state, Self::Outputs::default()))
     }
 }

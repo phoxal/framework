@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use crate::contracts::ProstPayload;
 use prost::Message;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -33,7 +34,7 @@ use crate::communication_transport::{
     PublicSessionConnection, PublicSessionTransport, PublicSubscription, PublicTlsCredentials,
     PublicTransportError, PublicTransportLimits, PublicTransportSecurity, SupervisorWatch,
 };
-use crate::contract::{
+use crate::contracts::{
     CallMethod, MethodDescriptor, MethodShape, MethodSignature, ObservationMethod,
 };
 use crate::session::error::SessionError;
@@ -953,7 +954,7 @@ pub struct ObservationSubscription<T> {
     payload: PhantomData<fn() -> T>,
 }
 
-impl<T: Message + Default + Send + Sync + 'static> ObservationSubscription<T> {
+impl<T: ProstPayload> ObservationSubscription<T> {
     /// Receive the initial retained cursor or next bounded observation record.
     pub async fn recv(&mut self) -> Option<Result<ObservationItem<T>, SessionError>> {
         let record = if let Some(initial) = self.initial.take() {
@@ -990,7 +991,7 @@ impl<T: Message + Default + Send + Sync + 'static> ObservationSubscription<T> {
             RecordKind::InitialAbsent => ObservationItem::InitialAbsent {
                 revision: record.revision,
             },
-            RecordKind::Value => match T::decode(record.payload.as_slice()) {
+            RecordKind::Value => match T::decode_payload(record.payload.as_slice()) {
                 Ok(value) => ObservationItem::Value {
                     revision: record.revision,
                     value,
@@ -1022,7 +1023,7 @@ impl<T: Message + Default + Send + Sync + 'static> ObservationSubscription<T> {
     }
 }
 
-impl<T: Message + Default + Send + Sync + 'static> ObservationHandle<T> {
+impl<T: ProstPayload> ObservationHandle<T> {
     /// Start one bounded typed observation.
     pub async fn observe(&self) -> Result<ObservationSubscription<T>, SessionError> {
         let request = self.core.subscription_request()?;
@@ -1037,18 +1038,21 @@ impl<T: Message + Default + Send + Sync + 'static> ObservationHandle<T> {
     }
 }
 
-impl<Request: Message + Send + Sync + 'static, Response: Message + Default + Send + Sync + 'static>
-    CallHandle<Request, Response>
-{
+impl<Request: ProstPayload, Response: ProstPayload> CallHandle<Request, Response> {
     /// Issue one typed call with a finite caller deadline.
     pub async fn call(
         &self,
         request: Request,
         timeout: Duration,
     ) -> Result<CallOutcome<Response>, SessionError> {
-        let result = self.core.invoke(request, timeout).await?;
+        let payload = Request::encode_payload(&request).map_err(|error| {
+            SessionError::InvalidPublicRequest {
+                detail: format!("request could not be encoded: {error}"),
+            }
+        })?;
+        let result = self.core.invoke_encoded(payload, timeout).await?;
         Ok(match result {
-            RawOutcome::Received(payload) => match Response::decode(payload.as_slice()) {
+            RawOutcome::Received(payload) => match Response::decode_payload(payload.as_slice()) {
                 Ok(response) => CallOutcome::Received(response),
                 Err(error) => CallOutcome::OutcomeUnknown(OutcomeReason::new(error.to_string())),
             },
@@ -1087,9 +1091,9 @@ impl MethodHandleCore {
         })
     }
 
-    async fn invoke<Request: Message>(
+    async fn invoke_encoded(
         &self,
-        request: Request,
+        payload: Vec<u8>,
         timeout: Duration,
     ) -> Result<RawOutcome, SessionError> {
         self.ensure_current("operation")?;
@@ -1098,18 +1102,11 @@ impl MethodHandleCore {
                 "operation timeout must be nonzero",
             )));
         }
-        let encoded_len = request.encoded_len();
-        if encoded_len > usize::try_from(self.metadata.max_message_bytes).unwrap_or(usize::MAX) {
+        if payload.len() > usize::try_from(self.metadata.max_message_bytes).unwrap_or(usize::MAX) {
             return Ok(RawOutcome::NotSent(OutcomeReason::new(
                 "request exceeds the admitted method byte bound",
             )));
         }
-        let mut payload = Vec::with_capacity(encoded_len);
-        request
-            .encode(&mut payload)
-            .map_err(|error| SessionError::InvalidPublicRequest {
-                detail: format!("request could not be encoded: {error}"),
-            })?;
         let correlation_id = self.next_id();
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
         let request = OperationRequest {

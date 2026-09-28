@@ -1,0 +1,17 @@
+// Independent Protobuf reference mirroring the SDK's authored
+// `phoxal::contracts::component::lidar` shape, compiled by protoc for the
+// interop proof. The SDK owns the authoritative Rust definition.
+syntax = "proto3";
+
+package phoxal.component.lidar.v1;
+
+message LaserScan {
+  string sensor_frame_id = 1;
+  double angle_min_rad = 2;
+  double angle_increment_rad = 3;
+  double time_increment_s = 4;
+  double min_range_m = 5;
+  double max_range_m = 6;
+  repeated double ranges_m = 7;
+  repeated double intensities = 8;
+}

@@ -142,7 +142,7 @@ pub(super) fn assess_ranges(
             push_unique_constraint(
                 constraints,
                 Constraint {
-                    reason: ConstraintReason::ObstacleProximity as i32,
+                    reason: ConstraintReason::ObstacleProximity,
                     max_linear_speed_mps: Some(state.config.proximity_linear_limit_mps),
                     max_angular_speed_radps: None,
                     observed_value: Some(distance),
@@ -182,7 +182,7 @@ fn push_unique_constraint(constraints: &mut Vec<Constraint>, candidate: Constrai
 
 pub(super) fn observed_constraint(reason: ConstraintReason, observed_value: f64) -> Constraint {
     Constraint {
-        reason: reason as i32,
+        reason,
         max_linear_speed_mps: None,
         max_angular_speed_radps: None,
         observed_value: Some(observed_value),
@@ -190,9 +190,8 @@ pub(super) fn observed_constraint(reason: ConstraintReason, observed_value: f64)
 }
 
 pub(super) fn is_stop_reason(constraint: &Constraint) -> bool {
-    !matches!(
-        ConstraintReason::try_from(constraint.reason),
-        Ok(ConstraintReason::ObstacleProximity)
+    !matches!(constraint.reason,
+        ConstraintReason::ObstacleProximity
             if constraint.max_linear_speed_mps.is_some()
                 || constraint.max_angular_speed_radps.is_some()
     )

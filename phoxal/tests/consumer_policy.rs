@@ -67,12 +67,12 @@ fn assert_direct_packages(tree: &str, present: &[&str], absent: &[&str]) {
 }
 
 #[test]
-fn contract_profile_is_transport_free() {
-    let tree = direct_tree("contract");
+fn base_sdk_is_transport_free() {
+    let tree = direct_tree("");
     assert_direct_packages(
         &tree,
         &["phoxal"],
-        &["tokio", "tokio-util", "zenoh", "phoxal-macros", "clap"],
+        &["tokio", "tokio-util", "zenoh", "clap"],
     );
 }
 
@@ -82,13 +82,7 @@ fn session_profile_is_public_client_only() {
     assert_direct_packages(
         &tree,
         &["phoxal", "prost", "tokio", "tokio-util", "zenoh"],
-        &[
-            "phoxal-macros",
-            "clap",
-            "tempfile",
-            "tracing-subscriber",
-            "system_shutdown",
-        ],
+        &["clap", "tempfile", "tracing-subscriber", "system_shutdown"],
     );
 }
 
@@ -97,4 +91,70 @@ fn session_profile_is_public_client_only() {
 fn runtime_profile_retains_runner_dependencies() {
     let tree = direct_tree("runtime");
     assert_direct_packages(&tree, &["phoxal-macros", "clap", "tokio", "zenoh"], &[]);
+}
+
+#[test]
+fn scenario_profile_stays_off_the_runner() {
+    let tree = direct_tree("scenario");
+    assert_direct_packages(
+        &tree,
+        &["phoxal", "anyhow", "base64", "tempfile"],
+        &["tokio", "tokio-util", "zenoh", "clap"],
+    );
+}
+
+#[test]
+fn build_profile_adds_only_the_local_generator() {
+    let tree = direct_tree("build");
+    assert_direct_packages(
+        &tree,
+        &["phoxal", "phoxal-build"],
+        &["tokio", "tokio-util", "zenoh", "clap", "tempfile"],
+    );
+}
+
+#[test]
+#[cfg(feature = "runtime")]
+fn default_profile_is_exactly_the_runtime_role() {
+    // Defaults select the ordinary robot runtime; scenario support moved
+    // to consumers' dev dependencies and must not ride along.
+    let tree = default_tree();
+    assert_direct_packages(
+        &tree,
+        &["phoxal-macros", "clap", "tokio", "zenoh"],
+        &["tempfile", "base64"],
+    );
+}
+
+fn default_tree() -> String {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let output = match Command::new(cargo)
+        .args([
+            "tree",
+            "--manifest-path",
+            manifest.to_string_lossy().as_ref(),
+            "-p",
+            "phoxal",
+            "--edges",
+            "normal",
+            "--depth",
+            "1",
+            "--prefix",
+            "none",
+        ])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => panic!("cargo tree starts: {error}"),
+    };
+    assert!(
+        output.status.success(),
+        "cargo tree for defaults failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    match String::from_utf8(output.stdout) {
+        Ok(output) => output,
+        Err(error) => panic!("cargo tree output is UTF-8: {error}"),
+    }
 }

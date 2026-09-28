@@ -161,7 +161,12 @@ pub(crate) fn resolve_prepared_sources(
         ..
     } = document;
     let root = metadata.root_package().ok_or(SourceError::MissingBrain)?;
-    let brain = resolve_brain(root, authored_brain.as_ref(), metadata)?;
+    let brain = resolve_brain(
+        root,
+        authored_brain.as_ref(),
+        metadata,
+        authored_services.contains_key(super::adapter::INSTANCE),
+    )?;
     let supervisor = resolve_supervisor(root, metadata)?;
     let installed = participant::selected_installations(layout, document, options)?;
     let mut services = BTreeMap::new();
@@ -423,15 +428,18 @@ fn resolve_supervisor(root: &Package, metadata: &Metadata) -> Result<SelectedTar
     Ok(selected)
 }
 
-fn resolve_brain(
+pub(crate) fn resolve_brain(
     root: &Package,
     selection: Option<&BrainSelection>,
     metadata: &Metadata,
+    generated_adapter: bool,
 ) -> Result<SelectedTarget, SourceError> {
     let binaries = root
         .targets
         .iter()
-        .filter(|target| target.is_bin())
+        .filter(|target| {
+            target.is_bin() && !(generated_adapter && target.name == super::adapter::INSTANCE)
+        })
         .collect::<Vec<_>>();
     if let Some(selection) = selection.and_then(|selection| selection.binary.as_deref()) {
         let target = binaries

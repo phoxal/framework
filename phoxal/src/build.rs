@@ -1,10 +1,8 @@
-//! Authoring helper for Protobuf build scripts.
+//! Local build helper for prepared Rust contract bindings.
 //!
-//! [`api`] is the package-local build-script entry point: one authored
-//! service declaration (`service.yaml`, a component's embedded
-//! `component.yaml` sections, or a robot project's `robot.yaml` brain
-//! section) is the sole endpoint authority, and Protobuf files carry message
-//! definitions only.
+//! [`api`] reads compiled participant products prepared by `cargo phoxal`.
+//! Component capabilities in `component.yaml` also derive their standard
+//! endpoint bindings without separate endpoint sections.
 //!
 //! Owner manifests declare `phoxal` with the `build` feature in
 //! `[build-dependencies]`; contract authoring does not name `phoxal-build`
@@ -16,4 +14,6 @@
 //! `phoxal-build` dependency identified by reason: it cannot depend on its
 //! own not-yet-built library to generate its own protocols.
 
-pub use phoxal_build::{BuildApiConfig, Error, api};
+pub use phoxal_build::{
+    BuildApiConfig, Error, api, compile_protos, compile_protos_with_output, include_dir,
+};

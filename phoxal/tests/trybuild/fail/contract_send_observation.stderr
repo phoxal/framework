@@ -1,8 +1,8 @@
-error[E0277]: the trait bound `phoxal::contract::Observation<Status>: GeneratedSend` is not satisfied
+error[E0277]: the trait bound `phoxal::contracts::Observation<Status>: GeneratedSend` is not satisfied
   --> tests/trybuild/fail/contract_send_observation.rs:27:36
    |
 27 |     let _ = outputs.send(&context, STATUS.bind("service"));
-   |                     ----           ^^^^^^^^^^^^^^^^^^^^^^ the trait `GeneratedSend` is not implemented for `phoxal::contract::Observation<Status>`
+   |                     ----           ^^^^^^^^^^^^^^^^^^^^^^ the trait `GeneratedSend` is not implemented for `phoxal::contracts::Observation<Status>`
    |                     |
    |                     required by a bound introduced by this call
    |
@@ -12,10 +12,10 @@ help: the following other types implement trait `GeneratedSend`
    | / impl<Request, Response> GeneratedSend for Call<Request, Response>
    | | where
    | |     Request: Message,
-   | |_____________________^ `phoxal::contract::Call<Request, Response>`
+   | |_____________________^ `phoxal::contracts::Call<Request, Response>`
 ...
    |   impl<Request, Response> GeneratedSend for Withdraw<Request, Response> {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::contract::Withdraw<Request, Response>`
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::contracts::Withdraw<Request, Response>`
 note: required by a bound in `Outputs::send`
   --> src/runtime/outputs.rs
    |

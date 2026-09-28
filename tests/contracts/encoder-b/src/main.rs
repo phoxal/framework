@@ -1,9 +1,25 @@
 //! Producer B: the standard encoder contract from its own independent
 //! package identity, with observably different values from producer B.
 
-phoxal::api!();
+use phoxal::contracts::component::encoder::EncoderSample;
+use phoxal::contracts::{Empty, Latest, Queue, RequestReply};
 
-use phoxal::robotics::EncoderSample;
+/// The standard encoder contract from this independent package identity.
+#[phoxal::endpoints]
+pub struct EncoderApi {
+    #[phoxal::output(max_bytes = 1024)]
+    encoder: Latest<EncoderSample>,
+
+    #[phoxal::output(max_items = 4, max_bytes = 4096)]
+    ticks: Queue<EncoderSample>,
+
+    #[phoxal::operation(
+        contract = "example.contract_evaluation.v1.ReadEncoder",
+        max_items = 8,
+        max_bytes = 1024
+    )]
+    measure_encoder: RequestReply<Empty, EncoderSample>,
+}
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
@@ -33,7 +49,7 @@ fn sample(base: f64, step: u64) -> EncoderSample {
     }
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = EncoderApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for EncoderB {
     type Config = EncoderConfig;
     type State = EncoderState;

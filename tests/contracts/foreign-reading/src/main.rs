@@ -1,26 +1,41 @@
-//! Foreign-vocabulary producer: publishes shaft readings whose names and
-//! wire numbers differ from the standard encoder contract.
+//! Foreign-vocabulary producer: the same physical quantities as the standard
+//! encoder contract under different names and wire numbers, plus a harmless
+//! diagnostics field the receiver-side mapping deliberately omits.
 
-phoxal::api!();
-
-use crate::api::types::example::foreign::v1::ForeignReading;
+use phoxal::contracts::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 
-#[derive(Debug, Default)]
-struct ForeignState {
-    step: u64,
-    reading: ForeignReading,
+#[phoxal::message(package = "example.foreign.v1")]
+pub struct ForeignReading {
+    #[phoxal(tag = 2)]
+    pub shaft_rate_radps: Option<f64>,
+    #[phoxal(tag = 5)]
+    pub shaft_position_rad: Option<f64>,
+    #[phoxal(tag = 9)]
+    pub diagnostics: Option<String>,
 }
 
-struct ForeignSource;
+/// The foreign reading contract.
+#[phoxal::endpoints]
+pub struct ForeignApi {
+    #[phoxal::output(max_bytes = 1024)]
+    reading: Latest<ForeignReading>,
+}
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for ForeignSource {
+#[derive(Debug)]
+struct ForeignState {
+    step: u64,
+}
+
+struct ForeignReadingService;
+
+#[phoxal::runtime(contract = ForeignApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+impl Runtime for ForeignReadingService {
     type Config = ();
     type State = ForeignState;
 
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(ForeignState::default())
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
+        Ok(ForeignState { step: 0 })
     }
 
     fn step(
@@ -30,18 +45,26 @@ impl Runtime for ForeignSource {
         _inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
         state.step = state.step.saturating_add(1);
-        // Absence stays absence: the first ten readings omit the rate field.
-        state.reading = ForeignReading {
-            shaft_position_rad: Some(5.0 + state.step as f64 * 0.001),
-            shaft_rate_radps: (state.step > 10).then_some(1.0),
-            diagnostics: (state.step % 100 == 0).then(|| format!("step {}", state.step)),
-        };
         let mut outputs = Self::Outputs::default();
-        outputs.reading(state.reading.clone())?;
+        let mut reading = ForeignReading {
+            shaft_rate_radps: Some(0.5),
+            shaft_position_rad: Some(
+                5.0 + f64::from(u32::try_from(state.step).unwrap_or(u32::MAX)) * 0.001,
+            ),
+            diagnostics: None,
+        };
+        // Absence stays absence: the rate is omitted for the first ten steps.
+        if state.step < 10 {
+            reading.shaft_rate_radps = None;
+        }
+        if state.step.is_multiple_of(100) {
+            reading.diagnostics = Some("periodic".to_owned());
+        }
+        outputs.reading(reading)?;
         Ok((state, outputs))
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(ForeignSource)
+    phoxal::runtime::run(ForeignReadingService)
 }

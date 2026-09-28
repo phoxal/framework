@@ -1,21 +1,20 @@
-use self::phoxal_provider::Inputs as MotionInputs;
-use crate::api::types::phoxal::kinematics::v1::OdometryState;
-#[cfg(test)]
-use crate::api::types::phoxal::motion::v1::actuator_target;
-use crate::api::types::phoxal::motion::v1::{
-    ActuatorSetpoint, ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyAccepted,
-    EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus, ReleaseEmergencyRequest,
-    apply_emergency_response,
+use crate::contract::motion_api::Inputs as MotionInputs;
+use phoxal::contracts::robotics::OdometryState;
+
+use crate::config::{MotionConfig, validate_motion_config};
+use crate::contract::{
+    ApplyEmergencyResponse, ArmRequest, ControlMode, EmergencyRefusalReason, EmergencyRefused,
+    MotionIntent, MotionStatus, ReleaseEmergencyRequest,
 };
 #[cfg(test)]
-use crate::api::types::phoxal::motion::v1::{Constraint, ConstraintReason};
-use crate::api::types::phoxal::motion::v1::{MotionConstraints, Permission};
-use crate::config::{MotionConfig, validate_motion_config};
+use crate::contract::{Constraint, ConstraintReason};
+use crate::contract::{MotionConstraints, Permission};
 #[cfg(test)]
 use crate::drive::setpoint_from_twist;
 use crate::drive::{setpoint_from_intent, stopped_setpoint};
 use crate::validation;
-use phoxal::contract::Empty;
+use phoxal::contracts::Empty;
+use phoxal::contracts::component::actuator::ActuatorSetpoint;
 #[cfg(test)]
 use phoxal::runtime::input::{Latest, Setpoint};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
@@ -78,7 +77,7 @@ impl ArbiterState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Motion;
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
+#[phoxal::runtime(contract = crate::contract::MotionApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
 impl Runtime for Motion {
     type Config = MotionConfig;
     type State = ArbiterState;
@@ -201,7 +200,7 @@ impl Runtime for Motion {
     }
 }
 
-impl crate::api::projections::Projections for Motion {
+impl crate::contract::motion_api::projections::Projections for Motion {
     type State = ArbiterState;
 
     /// Projects the final actuator intent with an independent validity bound.
@@ -218,8 +217,7 @@ impl crate::api::projections::Projections for Motion {
                 .map_or(ControlMode::Disarmed, |mode| match mode {
                     ArmedMode::Manual => ControlMode::Manual,
                     ArmedMode::Autonomous => ControlMode::Autonomous,
-                })
-                .into(),
+                }),
             emergency_latched: state.emergency_latched,
             selected_owner_id: state.selected_owner_id.clone(),
             protective_state_clear: state.protective_state_clear,
@@ -245,7 +243,7 @@ fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionCons
 
 fn safety_is_clear(safety: &MotionConstraints, now: ExecutionTime) -> bool {
     validation::constraints(safety).is_ok()
-        && Permission::try_from(safety.permission).ok() == Some(Permission::Clear)
+        && safety.permission == Permission::Clear
         && safety.valid_from_nanos <= now.as_nanos()
         && safety.expires_at_nanos > now.as_nanos()
         && fresh_capture(safety.oldest_capture_time_nanos, now)
@@ -340,8 +338,8 @@ fn apply_release(
     accepted()
 }
 
-fn armed_mode(mode: i32) -> Option<ArmedMode> {
-    match ControlMode::try_from(mode).ok()? {
+fn armed_mode(mode: ControlMode) -> Option<ArmedMode> {
+    match mode {
         ControlMode::Manual => Some(ArmedMode::Manual),
         ControlMode::Autonomous => Some(ArmedMode::Autonomous),
         _ => None,
@@ -382,10 +380,7 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
         return;
     };
     if !state.measurement_available
-        || !matches!(
-            Permission::try_from(safety.permission),
-            Ok(Permission::Clear | Permission::Limited)
-        )
+        || !matches!(safety.permission, Permission::Clear | Permission::Limited)
     {
         state.disarm();
         return;
@@ -441,21 +436,11 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
 }
 
 fn accepted() -> ApplyEmergencyResponse {
-    ApplyEmergencyResponse {
-        decision: Some(apply_emergency_response::Decision::Accepted(
-            EmergencyAccepted {},
-        )),
-    }
+    ApplyEmergencyResponse::Accepted
 }
 
 fn refused(reason: EmergencyRefusalReason) -> ApplyEmergencyResponse {
-    ApplyEmergencyResponse {
-        decision: Some(apply_emergency_response::Decision::Refused(
-            EmergencyRefused {
-                reason: reason.into(),
-            },
-        )),
-    }
+    ApplyEmergencyResponse::Refused(EmergencyRefused { reason })
 }
 
 #[cfg(test)]
@@ -502,7 +487,7 @@ pub fn safety_state(protective_state_clear: bool, at: ExecutionTime) -> Latest<M
         (
             Permission::Stopped,
             vec![Constraint {
-                reason: ConstraintReason::WorldUnavailable as i32,
+                reason: ConstraintReason::WorldUnavailable,
                 max_linear_speed_mps: None,
                 max_angular_speed_radps: None,
                 observed_value: Some(0.0),
@@ -512,7 +497,7 @@ pub fn safety_state(protective_state_clear: bool, at: ExecutionTime) -> Latest<M
     Latest::from_sample(phoxal::runtime::Sample::new(
         MotionConstraints {
             sequence: 1,
-            permission: permission as i32,
+            permission,
             constraints,
             oldest_capture_time_nanos: Some(at.as_nanos()),
             valid_from_nanos: at.as_nanos(),
@@ -538,6 +523,7 @@ pub fn measurement(at: ExecutionTime) -> Latest<OdometryState> {
 
 #[cfg(test)]
 mod tests {
+    use crate::contract::motion_api::projections::Projections as _;
     use phoxal::runtime::{Command, CommandId, CommandOrder, Commands, ExecutionDuration};
 
     use super::*;
@@ -615,7 +601,7 @@ mod tests {
         TestCall::Arm(Command::with_source_order(
             CommandOrder::new(0, 0, CommandId::new(id)),
             owner_id,
-            ArmRequest { mode: mode.into() },
+            ArmRequest { mode },
         ))
     }
 
@@ -658,9 +644,11 @@ mod tests {
             for (target, expected) in output.targets.iter().zip(expected) {
                 assert_eq!(
                     target.control,
-                    Some(actuator_target::Control::VelocityRadps(
-                        expected * direction
-                    ))
+                    Some(
+                        phoxal::contracts::component::actuator::Control::VelocityRadps(
+                            expected * direction
+                        )
+                    )
                 );
             }
         }
@@ -668,7 +656,8 @@ mod tests {
             stopped_setpoint(&cfg)
                 .targets
                 .iter()
-                .all(|target| target.control == Some(actuator_target::Control::VelocityRadps(0.0)))
+                .all(|target| target.control
+                    == Some(phoxal::contracts::component::actuator::Control::VelocityRadps(0.0)))
         );
         cfg.left_wheels.clear();
         assert!(validate_motion_config(&cfg).is_err());
@@ -679,7 +668,7 @@ mod tests {
         let setpoint = setpoint_from_twist(0.22, 0.0, &config());
         assert_eq!(
             setpoint.targets[0].control,
-            Some(actuator_target::Control::VelocityRadps(2.0))
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(2.0))
         );
     }
 
@@ -690,11 +679,11 @@ mod tests {
         let setpoint = setpoint_from_twist(0.0, 1.0, &config);
         assert_eq!(
             setpoint.targets[0].control,
-            Some(actuator_target::Control::VelocityRadps(-0.3 / 0.11 * 2.0))
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(-0.3 / 0.11 * 2.0))
         );
         assert_eq!(
             setpoint.targets[1].control,
-            Some(actuator_target::Control::VelocityRadps(-0.3 / 0.11))
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(-0.3 / 0.11))
         );
         config.wheel_radius_m = 0.0;
         assert!(validate_motion_config(&config).is_err());
@@ -730,7 +719,7 @@ mod tests {
                 let (state, _) = Motion
                     .step(&context(0, now.as_nanos()), initial, &input)
                     .unwrap();
-                assert_eq!(Motion.status(&state).mode, ControlMode::Disarmed as i32);
+                assert_eq!(Motion.status(&state).mode, ControlMode::Disarmed);
                 assert!(Motion.status(&state).stopped);
             }
         }
@@ -755,7 +744,7 @@ mod tests {
             phoxal::runtime::ObservationStamp::new("kinematics", at(0), None),
         ));
         let (state, _) = service.step(&context(0, 0), initial, &input).unwrap();
-        assert_eq!(service.status(&state).mode, ControlMode::Disarmed as i32);
+        assert_eq!(service.status(&state).mode, ControlMode::Disarmed);
     }
 
     #[test]
@@ -767,11 +756,11 @@ mod tests {
         );
         let initial = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
         let (armed, _) = Motion.step(&context(0, 0), initial, &input).unwrap();
-        assert_eq!(Motion.status(&armed).mode, ControlMode::Manual as i32);
+        assert_eq!(Motion.status(&armed).mode, ControlMode::Manual);
         let mut safety = input.safety.value().unwrap().clone();
-        safety.permission = Permission::Limited as i32;
+        safety.permission = Permission::Limited;
         safety.constraints = vec![Constraint {
-            reason: ConstraintReason::ObstacleProximity as i32,
+            reason: ConstraintReason::ObstacleProximity,
             max_linear_speed_mps: Some(0.15),
             max_angular_speed_radps: None,
             observed_value: Some(0.4),
@@ -782,20 +771,20 @@ mod tests {
         ));
         let fresh = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
         let (refused, _) = Motion.step(&context(0, 20_000_000), fresh, &input).unwrap();
-        assert_eq!(Motion.status(&refused).mode, ControlMode::Disarmed as i32);
+        assert_eq!(Motion.status(&refused).mode, ControlMode::Disarmed);
         input.arm = Commands::default();
         let (limited, _) = Motion.step(&context(1, 20_000_000), armed, &input).unwrap();
-        assert_eq!(Motion.status(&limited).mode, ControlMode::Manual as i32);
+        assert_eq!(Motion.status(&limited).mode, ControlMode::Manual);
         assert!(!Motion.status(&limited).protective_state_clear);
         assert_eq!(
             limited.actuator_setpoint.targets[0].control,
-            Some(actuator_target::Control::VelocityRadps(0.15 / 0.11))
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(0.15 / 0.11))
         );
         input.safety = safety_state(false, at(40_000_000));
         let (stopped, _) = Motion
             .step(&context(2, 40_000_000), limited, &input)
             .unwrap();
-        assert_eq!(Motion.status(&stopped).mode, ControlMode::Disarmed as i32);
+        assert_eq!(Motion.status(&stopped).mode, ControlMode::Disarmed);
         assert!(Motion.status(&stopped).stopped);
     }
 
@@ -804,7 +793,7 @@ mod tests {
         let service = Motion;
         let initial =
             phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        assert_eq!(service.status(&initial).mode, ControlMode::Disarmed as i32);
+        assert_eq!(service.status(&initial).mode, ControlMode::Disarmed);
 
         let (state, outputs) = service
             .step(
@@ -818,7 +807,7 @@ mod tests {
             )
             .expect("arm command");
         assert_eq!(outputs.arm_replies.len(), 1);
-        assert_eq!(service.status(&state).mode, ControlMode::Manual as i32);
+        assert_eq!(service.status(&state).mode, ControlMode::Manual);
     }
 
     #[test]
@@ -854,7 +843,7 @@ mod tests {
         assert_eq!(outputs.engage_emergency_replies.len(), 1);
         assert_eq!(outputs.release_emergency_replies.len(), 1);
         let status = service.status(&state);
-        assert_eq!(status.mode, ControlMode::Disarmed as i32);
+        assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(!status.emergency_latched);
         assert!(status.stopped);
     }
@@ -876,7 +865,7 @@ mod tests {
 
         assert_eq!(outputs.arm_replies.len(), 1);
         assert_eq!(outputs.disarm_replies.len(), 1);
-        assert_eq!(service.status(&state).mode, ControlMode::Disarmed as i32);
+        assert_eq!(service.status(&state).mode, ControlMode::Disarmed);
         assert!(service.status(&state).stopped);
     }
 
@@ -908,7 +897,7 @@ mod tests {
             )
             .expect("expired intent is safe");
         let status = service.status(&state);
-        assert_eq!(status.mode, ControlMode::Disarmed as i32);
+        assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(status.stopped);
     }
 
@@ -956,7 +945,7 @@ mod tests {
             )
             .expect("owner change is handled as a safe transition");
         let status = service.status(&state);
-        assert_eq!(status.mode, ControlMode::Disarmed as i32);
+        assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(status.stopped);
     }
 
@@ -1006,11 +995,11 @@ mod tests {
         assert_eq!(setpoint.targets[0].actuator_id, "left-wheel");
         assert_eq!(setpoint.targets[1].actuator_id, "right-wheel");
         let left = match setpoint.targets[0].control.as_ref() {
-            Some(actuator_target::Control::VelocityRadps(value)) => *value,
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(value)) => *value,
             _ => panic!("left actuator must use velocity control"),
         };
         let right = match setpoint.targets[1].control.as_ref() {
-            Some(actuator_target::Control::VelocityRadps(value)) => *value,
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(value)) => *value,
             _ => panic!("right actuator must use velocity control"),
         };
         assert!((left - (0.1 - 0.2 * 0.3) / 0.11).abs() < 1e-12);
@@ -1034,8 +1023,8 @@ mod tests {
             )
             .expect("invalid command returns typed refusal");
         assert!(matches!(
-            outputs.arm_replies[0].response().decision,
-            Some(apply_emergency_response::Decision::Refused(_))
+            outputs.arm_replies[0].response(),
+            ApplyEmergencyResponse::Refused(_)
         ));
         let status = service.status(&state);
         assert!(status.emergency_latched);

@@ -10,8 +10,9 @@ use phoxal::runtime::{
 };
 
 use super::*;
-use crate::api::types::phoxal::fixture::hardware::v1::{FixtureObservation, FixtureSetpoint};
-use phoxal::contract::{MethodDescriptor, MethodShape};
+use crate::contract::FixtureObservation;
+use phoxal::contracts::MethodShape;
+use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget};
 use phoxal::runtime::{
     Sample,
     input::{Samples, Setpoint},
@@ -23,6 +24,11 @@ const ACQUISITION_PERIOD: Duration = Duration::from_millis(2);
 const TRANSPORT_PERIOD: Duration = Duration::from_millis(1);
 const WATCHDOG_PERIOD: Duration = Duration::from_millis(1);
 const MAX_PENDING_OBSERVATIONS: usize = 16;
+
+#[derive(Clone, Copy)]
+struct FixtureSetpoint {
+    velocity_radps: f64,
+}
 
 struct OfferedSetpoint {
     value: FixtureSetpoint,
@@ -165,14 +171,23 @@ impl FixtureDevice {
         });
     }
 
-    fn input_setpoint(&self) -> Setpoint<FixtureSetpoint> {
+    fn input_setpoint(&self) -> Setpoint<ActuatorSetpoint> {
         if !self.active_setpoint() {
             return Setpoint::withdrawn();
         }
         self.lock(&self.offered_setpoint)
             .as_ref()
             .map_or_else(Setpoint::withdrawn, |offered| {
-                Setpoint::from_parts(offered.value, offered.issued_at, offered.valid_until)
+                Setpoint::from_parts(
+                    ActuatorSetpoint {
+                        targets: vec![ActuatorTarget {
+                            actuator_id: "fixture_motor".to_owned(),
+                            control: Some(Control::VelocityRadps(offered.value.velocity_radps)),
+                        }],
+                    },
+                    offered.issued_at,
+                    offered.valid_until,
+                )
             })
     }
 
@@ -220,8 +235,8 @@ impl InputSource<HardwareFixtureDriver> for FixtureInputSource {
     fn freeze(
         &mut self,
         _candidate: &HardwareInvocation,
-    ) -> phoxal::Result<super::phoxal_provider::Inputs> {
-        Ok(super::phoxal_provider::Inputs {
+    ) -> phoxal::Result<crate::contract::driver_api::Inputs> {
+        Ok(crate::contract::driver_api::Inputs {
             acquired: self.device.drain_observations(),
             actuator: self.device.input_setpoint(),
         })
@@ -250,6 +265,7 @@ impl OutputAdmission<<HardwareFixtureDriver as phoxal::runtime::Runtime>::Output
         if outputs.observations.len() > 16 {
             anyhow::bail!("fixture output capacity exhausted");
         }
+        assert_eq!(outputs.encoder.len(), outputs.observations.len());
         Ok(outputs.observations.len())
     }
 }
@@ -300,53 +316,44 @@ fn runner(
 #[test]
 fn generated_contract_owns_the_fixture_methods() {
     assert_eq!(
-        crate::api::service_methods::u0::OBSERVATIONS
+        crate::contract::driver_api::ENCODER.signature().endpoint,
+        "encoder"
+    );
+    assert_eq!(
+        crate::contract::driver_api::ACTUATOR.signature().endpoint,
+        "actuator"
+    );
+    assert_eq!(
+        crate::contract::driver_api::OBSERVATIONS
             .signature()
             .endpoint,
         "observations"
     );
     assert_eq!(
-        crate::api::service_methods::u0::ACTUATOR
-            .signature()
-            .endpoint,
-        "actuator"
-    );
-    assert_eq!(
-        crate::api::service_methods::u0::OBSERVATIONS
+        crate::contract::driver_api::OBSERVATIONS
             .signature()
             .service,
         "phoxal.fixture.hardware.v1.FixtureObservation"
     );
     assert_eq!(
-        crate::api::service_methods::u0::OBSERVATIONS
-            .signature()
-            .shape,
+        crate::contract::driver_api::OBSERVATIONS.signature().shape,
         MethodShape::Observation
     );
     assert_eq!(
-        crate::api::service_methods::u0::ACTUATOR.signature().shape,
+        crate::contract::driver_api::ACTUATOR.signature().shape,
         MethodShape::Call
     );
     assert_eq!(
-        crate::api::service_methods::u0::ACTUATOR
+        crate::contract::driver_api::ACTUATOR
             .signature()
             .lease
             .expect("actuator lease")
             .valid_for_ms(),
         100
     );
-    assert!(
-        !crate::api::service_methods::u0::OBSERVATIONS
-            .signature()
-            .descriptor_set()
-            .is_empty()
-    );
-    assert!(
-        !crate::api::service_methods::u0::OBSERVATIONS
-            .signature()
-            .descriptor_set()
-            .is_empty()
-    );
+    // The payload descriptor closure lives in the retained schema frames,
+    // not in the method constants themselves.
+    assert!(<FixtureObservation as phoxal::schema::MessageSchema>::retain_schema() > 0);
 }
 
 #[test]

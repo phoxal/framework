@@ -10,6 +10,10 @@ use api::controller::MotionIntent;
 fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
     let mut plan = sim.plan();
     let body = plan.record_body("phoxal-test-robot")?;
+    let navigation = plan.record(
+        api::navigation::status(),
+        CapturePolicy::best_effort_history(1_024)?,
+    )?;
     let wheels = [
         (
             "front_left_drive",
@@ -53,6 +57,15 @@ fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
     plan.wait_steps(30)?;
 
     let observed = sim.run(plan)?;
+    assert!(
+        observed.history(&navigation)?.iter().any(|sample| {
+            sample
+                .value()
+                .map_revision
+                .is_some_and(|revision| revision > 0)
+        }),
+        "Navigation never observed the converted World revision"
+    );
     for (wheel, capture) in wheels {
         let moved = observed.history(&capture)?.iter().any(|sample| {
             sample
@@ -110,7 +123,7 @@ fn forward_turn_stop(sim: &mut Simulation) -> phoxal::Result<()> {
 fn manual(
     linear_x_mps: f64,
     angular_z_radps: f64,
-) -> impl phoxal::scenario::SendOperation<Response = phoxal::contract::Empty> {
+) -> impl phoxal::scenario::SendOperation<Response = phoxal::contracts::Empty> {
     controller::manual(MotionIntent {
         linear_x_mps,
         angular_z_radps,

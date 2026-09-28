@@ -39,31 +39,28 @@ impl Runtime for ZedF9p {
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_UNAVAILABLE, ZedF9p, ZedF9pConfig};
-    use phoxal::contract::{MethodDescriptor, MethodShape};
+    use phoxal::contracts::MethodShape;
+    use phoxal::contracts::component::gnss;
     use phoxal::runtime::Runtime;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
+    use phoxal::schema::MessageSchema;
 
     #[test]
-    fn generated_gnss_method_has_a_retained_descriptor() {
+    fn derived_gnss_method_retains_the_standard_schema() {
         assert_eq!(
             crate::api::service_methods::u0::GNSS.signature().endpoint,
             "gnss"
         );
         assert_eq!(
             crate::api::service_methods::u0::GNSS.signature().service,
-            "phoxal.component.zed_f9p.v1.GnssSample"
+            "phoxal.component.gnss.v1.GnssSample"
         );
         assert_eq!(
             crate::api::service_methods::u0::GNSS.signature().shape,
             MethodShape::Observation
         );
-        assert!(
-            !crate::api::service_methods::u0::GNSS
-                .signature()
-                .descriptor_set()
-                .is_empty()
-        );
+        assert!(gnss::GnssSample::retain_schema() > 0);
         assert_eq!(<ZedF9p as Runtime>::Outputs::FIELDS[0].name, "gnss");
         assert_eq!(<ZedF9p as Runtime>::Outputs::FIELDS[0].port, Some("gnss"));
         assert!(

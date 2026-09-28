@@ -628,7 +628,10 @@ pub(crate) fn artifact_path(
     })
 }
 
-fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoOutput, Error> {
+pub(crate) fn run_command(
+    mut command: Command,
+    operation: CargoOperation,
+) -> Result<CargoOutput, Error> {
     let output = command.output().map_err(|source| Error::CargoSpawn {
         operation: operation.as_str().to_owned(),
         source,
