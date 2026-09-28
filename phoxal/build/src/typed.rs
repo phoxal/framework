@@ -399,6 +399,10 @@ fn emit_oneof(
     let mut merge_arms = String::new();
     let mut fresh_arms = String::new();
     let mut len_arms = String::new();
+    // A single-variant oneof makes an `if let` binding irrefutable; emit
+    // the exhaustive form so generated code stays warning-free under
+    // `-D warnings` consumers.
+    let single_variant = variants.len() == 1;
     for field in variants {
         let variant = field.name.to_upper_camel_case();
         let tag = field.number;
@@ -418,20 +422,29 @@ fn emit_oneof(
             "            Self::{variant}(value) => \
              ::phoxal::schema::PhoxalWire::phoxal_value_len(value),\n"
         ));
-        merge_arms.push_str(&format!(
-            "            {tag} => {{\n                \
-             // A repeated occurrence of the variant already selected merges\n                \
-             // into its payload, matching Prost's derived oneof decoders; a\n                \
-             // different variant starts a fresh payload.\n                \
-             if let Self::{variant}(value) = self {{\n                    \
-             ::phoxal::schema::PhoxalWire::phoxal_merge(value, {tag}, wire_type, buf, ctx)?;\n                \
-             }} else {{\n                    \
-             let mut value = <{ty} as ::std::default::Default>::default();\n                    \
-             ::phoxal::schema::PhoxalWire::phoxal_merge(&mut value, {tag}, wire_type, buf, \
-             ctx)?;\n                    \
-             *self = Self::{variant}(value);\n                \
-             }}\n            }}\n"
-        ));
+        if single_variant {
+            merge_arms.push_str(&format!(
+                "            {tag} => {{\n                \
+                 let Self::{variant}(value) = self;\n                \
+                 ::phoxal::schema::PhoxalWire::phoxal_merge(value, {tag}, wire_type, buf, \
+                 ctx)?;\n            }}\n"
+            ));
+        } else {
+            merge_arms.push_str(&format!(
+                "            {tag} => {{\n                \
+                 // A repeated occurrence of the variant already selected merges\n                \
+                 // into its payload, matching Prost's derived oneof decoders; a\n                \
+                 // different variant starts a fresh payload.\n                \
+                 if let Self::{variant}(value) = self {{\n                    \
+                 ::phoxal::schema::PhoxalWire::phoxal_merge(value, {tag}, wire_type, buf, ctx)?;\n                \
+                 }} else {{\n                    \
+                 let mut value = <{ty} as ::std::default::Default>::default();\n                    \
+                 ::phoxal::schema::PhoxalWire::phoxal_merge(&mut value, {tag}, wire_type, buf, \
+                 ctx)?;\n                    \
+                 *self = Self::{variant}(value);\n                \
+                 }}\n            }}\n"
+            ));
+        }
         fresh_arms.push_str(&format!(
             "            {tag} => {{\n                \
              let mut value = <{ty} as ::std::default::Default>::default();\n                \
@@ -558,6 +571,16 @@ fn emit_payload_enum(
     let mut variant_defs = String::new();
     let mut to_wire_arms = String::new();
     let mut from_wire_arms = String::new();
+    // A single-variant selection makes an `if let` binding irrefutable;
+    // emit the exhaustive form so generated code stays warning-free.
+    // Scalar variants stay inline on the wire mirror's enum but never
+    // enter the selection oneof, so count only the selection-bearing
+    // variants.
+    let single_variant = carrier
+        .fields()
+        .filter(|field| matches!(field.kind(), Kind::Message(_)))
+        .count()
+        == 1;
     let mut selection_defs = String::new();
     let mut selection_encode_arms = String::new();
     let mut selection_write_arms = String::new();
@@ -601,19 +624,28 @@ fn emit_payload_enum(
                 "            Selection::{variant} => \
                  ::phoxal::generated::prost::encoding::key_len({tag}) + 1,\n"
             ));
-            selection_merge_arms.push_str(&format!(
-                "            {tag} => {{\n                \
-                 if let Selection::{variant} = self {{\n                    \
-                 let mut empty = ::phoxal::contracts::Empty::default();\n                    \
-                 ::phoxal::generated::prost::encoding::message::merge(\
-                 wire_type, &mut empty, buf, ctx)?;\n                \
-                 }} else {{\n                    \
-                 let mut empty = ::phoxal::contracts::Empty::default();\n                    \
-                 ::phoxal::generated::prost::encoding::message::merge(\
-                 wire_type, &mut empty, buf, ctx)?;\n                    \
-                 *self = Selection::{variant};\n                \
-                 }}\n            }}\n"
-            ));
+            if single_variant {
+                selection_merge_arms.push_str(&format!(
+                    "            {tag} => {{\n                \
+                     let mut empty = ::phoxal::contracts::Empty::default();\n                \
+                     ::phoxal::generated::prost::encoding::message::merge(\
+                     wire_type, &mut empty, buf, ctx)?;\n            }}\n"
+                ));
+            } else {
+                selection_merge_arms.push_str(&format!(
+                    "            {tag} => {{\n                \
+                     if let Selection::{variant} = self {{\n                    \
+                     let mut empty = ::phoxal::contracts::Empty::default();\n                    \
+                     ::phoxal::generated::prost::encoding::message::merge(\
+                     wire_type, &mut empty, buf, ctx)?;\n                \
+                     }} else {{\n                    \
+                     let mut empty = ::phoxal::contracts::Empty::default();\n                    \
+                     ::phoxal::generated::prost::encoding::message::merge(\
+                     wire_type, &mut empty, buf, ctx)?;\n                    \
+                     *self = Selection::{variant};\n                \
+                     }}\n            }}\n"
+                ));
+            }
             selection_fresh_arms.push_str(&format!(
                 "            {tag} => {{\n                \
                  let mut empty = ::phoxal::contracts::Empty::default();\n                \
@@ -653,18 +685,27 @@ fn emit_payload_enum(
                 "            Selection::{variant}(value) => \
                  ::phoxal::schema::PhoxalWire::phoxal_encoded_len(value, {tag}),\n"
             ));
-            selection_merge_arms.push_str(&format!(
-                "            {tag} => {{\n                \
-                 if let Selection::{variant}(value) = self {{\n                    \
-                 ::phoxal::schema::PhoxalWire::phoxal_merge(\
-                 value, {tag}, wire_type, buf, ctx)?;\n                \
-                 }} else {{\n                    \
-                 let mut value = <{ty} as ::std::default::Default>::default();\n                    \
-                 ::phoxal::schema::PhoxalWire::phoxal_merge(\
-                 &mut value, {tag}, wire_type, buf, ctx)?;\n                    \
-                 *self = Selection::{variant}(value);\n                \
-                 }}\n            }}\n"
-            ));
+            if single_variant {
+                selection_merge_arms.push_str(&format!(
+                    "            {tag} => {{\n                \
+                     let Selection::{variant}(value) = self;\n                \
+                     ::phoxal::schema::PhoxalWire::phoxal_merge(\
+                     value, {tag}, wire_type, buf, ctx)?;\n            }}\n"
+                ));
+            } else {
+                selection_merge_arms.push_str(&format!(
+                    "            {tag} => {{\n                \
+                     if let Selection::{variant}(value) = self {{\n                    \
+                     ::phoxal::schema::PhoxalWire::phoxal_merge(\
+                     value, {tag}, wire_type, buf, ctx)?;\n                \
+                     }} else {{\n                    \
+                     let mut value = <{ty} as ::std::default::Default>::default();\n                    \
+                     ::phoxal::schema::PhoxalWire::phoxal_merge(\
+                     &mut value, {tag}, wire_type, buf, ctx)?;\n                    \
+                     *self = Selection::{variant}(value);\n                \
+                     }}\n            }}\n"
+                ));
+            }
             selection_fresh_arms.push_str(&format!(
                 "            {tag} => {{\n                \
                  let mut value = <{ty} as ::std::default::Default>::default();\n                \
