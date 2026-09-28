@@ -728,7 +728,7 @@ mod tests {
     // directly instead of relying on the ProstPayload blanket.
     impl ScenarioValue for TestValue {
         fn decode(bytes: &[u8]) -> crate::Result<Self> {
-            TestValue::decode(bytes)
+            <TestValue as prost::Message>::decode(bytes)
                 .map_err(|error| crate::anyhow!("invalid scenario protobuf evidence: {error}"))
         }
     }

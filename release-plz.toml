@@ -18,7 +18,11 @@ changelog_update = false
 # No release-plz Cargo publication exists for the alternate registry. Keep
 # package processing enabled so release-plz still plans independent versions.
 publish = false
-git_tag_enable = false
+# Tags anchor each package's published baseline so the release-plz
+# history walk never reaches the pre-migration commits whose generated
+# path dependencies break in gitignore-respecting worktrees.
+git_tag_enable = true
+git_tag_name = "{name}-v{version}"
 git_release_enable = false
 semver_check = true
 pr_name = "chore(release): update package versions"

@@ -31,7 +31,8 @@ fn main() {
         let values: Vec<String> = bytes.iter().map(|byte| byte.to_string()).collect();
         let values = values.join(", ");
         format!(
-            "#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_{section}\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_{section}\"))]\nstatic PHOXAL_SECTION_{section}: [u8; {len}] = [{values}];\n",
+            "#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_{section}\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_{section}\"))]\nstatic PHOXAL_SECTION_{STATIC}: [u8; {len}] = [{values}];\n",
+            STATIC = section.to_uppercase(),
             len = bytes.len(),
         )
     };

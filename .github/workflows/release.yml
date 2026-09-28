@@ -1,0 +1,145 @@
+name: release
+
+# Maintainer-started release entry point: prepares the version PR
+# (release-plz), lets it merge automatically once CI passes, publishes
+# the exact changed archives to the phoxal registry in dependency-ready
+# groups (registry admission validates and auto-merges each), waits for
+# the live index, verifies checksums, and then verifies a published
+# consumer. Restartable: reruns resume from the observed registry state —
+# an already-published matching version is complete, a conflicting
+# archive is an error.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip-version-pr:
+        description: Versions are already bumped and merged; publish directly.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: framework-release
+  cancel-in-progress: false
+
+env:
+  REGISTRY_INDEX: https://phoxal.github.io/registry
+
+jobs:
+  version-pr:
+    name: prepare and merge the version PR
+    if: ${{ !inputs.skip-version-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+      - name: Generate the release App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Prepare the version PR
+        env:
+          GIT_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: release-plz release-pr
+      - name: Enable auto-merge on the version PR and wait for it
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          candidate="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json headRefName,number --jq ".[] | select(.headRefName | startswith(\"release-plz\")) | .number" | head -1 || true)"
+          if [ -z "$candidate" ]; then
+            echo "release-plz created no PR: nothing to release since the last published versions."
+            exit 0
+          fi
+          gh pr merge "$candidate" --repo "$GITHUB_REPOSITORY" --auto --squash
+          for _ in $(seq 1 120); do
+            state="$(gh pr view "$candidate" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            [ "$state" = "MERGED" ] && exit 0
+            sleep 30
+          done
+          echo "version PR #$candidate did not merge within 60 minutes" >&2
+          exit 1
+
+  publish:
+    name: publish dependency-ready groups
+    needs: version-pr
+    if: ${{ always() && (needs.version-pr.result == 'success' || needs.version-pr.result == 'skipped' || inputs.skip-version-pr) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Generate the release App token (registry submissions)
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # The App must be installed on phoxal/registry with contents and
+          # pull-request write so submissions and auto-merge work.
+          permission-contents: write
+          permission-pull-requests: write
+          repositories: phoxal/registry
+      - name: Build cargo-phoxal from the merged owner revision
+        run: cargo build -p cargo-phoxal --locked
+      - name: Submit, admit, and verify each dependency-ready group
+        env:
+          PHOXAL_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REGISTRY_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash .github/scripts/release-groups.sh
+
+  consumer-verify:
+    name: verify a published consumer
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install the published CLI from the registry
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cargo
+          printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
+            >> ~/.cargo/config.toml
+          version="$(curl -fsSL "$REGISTRY_INDEX/ca/rg/cargo-phoxal" \
+            | python3 -c "import sys,json; print(json.loads(sys.stdin.readlines()[-1])['vers'])")"
+          echo "installing cargo-phoxal $version"
+          cargo install cargo-phoxal --registry phoxal --version "$version" --locked --root "$RUNNER_TEMP/cli"
+      - name: Verify robot-v1 against the live registry
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/phoxal/robot-v1.git
+          cd robot-v1
+          "$RUNNER_TEMP/cli/bin/cargo-phoxal" prepare
+          "$RUNNER_TEMP/cli/bin/cargo-phoxal" check
+      - name: Compile the rover's native scenario (recorded acceptance)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/phoxal/robot-rover.git
+          cd robot-rover
+          "$RUNNER_TEMP/cli/bin/cargo-phoxal" prepare
+          "$RUNNER_TEMP/cli/bin/cargo-phoxal" check
+          # The native forward/turn/stop scenario needs the MuJoCo
+          # simulator; CI compiles it and the recorded acceptance command
+          # runs it on a prepared host:
+          #   DYLD_LIBRARY_PATH=<mujoco> cargo-phoxal test \
+          #     --simulator <simulator-bin> forward_turn_stop
+          cargo check --tests --locked
