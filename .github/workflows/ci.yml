@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           for fixture in tests/robot tests/contracts/robot tests/contracts/client; do
-            (cd "$fixture" && ../../target/debug/cargo-phoxal prepare)
+            (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
