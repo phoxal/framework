@@ -2350,6 +2350,7 @@ fn copy_tree(source: &Path, destination: &Path, optional: bool) -> Result<(), Er
             || name == "credentials.toml"
             || name == "target"
             || name == ".codex"
+            || name == ".DS_Store"
         {
             continue;
         }
@@ -3229,6 +3230,33 @@ mod tests {
         let staging = result.staging.as_ref().unwrap().path();
         assert!(!staging.join("review-inventory.json").exists());
         assert!(!staging.join("archive.sha256").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_sources_exclude_desktop_metadata_files() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"junk-carrying\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\nmembers = []\n",
+        )?;
+        write(
+            &directory.path().join("component.yaml"),
+            "schema: phoxal/component/v0\n",
+        )?;
+        write(&directory.path().join(".DS_Store"), "junk")?;
+        write(&directory.path().join("src/.DS_Store"), "junk")?;
+        let result = prepare_publication(&PublicationOptions {
+            kind: PublicationKind::Component,
+            name: "junk-carrying".to_owned(),
+            path: Some(directory.path().to_owned()),
+            dry_run: true,
+        })?;
+        let paths = archive_paths(&result)?;
+        assert!(
+            !paths.iter().any(|path| path.ends_with(".DS_Store")),
+            "desktop metadata must not enter the archive: {paths:?}"
+        );
         Ok(())
     }
 
