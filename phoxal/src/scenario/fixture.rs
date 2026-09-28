@@ -413,10 +413,10 @@ impl ScenarioValue for NoReply {
 
 impl<T> ScenarioValue for T
 where
-    T: Message + Default,
+    T: crate::contracts::ProstPayload,
 {
     fn decode(bytes: &[u8]) -> crate::Result<Self> {
-        T::decode(bytes)
+        T::decode_payload(bytes)
             .map_err(|error| crate::anyhow!("invalid scenario protobuf evidence: {error}"))
     }
 }
@@ -722,6 +722,15 @@ mod tests {
     struct TestValue {
         #[prost(uint32, tag = "1")]
         value: u32,
+    }
+
+    // A plain Prost test payload, not a contract payload: decode it
+    // directly instead of relying on the ProstPayload blanket.
+    impl ScenarioValue for TestValue {
+        fn decode(bytes: &[u8]) -> crate::Result<Self> {
+            TestValue::decode(bytes)
+                .map_err(|error| crate::anyhow!("invalid scenario protobuf evidence: {error}"))
+        }
     }
 
     fn signature() -> PortSignature {
