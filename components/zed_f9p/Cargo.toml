@@ -9,7 +9,7 @@ description = "Phoxal official driver: zed_f9p - GNSS."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["src/**", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
+include = ["src/**", "build.rs", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-component-zed_f9p"

@@ -9,7 +9,7 @@ description = "Phoxal official driver: ddsm115 - wheel hub motor."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["src/**", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "component.yaml", "model.xml", "assets/**"]
+include = ["src/**", "build.rs", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "component.yaml", "model.xml", "assets/**"]
 
 [[bin]]
 name = "phoxal-component-ddsm115"

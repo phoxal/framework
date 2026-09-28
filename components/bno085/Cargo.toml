@@ -9,7 +9,7 @@ description = "Phoxal official driver: bno085 - IMU."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["src/**", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
+include = ["src/**", "build.rs", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-component-bno085"

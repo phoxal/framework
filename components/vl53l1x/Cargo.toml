@@ -9,7 +9,7 @@ description = "Phoxal official driver: vl53l1x - range/time-of-flight."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-include = ["src/**", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
+include = ["src/**", "build.rs", "Cargo.toml", "Cargo.lock", "component.yaml", "model.xml", "LICENSE", "README.md"]
 
 [[bin]]
 name = "phoxal-component-vl53l1x"
