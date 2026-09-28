@@ -33,7 +33,6 @@ const USER_AGENT: &str = "cargo-phoxal";
 const CRATES_IO_INDEX: &str = "https://github.com/rust-lang/crates.io-index";
 const MAX_GIT_BLOB_BYTES: usize = 100 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-const FORK_WAIT: Duration = Duration::from_secs(120);
 
 /// A browser authorization prompt emitted before device-flow polling starts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,15 +84,14 @@ pub fn submit_publication(
         .map_err(submission_transport)?;
     let credential = authenticate(&client, authorize)?;
     let github = GitHub::new(client, credential.access_token);
-    let user = github.get::<User>("/user")?;
-    submit(&github, &user.login, publication)
+    // Publication branches live in the registry repository itself. The
+    // submitter may be a user token or a GitHub App installation token;
+    // neither an authenticated-user lookup nor a personal fork is part
+    // of the submission path.
+    submit(&github, publication)
 }
 
-fn submit(
-    github: &GitHub,
-    login: &str,
-    publication: &PublicationResult,
-) -> Result<SubmissionResult, Error> {
+fn submit(github: &GitHub, publication: &PublicationResult) -> Result<SubmissionResult, Error> {
     let repository = github.get::<Repository>(&format!("/repos/{OWNER}/{REPOSITORY}"))?;
     let base = repository.default_branch;
     let index_path = index_path(publication.package())?;
@@ -145,20 +143,19 @@ fn submit(
     );
     index.push(b'\n');
 
-    ensure_fork(github, login)?;
     let branch = publication_branch(publication);
     let existing_ref = github.get_optional::<GitRef>(&format!(
-        "/repos/{login}/{REPOSITORY}/git/ref/heads/{branch}"
+        "/repos/{OWNER}/{REPOSITORY}/git/ref/heads/{branch}"
     ))?;
     if existing_ref.is_some() {
         let pending_archive = github
-            .raw_optional(login, REPOSITORY, &branch, &archive_path)?
+            .raw_optional(OWNER, REPOSITORY, &branch, &archive_path)?
             .ok_or_else(|| PublicationError::SubmissionConflict {
-                message: format!("publication branch {login}:{branch} has no archive"),
+                message: format!("publication branch {branch} has no archive"),
             })?;
         verify_checksum(&pending_archive, publication.checksum(), "pending archive")?;
-        verify_pending_file(github, login, &branch, &index_path, &index)?;
-        if let Some(pull) = existing_pull_request(github, login, &branch)? {
+        verify_pending_file(github, &branch, &index_path, &index)?;
+        if let Some(pull) = existing_pull_request(github, &branch)? {
             return Ok(SubmissionResult::PendingReview {
                 pull_request_url: pull.html_url,
                 branch,
@@ -172,15 +169,15 @@ fn submit(
             base_ref.object.sha
         ))?;
         let entries = vec![
-            tree_entry(github, login, &archive_path, &archive, true)?,
-            tree_entry(github, login, &index_path, &index, false)?,
+            tree_entry(github, &archive_path, &archive, true)?,
+            tree_entry(github, &index_path, &index, false)?,
         ];
         let tree = github.post::<GitTree>(
-            &format!("/repos/{login}/{REPOSITORY}/git/trees"),
+            &format!("/repos/{OWNER}/{REPOSITORY}/git/trees"),
             &json!({"base_tree": commit.tree.sha, "tree": entries}),
         )?;
         let commit = github.post::<GitCommitCreated>(
-            &format!("/repos/{login}/{REPOSITORY}/git/commits"),
+            &format!("/repos/{OWNER}/{REPOSITORY}/git/commits"),
             &json!({
                 "message": format!("publish: {} {}", publication.package(), publication.version()),
                 "tree": tree.sha,
@@ -188,7 +185,7 @@ fn submit(
             }),
         )?;
         github.post_unit(
-            &format!("/repos/{login}/{REPOSITORY}/git/refs"),
+            &format!("/repos/{OWNER}/{REPOSITORY}/git/refs"),
             &json!({"ref": format!("refs/heads/{branch}"), "sha": commit.sha}),
         )?;
     }
@@ -197,7 +194,7 @@ fn submit(
         &format!("/repos/{OWNER}/{REPOSITORY}/pulls"),
         &json!({
             "title": format!("publish: {} {}", publication.package(), publication.version()),
-            "head": format!("{login}:{branch}"),
+            "head": branch,
             "base": base,
             "body": format!(
                 "Publishes `{}` `{}` to the registry.\n\nArchive SHA-256: `{}`\nContent role: `{}`\n",
@@ -440,15 +437,9 @@ fn verify_checksum(bytes: &[u8], expected: &str, label: &str) -> Result<(), Erro
     Ok(())
 }
 
-fn tree_entry(
-    github: &GitHub,
-    login: &str,
-    path: &str,
-    bytes: &[u8],
-    binary: bool,
-) -> Result<Value, Error> {
+fn tree_entry(github: &GitHub, path: &str, bytes: &[u8], binary: bool) -> Result<Value, Error> {
     let blob = github.post::<GitBlob>(
-        &format!("/repos/{login}/{REPOSITORY}/git/blobs"),
+        &format!("/repos/{OWNER}/{REPOSITORY}/git/blobs"),
         &if binary {
             json!({
                 "content": base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -464,57 +455,28 @@ fn tree_entry(
     Ok(json!({"path": path, "mode": "100644", "type": "blob", "sha": blob.sha}))
 }
 
-fn ensure_fork(github: &GitHub, login: &str) -> Result<(), Error> {
-    let path = format!("/repos/{login}/{REPOSITORY}");
-    if github.get_optional::<Repository>(&path)?.is_some() {
-        return Ok(());
-    }
-    github.post_unit(
-        &format!("/repos/{OWNER}/{REPOSITORY}/forks"),
-        &json!({"default_branch_only": true}),
-    )?;
-    let started = Instant::now();
-    let mut delay = Duration::from_secs(2);
-    while started.elapsed() < FORK_WAIT {
-        thread::sleep(delay);
-        if github.get_optional::<Repository>(&path)?.is_some() {
-            return Ok(());
-        }
-        delay = (delay + Duration::from_secs(2)).min(Duration::from_secs(10));
-    }
-    Err(PublicationError::SubmissionConflict {
-        message: format!("GitHub fork {login}/{REPOSITORY} was not ready within 120 seconds"),
-    }
-    .into())
-}
-
-fn existing_pull_request(
-    github: &GitHub,
-    login: &str,
-    branch: &str,
-) -> Result<Option<PullRequest>, Error> {
+fn existing_pull_request(github: &GitHub, branch: &str) -> Result<Option<PullRequest>, Error> {
     let pulls = github.get_query::<Vec<PullRequest>>(
         &format!("/repos/{OWNER}/{REPOSITORY}/pulls"),
-        &[("state", "open"), ("head", &format!("{login}:{branch}"))],
+        &[("state", "open"), ("head", branch)],
     )?;
     Ok(pulls.into_iter().next())
 }
 
 fn verify_pending_file(
     github: &GitHub,
-    login: &str,
     branch: &str,
     path: &str,
     expected: &[u8],
 ) -> Result<(), Error> {
     let actual = github
-        .raw_optional(login, REPOSITORY, branch, path)?
+        .raw_optional(OWNER, REPOSITORY, branch, path)?
         .ok_or_else(|| PublicationError::SubmissionConflict {
-            message: format!("publication branch {login}:{branch} has no {path}"),
+            message: format!("publication branch {branch} has no {path}"),
         })?;
     if actual != expected {
         return Err(PublicationError::SubmissionConflict {
-            message: format!("publication branch {login}:{branch} has different bytes at {path}"),
+            message: format!("publication branch {branch} has different bytes at {path}"),
         }
         .into());
     }
@@ -932,11 +894,6 @@ fn keyring_error(error: keyring::Error) -> Error {
         message: error.to_string(),
     }
     .into()
-}
-
-#[derive(Debug, Deserialize)]
-struct User {
-    login: String,
 }
 
 #[derive(Debug, Deserialize)]

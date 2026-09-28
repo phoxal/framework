@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Mock `gh pr view <url> --json state --jq .state` for the
+# release-groups contract test. Every call reports MERGED and deploys
+# all recorded submissions into the scenario's local registry so the
+# live-verification path can observe them.
+set -euo pipefail
+
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    root="$SCENARIO"
+    while read -r name sha pr; do
+        [ -n "$name" ] || continue
+        ver="$(cat "$root/state/$name.ver")"
+        p1="${name:0:2}"; p2="${name:2:2}"
+        mkdir -p "$root/registry/$p1/$p2" "$root/registry/crates/$p1/$p2/$name"
+        cp "$root/state/$name.crate" "$root/registry/crates/$p1/$p2/$name/$ver.crate"
+        printf '{"name":"%s","vers":"%s","cksum":"%s","deps":[],"features":{},"yanked":false}\n' \
+            "$name" "$ver" "$sha" >> "$root/registry/$p1/$p2/$name"
+    done < "$root/state/submitted"
+    echo "MERGED"
+    exit 0
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 1
