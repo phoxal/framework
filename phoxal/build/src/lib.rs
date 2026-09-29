@@ -20,9 +20,9 @@ mod typed;
 pub use api::validate_project_api;
 pub use api::{BuildApiConfig, api};
 pub use prepared::{
-    DESCRIPTORS_FILE, ENDPOINTS_FILE, PROVENANCE_FILE, PreparedContract,
-    encode_selection_component, local_prepared_dir, read_prepared, remote_prepared_dir,
-    self_prepared_dir,
+    CONTRACT_FILE, CONTRACT_GENERATION, DESCRIPTORS_FILE, PREPARED_ROOT, PreparedContract,
+    PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_key,
+    read_prepared, self_prepared_dir, validate_prepared_key,
 };
 
 /// Framework version whose generated API contract this helper implements.

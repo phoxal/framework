@@ -276,7 +276,16 @@ pub(crate) fn prepare_self(package: &Path, options: &CargoOptions) -> Result<Vec
     let _lock = preparation_lock(package)?;
     let selection = package_selection(package, None, options)?;
     let contract_dir = phoxal_build::self_prepared_dir(package);
-    if prepare_selection_products(options, &selection, &contract_dir)? {
+    let selection_identity = phoxal_build::PreparedSelection::SelfHosted {
+        package: selection.package.clone(),
+    };
+    if prepare_selection_products(
+        options,
+        &selection,
+        &selection_identity,
+        None,
+        &contract_dir,
+    )? {
         Ok(vec![format!("{} (self)", selection.binary)])
     } else {
         Ok(Vec::new())
@@ -357,8 +366,19 @@ fn prepare_local_contract(
     declared_binary: Option<&str>,
     selection: &InstalledSelection,
 ) -> Result<(), Error> {
-    let contract_dir = phoxal_build::local_prepared_dir(layout.root(), path, declared_binary);
-    prepare_selection_products(options, selection, &contract_dir).map(|_| ())
+    let selection_identity = phoxal_build::PreparedSelection::Path {
+        path: path.to_string_lossy().into_owned(),
+    };
+    let contract_dir =
+        phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary);
+    prepare_selection_products(
+        options,
+        selection,
+        &selection_identity,
+        declared_binary,
+        &contract_dir,
+    )
+    .map(|_| ())
 }
 
 /// Builds one selected participant and writes its extracted contract
@@ -369,6 +389,8 @@ fn prepare_local_contract(
 fn prepare_selection_products(
     options: &CargoOptions,
     selection: &InstalledSelection,
+    selection_identity: &phoxal_build::PreparedSelection,
+    selection_binary: Option<&str>,
     contract_dir: &Path,
 ) -> Result<bool, Error> {
     let manifest_path = selection
@@ -425,15 +447,15 @@ fn prepare_selection_products(
         }
     })?;
     let executable = workdir.join(executable.strip_prefix(&workdir).unwrap_or(&executable));
-    let provenance = format!(
-        "{} {}-{}",
-        digest_of(&executable)?,
-        selection.package,
-        selection.version
-    );
-    let provenance_path = contract_dir.join(phoxal_build::PROVENANCE_FILE);
-    if contract_dir.join(phoxal_build::ENDPOINTS_FILE).is_file()
-        && fs::read_to_string(&provenance_path).is_ok_and(|current| current == provenance)
+    let executable_digest = digest_of(&executable)?;
+    let executable_record = phoxal_build::PreparedExecutable {
+        sha256: executable_digest,
+        package: selection.package.clone(),
+        version: Some(selection.version.clone()),
+    };
+    if contract_dir.join(phoxal_build::CONTRACT_FILE).is_file()
+        && phoxal_build::read_prepared(contract_dir)
+            .is_ok_and(|prepared| prepared.file.executable == executable_record)
     {
         return Ok(false);
     }
@@ -442,16 +464,28 @@ fn prepare_selection_products(
             message: format!("cannot inspect {}: {error}", executable.display()),
         })?;
     let descriptors = merge_descriptor_closures(&contract)?;
-    write_prepared_contract(contract_dir, &contract.runtime, &descriptors, &provenance)?;
+    write_prepared_contract(
+        contract_dir,
+        selection_identity,
+        selection_binary,
+        &contract.runtime,
+        &descriptors,
+        &executable_record,
+    )?;
     Ok(true)
 }
 
-/// Writes one prepared contract directory atomically.
+/// Writes one prepared contract directory atomically: `contract.json`
+/// and `descriptors.pb` land together through a staging directory, so an
+/// interrupted preparation can never mix new metadata with old
+/// descriptors.
 pub(crate) fn write_prepared_contract(
     contract_dir: &Path,
+    selection: &phoxal_build::PreparedSelection,
+    binary: Option<&str>,
     runtime: &phoxal::artifact::RuntimeRecord,
     descriptors: &prost_types::FileDescriptorSet,
-    provenance: &str,
+    executable: &phoxal_build::PreparedExecutable,
 ) -> Result<(), Error> {
     use prost::Message as _;
     let staging = contract_dir.with_extension("staging");
@@ -465,15 +499,26 @@ pub(crate) fn write_prepared_contract(
         path: staging.clone(),
         source,
     })?;
-    let endpoints = staging.join(phoxal_build::ENDPOINTS_FILE);
+    let runtime_record =
+        serde_json::to_value(runtime).map_err(|error| Error::ContractPreparation {
+            message: error.to_string(),
+        })?;
+    let contract_file = phoxal_build::PreparedContractFile {
+        generation: phoxal_build::CONTRACT_GENERATION,
+        selection: selection.clone(),
+        binary: binary.map(str::to_owned),
+        executable: executable.clone(),
+        runtime: runtime_record,
+    };
+    let contract_path = staging.join(phoxal_build::CONTRACT_FILE);
     fs::write(
-        &endpoints,
-        serde_json::to_vec(runtime).map_err(|error| Error::ContractPreparation {
+        &contract_path,
+        serde_json::to_vec_pretty(&contract_file).map_err(|error| Error::ContractPreparation {
             message: error.to_string(),
         })?,
     )
     .map_err(|source| Error::ArtifactFile {
-        path: endpoints.clone(),
+        path: contract_path.clone(),
         source,
     })?;
     let descriptor_path = staging.join(phoxal_build::DESCRIPTORS_FILE);
@@ -482,11 +527,6 @@ pub(crate) fn write_prepared_contract(
             path: descriptor_path.clone(),
             source,
         }
-    })?;
-    let provenance_path = staging.join(phoxal_build::PROVENANCE_FILE);
-    fs::write(&provenance_path, provenance).map_err(|source| Error::ArtifactFile {
-        path: provenance_path.clone(),
-        source,
     })?;
     if contract_dir.exists() {
         fs::remove_dir_all(contract_dir).map_err(|source| Error::ArtifactFile {
@@ -595,7 +635,22 @@ fn prepare_selection(
         prepare_local_contract(layout, options, path, binary, &selection)?;
         return Ok(None);
     }
-    let (package, expected_version, store, prepared) = match source {
+    let selection_identity = match source {
+        Source::Package(package) => phoxal_build::PreparedSelection::Registry {
+            registry: package
+                .registry
+                .clone()
+                .unwrap_or_else(|| "phoxal".to_owned()),
+            name: package.name.clone(),
+            version: package.version.clone(),
+        },
+        Source::Git(git) => phoxal_build::PreparedSelection::Git {
+            name: git.name.clone(),
+            revision: git.rev.clone(),
+        },
+        Source::Path(_) => unreachable!("path selections are handled above"),
+    };
+    let (package, expected_version, store, _prepared_tree) = match source {
         Source::Package(package) => {
             let registry = package.registry.as_deref().unwrap_or("phoxal");
             (
@@ -639,8 +694,8 @@ fn prepare_selection(
         && store.join(".crates.toml").is_file()
         && store.join("package-id").is_file()
         && store.join("package-version").is_file()
-        && phoxal_build::remote_prepared_dir(&prepared, declared_binary)
-            .join(phoxal_build::ENDPOINTS_FILE)
+        && phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary)
+            .join(phoxal_build::CONTRACT_FILE)
             .is_file();
     if rust_contract_install {
         return Ok(None);
@@ -730,15 +785,27 @@ fn prepare_selection(
     // from the exact binary, exactly like a local path selection.
     {
         let executable = install.path().join("bin").join(binary);
-        let contract_dir = phoxal_build::remote_prepared_dir(&prepared, declared_binary);
-        let provenance = format!("{} {}-{}", digest_of(&executable)?, package, version);
+        let contract_dir =
+            phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary);
+        let executable_record = phoxal_build::PreparedExecutable {
+            sha256: digest_of(&executable)?,
+            package: package.to_owned(),
+            version: Some(version.clone()),
+        };
         let contract = super::artifact::inspect_file(&executable).map_err(|error| {
             Error::ContractPreparation {
                 message: format!("cannot inspect {}: {error}", executable.display()),
             }
         })?;
         let descriptors = merge_descriptor_closures(&contract)?;
-        write_prepared_contract(&contract_dir, &contract.runtime, &descriptors, &provenance)?;
+        write_prepared_contract(
+            &contract_dir,
+            &selection_identity,
+            declared_binary,
+            &contract.runtime,
+            &descriptors,
+            &executable_record,
+        )?;
     }
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {

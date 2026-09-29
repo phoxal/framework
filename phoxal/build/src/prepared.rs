@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use heck::{ToShoutySnakeCase, ToSnakeCase};
 use prost::Message;
 use prost_types::FileDescriptorSet;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
 /// Narrow read-model of one retained input record.
-#[derive(Clone, Debug, Deserialize)]
-struct PreparedInput {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedInput {
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -34,15 +34,15 @@ struct PreparedInput {
 }
 
 /// Narrow read-model of one retained output record.
-#[derive(Clone, Debug, Deserialize)]
-struct PreparedOutput {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedOutput {
     #[serde(default)]
     signature: Option<PreparedSignature>,
 }
 
 /// Narrow read-model of one retained method signature.
-#[derive(Clone, Debug, Deserialize)]
-struct PreparedSignature {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedSignature {
     #[serde(default)]
     endpoint: String,
     #[serde(default)]
@@ -64,8 +64,8 @@ struct PreparedSignature {
 /// The authoritative model is `phoxal::artifact`; this read-model carries
 /// only the fields client generation consumes, deserialized from the same
 /// retained JSON bytes.
-#[derive(Clone, Debug, Deserialize)]
-struct PreparedRuntime {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedRuntime {
     #[serde(default)]
     inputs: Vec<PreparedInput>,
     #[serde(default)]
@@ -74,74 +74,198 @@ struct PreparedRuntime {
     service_outputs: Vec<PreparedOutput>,
 }
 
-/// The prepared product files of one participant contract.
-pub const DESCRIPTORS_FILE: &str = "descriptors.bin";
-pub const ENDPOINTS_FILE: &str = "endpoints.json";
-/// Records the executable digest the products were extracted from.
-pub const PROVENANCE_FILE: &str = "provenance.txt";
+/// The prepared product files of one participant contract. One
+/// directory under `.phoxal/prepared/` carries both files as a single
+/// replaceable product: `contract.json` owns the runtime metadata, the
+/// complete selection identity, and the executable digest the products
+/// were extracted from; `descriptors.pb` is the standard Protobuf
+/// `FileDescriptorSet` (not a Phoxal schema format).
+pub const DESCRIPTORS_FILE: &str = "descriptors.pb";
+pub const CONTRACT_FILE: &str = "contract.json";
 
-/// The marker for a selection whose binary comes from the package default
-/// instead of an explicit `binary:` key. Uppercase spelling cannot collide
-/// with a valid package or binary name, which are lowercase identifiers.
-const DEFAULT_BINARY: &str = "DEFAULT";
+/// The prepared-contract layout generation. Readers reject products
+/// recorded under any other generation instead of guessing at a
+/// different shape.
+pub const CONTRACT_GENERATION: u32 = 1;
 
-/// Encodes one selection path or binary component so distinct selections
-/// never share a prepared directory.
-///
-/// Every byte outside `[A-Za-z0-9]` becomes `_xHH`, so `-` (the component
-/// separator in a prepared directory name) never appears inside an encoded
-/// component and the encoding is injective: `a/b`, `a-b`, and `a_b` encode
-/// to three different names.
-#[must_use]
-pub fn encode_selection_component(component: &str) -> String {
-    let mut encoded = String::with_capacity(component.len());
-    for byte in component.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            encoded.push(byte as char);
+/// The root directory holding every prepared contract of one project.
+pub const PREPARED_ROOT: &str = ".phoxal/prepared";
+
+/// The directory key of a package's own self-prepared contract, written
+/// by `cargo phoxal prepare` run inside a standalone service package.
+pub const SELF_KEY: &str = "self";
+
+/// The complete identity of one selection, recorded inside
+/// `contract.json` so a shortened key component can always be validated
+/// against the full identity it abbreviates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PreparedSelection {
+    /// A robot-local relative path source.
+    Path {
+        /// The authored relative path, verbatim.
+        path: String,
+    },
+    /// A registry package at an exact version.
+    Registry {
+        /// Registry short name (`phoxal`).
+        registry: String,
+        /// Package name.
+        name: String,
+        /// Exact version.
+        version: String,
+    },
+    /// A Git repository pinned to a full commit.
+    Git {
+        /// Repository short name.
+        name: String,
+        /// The full 40-character commit.
+        revision: String,
+    },
+    /// The package preparing its own default binary (`cargo phoxal
+    /// prepare` inside a standalone service package).
+    SelfHosted {
+        /// The preparing package's name.
+        package: String,
+    },
+}
+
+/// The executable a prepared contract was extracted from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedExecutable {
+    /// SHA-256 of the exact executable bytes.
+    pub sha256: String,
+    /// The package the executable was built from.
+    pub package: String,
+    /// The package version, when the source carries one.
+    pub version: Option<String>,
+}
+
+/// The `contract.json` envelope: one coherent record of what this
+/// product is, what it was extracted from, and the runtime metadata
+/// itself.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedContractFile {
+    /// The layout generation this product belongs to.
+    pub generation: u32,
+    /// The complete selection identity.
+    pub selection: PreparedSelection,
+    /// The explicit `binary:` key of the selection, when one was set.
+    pub binary: Option<String>,
+    /// The executable the products were extracted from.
+    pub executable: PreparedExecutable,
+    /// The retained runtime record, verbatim, so consumers observe the
+    /// exact artifact metadata rather than a lossy re-encoding.
+    pub runtime: serde_json::Value,
+}
+
+/// Sanitizes one readable key segment: lowercase letters, digits, and
+/// dashes survive; everything else folds to `-` runs.
+fn readable_segment(text: &str) -> String {
+    // Dots survive: they are filesystem-safe everywhere and folding
+    // them into dashes would collide distinct versions (`0.1.0` and
+    // `0-1-0`).
+    let mut segment = String::with_capacity(text.len());
+    let mut previous_dash = false;
+    for character in text.chars() {
+        let folded = if character.is_ascii_alphanumeric() || character == '.' {
+            character.to_ascii_lowercase().to_string()
         } else {
-            encoded.push_str(&format!("_{byte:02x}"));
+            "-".to_owned()
+        };
+        if folded == "-" {
+            if !previous_dash && !segment.is_empty() {
+                segment.push('-');
+            }
+            previous_dash = true;
+        } else {
+            segment.push_str(&folded);
+            previous_dash = false;
         }
     }
-    encoded
+    // Edge dots and dashes fold away: a leading `..` from a relative
+    // path must never reach the directory name, and the trailing digest
+    // already guarantees distinctness.
+    segment
+        .trim_matches(|c: char| c == '-' || c == '.')
+        .to_owned()
 }
 
-/// The prepared-contract directory of one local (path-source) selection.
+/// A twelve-hex digest of the exact identity text, so distinct
+/// identities that fold to the same readable slug still occupy
+/// distinct directories, and the recorded identity can always be
+/// validated against it.
+fn identity_digest(identity: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    let digest = hasher.finalize();
+    digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The readable, injective directory key of one selection.
 ///
-/// `binary` is the selection's explicit `binary:` key, if any; distinct
-/// binaries of one package prepare into distinct directories.
+/// The slug is the primary readable interface (`registry-<name>@<version>`,
+/// `git-<name>@<rev12>`, `path-<slug>`); the trailing digest guarantees
+/// distinctness for identities that fold to the same slug, and
+/// [`validate_prepared_key`] re-derives it from the recorded complete
+/// identity when the products are read.
 #[must_use]
-pub fn local_prepared_dir(
-    robot_root: &Path,
-    relative_source: &Path,
+pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> String {
+    let binary_suffix = match binary {
+        Some(name) => format!("--bin-{}", readable_segment(name)),
+        None => "--bin-default".to_owned(),
+    };
+    match selection {
+        PreparedSelection::Path { path } => {
+            let slug = readable_segment(&path.replace('/', "-"));
+            format!(
+                "path-{}-{}{}",
+                if slug.is_empty() {
+                    "root".to_owned()
+                } else {
+                    slug
+                },
+                identity_digest(path),
+                binary_suffix
+            )
+        }
+        PreparedSelection::Registry {
+            registry,
+            name,
+            version,
+        } => format!(
+            "registry-{}-{}@{}{}",
+            readable_segment(registry),
+            readable_segment(name),
+            readable_segment(version),
+            binary_suffix
+        ),
+        PreparedSelection::Git { name, revision } => format!(
+            "git-{}@{}{}",
+            readable_segment(name),
+            &revision[..revision.len().min(12)],
+            binary_suffix
+        ),
+        PreparedSelection::SelfHosted { .. } => SELF_KEY.to_owned(),
+    }
+}
+
+/// The prepared-contract directory of one selection under a project's
+/// `.phoxal/prepared/` root. Equivalent selections resolve to one
+/// directory, so repeated selections prepare once.
+#[must_use]
+pub fn prepared_dir(
+    project_root: &Path,
+    selection: &PreparedSelection,
     binary: Option<&str>,
 ) -> PathBuf {
-    let mut identity = String::new();
-    for component in relative_source.components() {
-        identity.push_str(&encode_selection_component(
-            &component.as_os_str().to_string_lossy(),
-        ));
-        identity.push('-');
-    }
-    identity.push_str("bin-");
-    identity.push_str(&encode_selection_component(
-        binary.unwrap_or(DEFAULT_BINARY),
-    ));
-    robot_root
-        .join(".phoxal/local")
-        .join(identity)
-        .join("contract")
-}
-
-/// The prepared-contract directory of one registry or Git selection inside
-/// its robot-tree package root.
-#[must_use]
-pub fn remote_prepared_dir(tree_root: &Path, binary: Option<&str>) -> PathBuf {
-    tree_root
-        .join(format!(
-            "bin-{}",
-            encode_selection_component(binary.unwrap_or(DEFAULT_BINARY))
-        ))
-        .join("contract")
+    project_root
+        .join(PREPARED_ROOT)
+        .join(prepared_key(selection, binary))
 }
 
 /// The prepared-contract directory of a package's own default binary,
@@ -150,29 +274,81 @@ pub fn remote_prepared_dir(tree_root: &Path, binary: Option<&str>) -> PathBuf {
 /// bindings without compiling the package recursively.
 #[must_use]
 pub fn self_prepared_dir(package: &Path) -> PathBuf {
-    package.join(".phoxal/local/self/contract")
+    package.join(PREPARED_ROOT).join(SELF_KEY)
+}
+
+/// Validates that a prepared-contract directory's key matches its
+/// recorded complete identity — the shortened digest inside the key is
+/// never trusted on its own.
+pub fn validate_prepared_key(
+    contract_dir: &Path,
+    file: &PreparedContractFile,
+) -> Result<(), Error> {
+    let recorded = prepared_key(&file.selection, file.binary.as_deref());
+    let actual = contract_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if actual != recorded {
+        return Err(Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!(
+                "prepared contract directory `{actual}` does not match its recorded identity (expected `{recorded}`)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// One participant's prepared contract as the build helper consumes it.
 #[derive(Debug, Clone)]
 pub struct PreparedContract {
-    /// The endpoint and policy metadata retained in the artifact.
+    /// The complete `contract.json` envelope.
+    pub file: PreparedContractFile,
+    /// The endpoint and policy metadata parsed from the verbatim
+    /// record; the narrow read-model guiding generation.
     runtime: PreparedRuntime,
     /// The assembled standard descriptor closure.
     pub descriptors: FileDescriptorSet,
 }
 
-/// Reads one prepared contract directory.
+impl PreparedContract {
+    /// The endpoint and policy metadata retained from the artifact.
+    #[must_use]
+    pub fn runtime(&self) -> &PreparedRuntime {
+        &self.runtime
+    }
+}
+
+/// Reads one prepared contract directory: the `contract.json` envelope
+/// and the `descriptors.pb` closure as one coherent product, rejecting
+/// foreign layout generations and directories whose key does not match
+/// the recorded complete identity.
 pub fn read_prepared(contract_dir: &Path) -> Result<PreparedContract, Error> {
-    let endpoints = contract_dir.join(ENDPOINTS_FILE);
-    let runtime: PreparedRuntime =
-        serde_json::from_slice(&fs::read(&endpoints).map_err(|source| Error::Path {
-            path: endpoints.clone(),
+    let contract_path = contract_dir.join(CONTRACT_FILE);
+    let file: PreparedContractFile =
+        serde_json::from_slice(&fs::read(&contract_path).map_err(|source| Error::Path {
+            path: contract_path.clone(),
             source,
         })?)
         .map_err(|error| Error::ApiInput {
-            path: contract_dir.to_owned(),
-            message: format!("prepared endpoint metadata is invalid: {error}"),
+            path: contract_path.clone(),
+            message: format!("prepared contract metadata is invalid: {error}"),
+        })?;
+    if file.generation != CONTRACT_GENERATION {
+        return Err(Error::ApiInput {
+            path: contract_path,
+            message: format!(
+                "prepared contract generation {} is not supported (expected {CONTRACT_GENERATION}); re-run `cargo phoxal prepare`",
+                file.generation
+            ),
+        });
+    }
+    validate_prepared_key(contract_dir, &file)?;
+    let runtime: PreparedRuntime =
+        serde_json::from_value(file.runtime.clone()).map_err(|error| Error::ApiInput {
+            path: contract_path.clone(),
+            message: format!("prepared runtime metadata is invalid: {error}"),
         })?;
     let descriptors_path = contract_dir.join(DESCRIPTORS_FILE);
     let descriptors = FileDescriptorSet::decode(
@@ -188,6 +364,7 @@ pub fn read_prepared(contract_dir: &Path) -> Result<PreparedContract, Error> {
         message: format!("prepared descriptors are invalid: {error}"),
     })?;
     Ok(PreparedContract {
+        file,
         runtime,
         descriptors,
     })
@@ -518,77 +695,115 @@ pub fn emit_prepared_methods(
 mod tests {
     use super::*;
 
-    #[test]
-    fn selection_component_encoding_is_injective_across_separator_lookalikes() {
-        // Path separators, hyphens, and underscores must never collapse onto
-        // one another: the hyphen is the directory-name separator.
-        assert_eq!(
-            encode_selection_component("a/b"),
-            "a_2fb",
-            "path separators encode distinctly"
-        );
-        let hyphen = encode_selection_component("a-b");
-        let underscore = encode_selection_component("a_b");
-        let dot = encode_selection_component("a.b");
-        assert_ne!(hyphen, underscore);
-        assert_ne!(hyphen, dot);
-        assert_ne!(underscore, dot);
-        // A literal that already looks like an escape sequence encodes
-        // differently from the input that produced it.
-        assert_ne!(
-            encode_selection_component("a_2fb"),
-            encode_selection_component("a/b")
-        );
+    fn path_selection(path: &str) -> PreparedSelection {
+        PreparedSelection::Path {
+            path: path.to_owned(),
+        }
     }
 
     #[test]
-    fn local_prepared_dirs_distinguish_paths_and_binaries() {
-        let root = Path::new("/robot");
-        let first = local_prepared_dir(root, Path::new("a/b"), Some("alpha"));
-        let second = local_prepared_dir(root, Path::new("a-b"), Some("alpha"));
-        let third = local_prepared_dir(root, Path::new("a/b"), Some("beta"));
-        let default = local_prepared_dir(root, Path::new("a/b"), None);
-        let paths = [
-            first.clone(),
-            second.clone(),
-            third.clone(),
-            default.clone(),
-        ];
-        for (index, path) in paths.iter().enumerate() {
-            for other in paths.iter().skip(index + 1) {
-                assert_ne!(path, other, "selection identities must stay distinct");
+    fn prepared_keys_are_injective_across_identity_lookalikes() {
+        // Path separators, hyphens, and underscores must never collapse
+        // onto one another, and distinct versions must not fold
+        // together.
+        let a = prepared_key(&path_selection("a/b"), None);
+        let b = prepared_key(&path_selection("a-b"), None);
+        let c = prepared_key(&path_selection("a_b"), None);
+        let keys = [a, b, c];
+        for (index, key) in keys.iter().enumerate() {
+            for other in keys.iter().skip(index + 1) {
+                assert_ne!(key, other, "selection identities must stay distinct");
             }
         }
-        // A multi-component path joins its encoded components with the
-        // separator; a lookalike single component encodes its hyphen.
-        assert!(first.to_string_lossy().ends_with("a-b-bin-alpha/contract"));
-        assert!(
-            second
-                .to_string_lossy()
-                .ends_with("a_2db-bin-alpha/contract")
-        );
-        assert!(
-            default
-                .to_string_lossy()
-                .ends_with("a-b-bin-DEFAULT/contract")
+        let registry = |name: &str, version: &str| {
+            prepared_key(
+                &PreparedSelection::Registry {
+                    registry: "phoxal".to_owned(),
+                    name: name.to_owned(),
+                    version: version.to_owned(),
+                },
+                None,
+            )
+        };
+        assert_ne!(registry("pkg", "0.1.0"), registry("pkg", "0-1-0"));
+        assert_ne!(
+            registry("pkg", "0.1.0"),
+            prepared_key(
+                &PreparedSelection::Git {
+                    name: "pkg".to_owned(),
+                    revision: "0.1.0-alpha-prerelease-metadata0000000000000000".to_owned(),
+                },
+                None
+            )
         );
     }
 
     #[test]
-    fn remote_prepared_dirs_distinguish_binaries() {
-        let root = Path::new("/robot/.phoxal/git/pkg/rev");
-        assert_ne!(
-            remote_prepared_dir(root, Some("alpha")),
-            remote_prepared_dir(root, Some("beta"))
+    fn prepared_keys_are_readable_and_distinct_per_binary() {
+        let key = prepared_key(
+            &PreparedSelection::Registry {
+                registry: "phoxal".to_owned(),
+                name: "phoxal-service-motion".to_owned(),
+                version: "0.0.0-dev.4".to_owned(),
+            },
+            None,
         );
-        assert_ne!(
-            remote_prepared_dir(root, Some("alpha")),
-            remote_prepared_dir(root, None)
+        assert_eq!(
+            key,
+            "registry-phoxal-phoxal-service-motion@0.0.0-dev.4--bin-default"
         );
+        let alpha = prepared_key(&path_selection("vendor/provider"), Some("alpha"));
+        let beta = prepared_key(&path_selection("vendor/provider"), Some("beta"));
+        assert!(alpha.ends_with("--bin-alpha"));
+        assert_ne!(alpha, beta);
+        assert_eq!(
+            prepared_key(
+                &PreparedSelection::SelfHosted {
+                    package: "any".to_owned()
+                },
+                None
+            ),
+            "self"
+        );
+    }
+
+    #[test]
+    fn prepared_key_validation_rejects_directory_identity_mismatches() {
+        let file = PreparedContractFile {
+            generation: CONTRACT_GENERATION,
+            selection: path_selection("components/ddsm115"),
+            binary: None,
+            executable: PreparedExecutable {
+                sha256: "0".repeat(64),
+                package: "phoxal-component-ddsm115".to_owned(),
+                version: Some("0.0.0-dev.4".to_owned()),
+            },
+            runtime: serde_json::json!({}),
+        };
+        let correct =
+            Path::new("/robot/.phoxal/prepared").join(prepared_key(&file.selection, None));
+        assert!(validate_prepared_key(&correct, &file).is_ok());
+        // A directory named after a DIFFERENT path must be rejected even
+        // though it looks structurally valid: the shortened digest is
+        // always checked against the recorded complete identity.
+        let impostor = Path::new("/robot/.phoxal/prepared")
+            .join(prepared_key(&path_selection("components/vl53l1x"), None));
+        assert!(validate_prepared_key(&impostor, &file).is_err());
     }
 
     fn contract_with_outputs(runtime_json: &str) -> PreparedContract {
         PreparedContract {
+            file: PreparedContractFile {
+                generation: CONTRACT_GENERATION,
+                selection: path_selection("participant"),
+                binary: None,
+                executable: PreparedExecutable {
+                    sha256: "0".repeat(64),
+                    package: "participant".to_owned(),
+                    version: None,
+                },
+                runtime: serde_json::from_str(runtime_json).expect("runtime record"),
+            },
             runtime: serde_json::from_str(runtime_json).expect("runtime record"),
             descriptors: FileDescriptorSet::default(),
         }

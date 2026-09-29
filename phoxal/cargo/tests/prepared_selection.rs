@@ -308,18 +308,18 @@ fn two_binaries_of_one_package_keep_distinct_prepared_contracts()
 
     // Each selection keeps its own prepared directory, keyed by the shared
     // identity scheme the build helper consumes.
-    let local = robot.join(".phoxal/local");
-    let alpha_dir = prepared_dir_for(&local, "provider-bin-alpha");
-    let beta_dir = prepared_dir_for(&local, "provider-bin-beta");
+    let local = robot.join(".phoxal/prepared");
+    let alpha_dir = prepared_dir_for(&local, "bin-alpha");
+    let beta_dir = prepared_dir_for(&local, "bin-beta");
     for (label, dir) in [("alpha", &alpha_dir), ("beta", &beta_dir)] {
         assert!(
-            dir.join("endpoints.json").is_file(),
+            dir.join("contract.json").is_file(),
             "the {label} selection must keep its own prepared contract at {}",
             dir.display()
         );
     }
-    let alpha_endpoints = fs::read_to_string(alpha_dir.join("endpoints.json"))?;
-    let beta_endpoints = fs::read_to_string(beta_dir.join("endpoints.json"))?;
+    let alpha_endpoints = fs::read_to_string(alpha_dir.join("contract.json"))?;
+    let beta_endpoints = fs::read_to_string(beta_dir.join("contract.json"))?;
     assert!(
         alpha_endpoints.contains("alpha_status"),
         "the alpha selection names its own endpoint"
@@ -463,7 +463,7 @@ fn prepared_dir_for(local: &std::path::Path, suffix: &str) -> PathBuf {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.ends_with(suffix) {
-                matches.push(entry.path().join("contract"));
+                matches.push(entry.path());
             }
         }
     }
@@ -608,13 +608,16 @@ fn git_rust_contract_participant_prepares_from_the_installed_artifact()
         String::from_utf8_lossy(&prepare.stdout),
         String::from_utf8_lossy(&prepare.stderr),
     );
-    let contract_dir = robot
-        .join(".phoxal/git")
-        .join("proof-git-rust-provider")
-        .join(&revision)
-        .join("bin-DEFAULT")
-        .join("contract");
-    let endpoints = fs::read_to_string(contract_dir.join("endpoints.json"))?;
+    let prepared_root = robot.join(".phoxal/prepared");
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&prepared_root)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("git-proof-git-rust-provider@") {
+            matches.push(entry.path());
+        }
+    }
+    assert_eq!(matches.len(), 1, "one Git prepared contract");
+    let endpoints = fs::read_to_string(matches[0].join("contract.json"))?;
     assert!(
         endpoints.contains("alpha_status"),
         "the Git selection's prepared contract names its own endpoint"

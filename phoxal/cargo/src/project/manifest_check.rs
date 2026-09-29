@@ -41,16 +41,20 @@ pub(crate) fn validate_prepared_connections(
         let Some((source, binary)) = selected(instance) else {
             continue;
         };
-        let endpoints_path = prepared_root(root, source, binary).join(phoxal_build::ENDPOINTS_FILE);
-        if !endpoints_path.is_file() {
+        let contract_path = prepared_root(root, source, binary).join(phoxal_build::CONTRACT_FILE);
+        if !contract_path.is_file() {
             continue;
         }
-        let bytes = std::fs::read(&endpoints_path).map_err(|source| Error::DeclarationCheck {
+        let bytes = std::fs::read(&contract_path).map_err(|source| Error::DeclarationCheck {
             message: format!("participant {instance}: cannot read prepared contract: {source}"),
         })?;
-        let runtime: RuntimeRecord =
+        let file: phoxal_build::PreparedContractFile =
             serde_json::from_slice(&bytes).map_err(|error| Error::DeclarationCheck {
                 message: format!("participant {instance}: prepared contract is invalid: {error}"),
+            })?;
+        let runtime: RuntimeRecord =
+            serde_json::from_value(file.runtime).map_err(|error| Error::DeclarationCheck {
+                message: format!("participant {instance}: prepared runtime is invalid: {error}"),
             })?;
         contracts.insert(
             instance.clone(),
@@ -141,22 +145,27 @@ pub(crate) fn validate_prepared_connections(
     Ok((prepared_count, brain_validated))
 }
 
+/// The selection identity of one authored source.
+pub(crate) fn selection_identity(source: &Source) -> phoxal_build::PreparedSelection {
+    match source {
+        Source::Path(path) => phoxal_build::PreparedSelection::Path { path: path.clone() },
+        Source::Package(package) => phoxal_build::PreparedSelection::Registry {
+            registry: package
+                .registry
+                .clone()
+                .unwrap_or_else(|| "phoxal".to_owned()),
+            name: package.name.clone(),
+            version: package.version.clone(),
+        },
+        Source::Git(git) => phoxal_build::PreparedSelection::Git {
+            name: git.name.clone(),
+            revision: git.rev.clone(),
+        },
+    }
+}
+
 /// The prepared-contract directory of one selection, when composition
 /// prepared its Rust contract from a compiled artifact.
 pub(crate) fn prepared_root(root: &Path, source: &Source, binary: Option<&str>) -> PathBuf {
-    match source {
-        Source::Path(path) => phoxal_build::local_prepared_dir(root, Path::new(path), binary),
-        Source::Package(package) => phoxal_build::remote_prepared_dir(
-            &root
-                .join(".phoxal/registry")
-                .join(package.registry.as_deref().unwrap_or("phoxal"))
-                .join(&package.name)
-                .join(&package.version),
-            binary,
-        ),
-        Source::Git(git) => phoxal_build::remote_prepared_dir(
-            &root.join(".phoxal/git").join(&git.name).join(&git.rev),
-            binary,
-        ),
-    }
+    phoxal_build::prepared_dir(root, &selection_identity(source), binary)
 }
