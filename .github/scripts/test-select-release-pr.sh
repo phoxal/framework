@@ -129,9 +129,9 @@ grep -q "no eligible release-plz PR is open" "$WORK/err.log" \
 
 # ---------------------------------------------------------------- scenario 3
 S="$WORK/untrusted"; make_scenario "$S"
-pull_json 777 release-plz-untrusted mallory false phoxal false > /tmp/p1.json
-pull_json 778 release-plz-untrusted app/phoxal-release-bot true someone-else true > /tmp/p2.json
-python3 -c "import json; print(json.dumps([json.load(open('/tmp/p1.json')), json.load(open('/tmp/p2.json'))]))" > "$S/state/pulls.json"
+pull_json 777 release-plz-untrusted mallory false phoxal false > "$WORK/p1.json"
+pull_json 778 release-plz-untrusted app/phoxal-release-bot true someone-else true > "$WORK/p2.json"
+python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))]))" "$WORK/p1.json" "$WORK/p2.json" > "$S/state/pulls.json"
 check "untrusted-author and forked release-plz-* PRs are never selected" fail \
     run_selector "$S"
 grep -q "no eligible" "$WORK/err.log" \
@@ -140,7 +140,7 @@ grep -q "no eligible" "$WORK/err.log" \
 
 # A printed URL to an untrusted pull is refused just the same.
 S="$WORK/untrusted-url"; make_scenario "$S"
-cp /tmp/p1.json "$S/state/pulls.json"
+cp "$WORK/p1.json" "$S/state/pulls.json"
 echo "Opened PR at https://github.com/phoxal/framework/pull/777" > "$S/state/prep-output"
 check "a printed URL to an untrusted pull is refused" fail run_selector "$S"
 grep -q "failed validation" "$WORK/err.log" \
@@ -149,9 +149,9 @@ grep -q "failed validation" "$WORK/err.log" \
 
 # ---------------------------------------------------------------- scenario 4
 S="$WORK/ambiguous"; make_scenario "$S"
-pull_json 801 release-plz-a app/phoxal-release-bot true phoxal false > /tmp/a1.json
-pull_json 802 release-plz-b app/phoxal-release-bot true phoxal false > /tmp/a2.json
-python3 -c "import json; print(json.dumps([json.load(open('/tmp/a1.json')), json.load(open('/tmp/a2.json'))]))" > "$S/state/pulls.json"
+pull_json 801 release-plz-a app/phoxal-release-bot true phoxal false > "$WORK/a1.json"
+pull_json 802 release-plz-b app/phoxal-release-bot true phoxal false > "$WORK/a2.json"
+python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))]))" "$WORK/a1.json" "$WORK/a2.json" > "$S/state/pulls.json"
 check "two eligible candidates are an ambiguity error" fail run_selector "$S"
 grep -q "ambiguous" "$WORK/err.log" \
     && { echo "PASS: ambiguity reported"; pass=$((pass + 1)); } \
@@ -159,8 +159,8 @@ grep -q "ambiguous" "$WORK/err.log" \
 
 # ---------------------------------------------------------------- scenario 5
 S="$WORK/genuine"; make_scenario "$S"
-pull_json 495 release-plz-2026-09-28T20-12-17Z app/phoxal-release-bot true phoxal false > /tmp/g495.json
-python3 -c "import json; print(json.dumps([json.load(open('/tmp/g495.json'))]))" > "$S/state/pulls.json"
+pull_json 495 release-plz-2026-09-28T20-12-17Z app/phoxal-release-bot true phoxal false > $WORK/g495.json
+python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1]))]))" "$WORK/g495.json" > "$S/state/pulls.json"
 check "a genuine App version PR is selected" ok run_selector "$S"
 if grep -q "pr-url=https://github.com/phoxal/framework/pull/495" "$S/selector-output" \
    && grep -q "pr-head=sha495" "$S/selector-output"; then
@@ -179,6 +179,53 @@ check "a genuine printed URL is selected with its head SHA" ok run_selector "$S"
 grep -q "pr-head=sha495" "$S/selector-output" \
     && { echo "PASS: URL path records the head SHA"; pass=$((pass + 1)); } \
     || { echo "FAIL: URL path missing head SHA"; fail=$((fail + 1)); }
+
+
+# ---------------------------------------------------------------- boundary
+# The real workflow caller boundary: a clean git checkout, RUNNER_TEMP
+# and GITHUB_OUTPUT as the runner provides them, the exact caller
+# commands from release.yml, and the assertions that the checkout stays
+# clean and the caller receives the output.
+S="$WORK/boundary"; make_scenario "$S"
+pull_json 495 release-plz-2026-09-29T05-00-00Z app/phoxal-release-bot true phoxal false > "$WORK/b495.json"
+python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1]))]))" "$WORK/b495.json" > "$S/state/pulls.json"
+git -C "$S" init -q
+git -C "$S" add -A
+git -C "$S" -c user.name=t -c user.email=t@t commit -qm base
+runner_temp="$WORK/boundary-runner"; mkdir -p "$runner_temp"
+# The runner provides GITHUB_OUTPUT outside the workspace; pointing it
+# into the checkout would itself dirty the tree.
+GITHUB_OUTPUT="$runner_temp/github-output" \
+SELECTOR_OUT="$runner_temp/selector-output" \
+PATH="$S/bin:$PATH" GITHUB_REPOSITORY="phoxal/framework" \
+RUNNER_TEMP="$runner_temp" bash -c \
+    'cd "$1" && bash "$2/select-release-pr.sh" && \
+     cat "$RUNNER_TEMP/selector-output" >> "$GITHUB_OUTPUT"' \
+    _ "$S" "$SCRIPT_DIR" > "$WORK/boundary-out.log" 2>&1
+boundary_rc=$?
+if [ "$boundary_rc" -eq 0 ]; then
+    echo "PASS: the caller boundary selects in a clean checkout"
+    pass=$((pass + 1))
+else
+    echo "FAIL: the caller boundary failed"
+    tail -3 "$WORK/boundary-out.log" >&2
+    fail=$((fail + 1))
+fi
+if grep -q "^pr-url=https://github.com/phoxal/framework/pull/495$" "$runner_temp/github-output" \
+   && grep -q "^pr-head=sha495$" "$runner_temp/github-output"; then
+    echo "PASS: the caller receives pr-url and pr-head"
+    pass=$((pass + 1))
+else
+    echo "FAIL: caller output incomplete: $(cat "$runner_temp/github-output" 2>/dev/null)"
+    fail=$((fail + 1))
+fi
+if [ -z "$(git -C "$S" status --porcelain)" ]; then
+    echo "PASS: the checkout stays clean"
+    pass=$((pass + 1))
+else
+    echo "FAIL: selector dirtied the checkout: $(git -C "$S" status --porcelain)"
+    fail=$((fail + 1))
+fi
 
 printf '\n%s\n' "select-release-pr contract: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

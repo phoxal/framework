@@ -23,10 +23,32 @@ fn phoxal_dep(features: &str) -> String {
 }
 
 /// Runs the compiled `cargo-phoxal` binary with an isolated Phoxal home.
+/// One shared dependency-build cache per test process: the fixtures'
+/// dependency trees are identical (the workspace phoxal path dependency
+/// plus the same crates.io resolution), so the first fixture pays the
+/// cold build and the rest reuse it. Cargo's target-dir file lock keeps
+/// concurrent fixture builds correct; fixture sources still rebuild on
+/// their own edits. The cold path itself stays proven by the first
+/// build in every suite.
+fn shared_target_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "phoxal-{}-target-{}",
+        std::path::Path::new(file!())
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "suite".to_owned()),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|error| panic!("shared target directory {}: {error}", dir.display()));
+    dir
+}
+
 fn invoke(cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
         .current_dir(cwd)
         .env("PHOXAL_HOME", cwd.join(".phoxal-home"))
+        .env("CARGO_TARGET_DIR", shared_target_dir())
         .args(args)
         .output()
         .unwrap_or_else(|error| panic!("spawn cargo-phoxal: {error}"))

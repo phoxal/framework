@@ -191,14 +191,57 @@ fn readable_segment(text: &str) -> String {
         .to_owned()
 }
 
-/// A twelve-hex digest of the exact identity text, so distinct
-/// identities that fold to the same readable slug still occupy
-/// distinct directories, and the recorded identity can always be
-/// validated against it.
-fn identity_digest(identity: &str) -> String {
+/// A twelve-hex digest of the COMPLETE selection identity — the
+/// structured selection plus the exact binary key — so distinct
+/// identities that fold to the same readable slug (including binary
+/// names that differ only in folded characters, an absent versus an
+/// explicit `default` binary, registry versions whose separators fold
+/// together, and Git revisions sharing a twelve-character prefix)
+/// always occupy distinct directories, and the recorded identity can
+/// always be validated against it.
+fn identity_digest(selection: &PreparedSelection, binary: Option<&str>) -> String {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(identity.as_bytes());
+    // Unit separators make the canonical text unambiguous without
+    // escaping any field content; the binary marker distinguishes an
+    // absent key from an explicit `default`.
+    hasher.update(b"phoxal-prepared-v1\x1f");
+    match selection {
+        PreparedSelection::Path { path } => {
+            hasher.update(b"path\x1f");
+            hasher.update(path.as_bytes());
+        }
+        PreparedSelection::Registry {
+            registry,
+            name,
+            version,
+        } => {
+            hasher.update(b"registry\x1f");
+            hasher.update(registry.as_bytes());
+            hasher.update(b"\x1f");
+            hasher.update(name.as_bytes());
+            hasher.update(b"\x1f");
+            hasher.update(version.as_bytes());
+        }
+        PreparedSelection::Git { name, revision } => {
+            hasher.update(b"git\x1f");
+            hasher.update(name.as_bytes());
+            hasher.update(b"\x1f");
+            hasher.update(revision.as_bytes());
+        }
+        PreparedSelection::SelfHosted { package } => {
+            hasher.update(b"self\x1f");
+            hasher.update(package.as_bytes());
+        }
+    }
+    hasher.update(b"\x1f");
+    match binary {
+        Some(name) => {
+            hasher.update(b"bin\x1f");
+            hasher.update(name.as_bytes());
+        }
+        None => hasher.update(b"default"),
+    }
     let digest = hasher.finalize();
     digest[..6]
         .iter()
@@ -206,15 +249,15 @@ fn identity_digest(identity: &str) -> String {
         .collect()
 }
 
-/// The readable, injective directory key of one selection.
+/// The readable, injective directory key of one complete selection.
 ///
 /// The slug is the primary readable interface (`registry-<name>@<version>`,
-/// `git-<name>@<rev12>`, `path-<slug>`); the trailing digest guarantees
-/// distinctness for identities that fold to the same slug, and
-/// [`validate_prepared_key`] re-derives it from the recorded complete
-/// identity when the products are read.
+/// `git-<name>@<rev12>`, `path-<slug>`), and the trailing digest of the
+/// complete structured identity — selection plus exact binary key —
+/// guarantees distinctness for everything the readable fold merges.
 #[must_use]
 pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> String {
+    let digest = identity_digest(selection, binary);
     let binary_suffix = match binary {
         Some(name) => format!("--bin-{}", readable_segment(name)),
         None => "--bin-default".to_owned(),
@@ -229,7 +272,7 @@ pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> Stri
                 } else {
                     slug
                 },
-                identity_digest(path),
+                digest,
                 binary_suffix
             )
         }
@@ -238,16 +281,18 @@ pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> Stri
             name,
             version,
         } => format!(
-            "registry-{}-{}@{}{}",
+            "registry-{}-{}@{}-{}{}",
             readable_segment(registry),
             readable_segment(name),
             readable_segment(version),
+            digest,
             binary_suffix
         ),
         PreparedSelection::Git { name, revision } => format!(
-            "git-{}@{}{}",
+            "git-{}@{}-{}{}",
             readable_segment(name),
             &revision[..revision.len().min(12)],
+            digest,
             binary_suffix
         ),
         PreparedSelection::SelfHosted { .. } => SELF_KEY.to_owned(),
@@ -275,6 +320,44 @@ pub fn prepared_dir(
 #[must_use]
 pub fn self_prepared_dir(package: &Path) -> PathBuf {
     package.join(PREPARED_ROOT).join(SELF_KEY)
+}
+
+/// Reads one prepared contract and requires that its recorded complete
+/// identity — selection and binary key — equals the identity the caller
+/// resolved the directory for. A directory whose readable slug or
+/// folded binary suffix collides with another selection can never be
+/// consumed on that selection's behalf.
+pub fn read_prepared_for(
+    contract_dir: &Path,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+) -> Result<PreparedContract, Error> {
+    let contract = read_prepared(contract_dir)?;
+    validate_requested_identity(contract_dir, &contract.file, selection, binary)?;
+    Ok(contract)
+}
+
+/// Compares a prepared file's recorded complete identity against the
+/// identity the caller resolved the directory for. Structured
+/// comparison only — readable folds never decide identity.
+pub fn validate_requested_identity(
+    contract_dir: &Path,
+    file: &PreparedContractFile,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+) -> Result<(), Error> {
+    if file.selection != *selection || file.binary.as_deref() != binary {
+        return Err(Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!(
+                "prepared contract at `{}` records a different selection than the one requested ({:?} vs {selection:?}, binary {:?} vs {binary:?})",
+                contract_dir.display(),
+                file.selection,
+                file.binary,
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Validates that a prepared-contract directory's key matches its
@@ -748,10 +831,10 @@ mod tests {
             },
             None,
         );
-        assert_eq!(
-            key,
-            "registry-phoxal-phoxal-service-motion@0.0.0-dev.4--bin-default"
-        );
+        // Readable first: the identity is legible in the name, with the
+        // complete-identity digest guaranteeing distinctness after it.
+        assert!(key.starts_with("registry-phoxal-phoxal-service-motion@0.0.0-dev.4-"));
+        assert!(key.ends_with("--bin-default"));
         let alpha = prepared_key(&path_selection("vendor/provider"), Some("alpha"));
         let beta = prepared_key(&path_selection("vendor/provider"), Some("beta"));
         assert!(alpha.ends_with("--bin-alpha"));
@@ -765,6 +848,92 @@ mod tests {
             ),
             "self"
         );
+    }
+
+    #[test]
+    fn complete_identity_keys_separate_fold_colliding_binaries() {
+        // Binary names that fold to the same readable suffix, and an
+        // absent versus explicit `default` binary, are distinct
+        // selections and must never share a directory.
+        let selection = path_selection("provider");
+        assert_ne!(
+            prepared_key(&selection, Some("sensor-a")),
+            prepared_key(&selection, Some("sensor_a"))
+        );
+        assert_ne!(
+            prepared_key(&selection, None),
+            prepared_key(&selection, Some("default"))
+        );
+        assert_ne!(
+            prepared_key(&selection, Some("alpha")),
+            prepared_key(&selection, Some("beta"))
+        );
+    }
+
+    #[test]
+    fn complete_identity_keys_separate_fold_colliding_sources() {
+        // Registry versions and names whose separators fold together,
+        // and Git revisions sharing a twelve-character prefix, are
+        // distinct identities and must never share a directory.
+        let registry = |name: &str, version: &str| {
+            prepared_key(
+                &PreparedSelection::Registry {
+                    registry: "phoxal".to_owned(),
+                    name: name.to_owned(),
+                    version: version.to_owned(),
+                },
+                None,
+            )
+        };
+        assert_ne!(registry("pkg", "1.0.0+meta"), registry("pkg", "1.0.0-meta"));
+        assert_ne!(registry("a-b", "0.1.0"), registry("a_b", "0.1.0"));
+        let git = |revision: &str| {
+            prepared_key(
+                &PreparedSelection::Git {
+                    name: "pkg".to_owned(),
+                    revision: revision.to_owned(),
+                },
+                None,
+            )
+        };
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let cousin = "0123456789abffffffffffffffffffffffffffffff";
+        assert_ne!(git(revision), git(cousin));
+    }
+
+    #[test]
+    fn read_prepared_for_rejects_a_requested_identity_the_file_does_not_record() {
+        // The exact reproduction: a file recording binary `sensor_a`
+        // must not be consumed through the directory requested for
+        // `sensor-a`, even when the directory name itself matches the
+        // recorded (lossy) key.
+        let file = PreparedContractFile {
+            generation: CONTRACT_GENERATION,
+            selection: path_selection("provider"),
+            binary: Some("sensor_a".to_owned()),
+            executable: PreparedExecutable {
+                sha256: "0".repeat(64),
+                package: "provider".to_owned(),
+                version: None,
+            },
+            runtime: serde_json::json!({}),
+        };
+        let dir = Path::new("/robot/.phoxal/prepared").join("tampered-directory");
+        // With complete-identity keys these selections no longer share a
+        // directory at all; the remaining hazard is a misplaced or
+        // tampered file, which the structured comparison on read
+        // rejects regardless of directory naming.
+        let check =
+            |file: &PreparedContractFile, selection: &PreparedSelection, binary: Option<&str>| {
+                validate_requested_identity(&dir, file, selection, binary)
+            };
+        assert!(check(&file, &path_selection("provider"), Some("sensor_a")).is_ok());
+        assert!(check(&file, &path_selection("provider"), Some("sensor-a")).is_err());
+        assert!(check(&file, &path_selection("provider/other"), Some("sensor_a")).is_err());
+        let mut unkeyed = file.clone();
+        unkeyed.binary = None;
+        assert!(check(&unkeyed, &path_selection("provider"), Some("default")).is_err());
+        assert!(check(&unkeyed, &path_selection("provider"), None).is_ok());
     }
 
     #[test]

@@ -454,7 +454,7 @@ fn prepare_selection_products(
         version: Some(selection.version.clone()),
     };
     if contract_dir.join(phoxal_build::CONTRACT_FILE).is_file()
-        && phoxal_build::read_prepared(contract_dir)
+        && phoxal_build::read_prepared_for(contract_dir, selection_identity, selection_binary)
             .is_ok_and(|prepared| prepared.file.executable == executable_record)
     {
         return Ok(false);
