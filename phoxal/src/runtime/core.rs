@@ -454,6 +454,14 @@ pub struct RuntimeSpec {
     pub timeout: ExecutionDuration,
     /// Host-monotonic initialization deadline.
     pub init_timeout: ExecutionDuration,
+    /// Whether admitted input arrivals may advance the next hardware
+    /// release instead of waiting for the nominal period. Off for every
+    /// ordinary runtime: releases stay strictly periodic. A hosted
+    /// conversion runtime turns it on so a converted observation is
+    /// published on arrival rather than at the next tick; the invocation
+    /// rate never exceeds the nominal period, and controlled execution
+    /// ignores arrivals entirely so controlled input cuts stay exact.
+    pub arrival_releases: bool,
 }
 
 impl RuntimeSpec {
@@ -464,7 +472,15 @@ impl RuntimeSpec {
             period: ExecutionDuration::from_millis(period_ms),
             timeout: ExecutionDuration::from_millis(timeout_ms),
             init_timeout: ExecutionDuration::from_millis(init_timeout_ms),
+            arrival_releases: false,
         }
+    }
+
+    /// Enables arrival-aligned hardware releases for this spec.
+    #[must_use]
+    pub const fn with_arrival_releases(mut self) -> Self {
+        self.arrival_releases = true;
+        self
     }
 
     /// Validates the hard lower bound shared by every runtime registration.

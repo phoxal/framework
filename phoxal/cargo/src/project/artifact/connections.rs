@@ -243,6 +243,7 @@ mod tests {
                 "inputs": inputs, "transient_outputs": [], "service_outputs": outputs,
             }))
             .unwrap(),
+            hosted: BTreeMap::new(),
             descriptors: Vec::new(),
             schemas: Vec::new(),
         }

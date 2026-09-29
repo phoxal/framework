@@ -64,10 +64,7 @@ jobs:
         env:
           GIT_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          SELECTOR_OUT="$RUNNER_TEMP/selector-output" \
-            bash .github/scripts/select-release-pr.sh
-          cat "$RUNNER_TEMP/selector-output" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/run-release-selector.sh
       - name: Enable auto-merge on the selected PR and wait
         id: merge
         env:
@@ -185,12 +182,14 @@ jobs:
           cat > src/main.rs <<'RS'
           //! Release consumer robot: proves the published packages compose.
           phoxal::api!();
+          phoxal::conversions!();
 
+          #[cfg(phoxal_self_prepared)]
           mod conversions;
           mod runtime;
 
           fn main() -> phoxal::Result<()> {
-              phoxal::runtime::run(runtime::Brain)
+              run_hosted_roles(runtime::Brain)
           }
           RS
           cat > src/runtime.rs <<'RS'

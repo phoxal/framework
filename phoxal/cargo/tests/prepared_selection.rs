@@ -522,15 +522,40 @@ fn prepared_dir_for(local: &std::path::Path, suffix: &str) -> PathBuf {
 /// concurrent fixture builds correct; fixture sources still rebuild on
 /// their own edits. The cold path itself stays proven by the first
 /// build in every suite.
+///
+/// The cache is lifetime-bounded: sibling trees from earlier processes
+/// older than a day are removed on creation, so crashed or finished runs
+/// cannot accumulate unbounded disk. A live concurrent suite keeps its
+/// tree (it is continuously written and stays younger than the cutoff),
+/// and a removal racing a live build is ignored.
 fn shared_target_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "phoxal-{}-target-{}",
+    const MAX_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let prefix = format!(
+        "phoxal-{}-target-",
         std::path::Path::new(file!())
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "suite".to_owned()),
-        std::process::id()
-    ));
+            .unwrap_or_else(|| "suite".to_owned())
+    );
+    let parent = std::env::temp_dir();
+    let own = format!("{prefix}{}", std::process::id());
+    if let Ok(entries) = std::fs::read_dir(&parent) {
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) || name == own {
+                continue;
+            }
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && modified.elapsed().is_ok_and(|age| age > MAX_CACHE_AGE)
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let dir = parent.join(&own);
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|error| panic!("shared target directory {}: {error}", dir.display()));
     dir

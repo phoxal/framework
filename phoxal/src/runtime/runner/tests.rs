@@ -3415,6 +3415,7 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             ack_leg: "delivery-ack".to_owned(),
             cancel: cancel.clone(),
             reply_admission: None,
+            arrivals: None,
         })));
     }
     for boundary in [1, 2] {

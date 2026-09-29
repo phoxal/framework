@@ -152,6 +152,27 @@ impl HardwareSchedule {
         Ok(())
     }
 
+    /// Pull the next nominal release forward to `now` for an admitted
+    /// input arrival, so an arrival-aligned runtime converts without
+    /// waiting out the remaining tick.
+    ///
+    /// The nominal period stays a hard rate bound: at most one early
+    /// release is admitted per period since the last accepted freeze, a
+    /// reversed clock is ignored, and an already-due schedule is left to
+    /// the normal ticker path. Controlled execution never calls this.
+    pub(crate) fn arrive(&mut self, now: ExecutionTime) {
+        let Some(previous) = self.previous_freeze else {
+            return;
+        };
+        if now < previous || now < self.next_release {
+            return;
+        }
+        if now.as_nanos() - previous.as_nanos() < self.period.as_nanos() {
+            return;
+        }
+        self.next_release = now;
+    }
+
     /// Next nominal release that has not been accepted or skipped.
     #[must_use]
     pub const fn next_release(self) -> ExecutionTime {
@@ -191,6 +212,40 @@ pub enum ScheduleError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrival_releases_pull_only_due_and_period_bounded_freezes() {
+        const MS: u64 = 1_000_000;
+        let mut schedule = HardwareSchedule::new(
+            ExecutionTime::from_nanos(0),
+            ExecutionDuration::from_millis(20),
+        )
+        .expect("schedule");
+        // Everything at or after the anchor is due before the first accept,
+        // so pre-release arrivals have nothing to pull.
+        schedule.arrive(ExecutionTime::from_nanos(MS));
+        let first = schedule
+            .candidate(ExecutionTime::from_nanos(0))
+            .expect("due");
+        schedule.accept(first).expect("accept");
+        // next_release is now 20 ms; an arrival 5 ms in is rate-capped.
+        schedule.arrive(ExecutionTime::from_nanos(5 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(20 * MS));
+        // An arrival one full period after the last freeze pulls the next
+        // release to itself, ahead of the nominal grid.
+        schedule.arrive(ExecutionTime::from_nanos(21 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(21 * MS));
+        let pulled = schedule
+            .candidate(ExecutionTime::from_nanos(21 * MS))
+            .expect("pulled release is due");
+        schedule.accept(pulled).expect("accept");
+        // An arrival exactly one period later is admitted at its own
+        // instant, and a reversed clock never moves the schedule back.
+        schedule.arrive(ExecutionTime::from_nanos(41 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(41 * MS));
+        schedule.arrive(ExecutionTime::from_nanos(30 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(41 * MS));
+    }
 
     #[test]
     fn late_hardware_invocations_match_the_normative_timing_table() {

@@ -75,6 +75,21 @@ macro_rules! api {
     };
 }
 
+/// Attaches the generated conversion hosting glue once at the crate root.
+///
+/// A robot executable whose composition needs cross-service conversions
+/// hosts the conversion runtime in-process: `cargo phoxal prepare`
+/// persists the discovered edges, the build helper emits this file, and
+/// the generated `run_hosted_roles` entry dispatches the `brain` and
+/// `phoxal-adapter` launch instances of the same executable. Robots with
+/// no conversions attach a compiled no-op stub from the same path.
+#[macro_export]
+macro_rules! conversions {
+    () => {
+        include!(concat!(env!("OUT_DIR"), "/phoxal-conversions.rs"));
+    };
+}
+
 /// Implementation dependencies used by generated API code.
 ///
 /// Generated bindings reference this module for their Protobuf runtime and
