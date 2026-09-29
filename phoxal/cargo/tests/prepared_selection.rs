@@ -531,7 +531,8 @@ fn shared_target_dir() -> std::path::PathBuf {
             .unwrap_or_else(|| "suite".to_owned()),
         std::process::id()
     ));
-    std::fs::create_dir_all(&dir).expect("shared target directory");
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|error| panic!("shared target directory {}: {error}", dir.display()));
     dir
 }
 
