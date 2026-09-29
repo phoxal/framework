@@ -1,6 +1,6 @@
 [package]
 name = "cargo-phoxal"
-version = "0.0.0-dev.10"
+version = "0.0.0-dev.11"
 workspace = "../.."
 edition.workspace = true
 rust-version.workspace = true
@@ -50,7 +50,7 @@ syn = { workspace = true }
 # The case host drives the supervised lifecycle from the harness. The
 # harness binary itself depends only on the SDK, but the case-host
 # protocol in `scenario::__harness` requires the scenario feature.
-phoxal = { path = "..", version = "=0.0.0-dev.5", registry = "phoxal", default-features = false, features = ["scenario", "build"] }
+phoxal = { path = "..", version = "=0.0.0-dev.6", registry = "phoxal", default-features = false, features = ["scenario", "build"] }
 phoxal-build = { workspace = true }
 
 [lints]
