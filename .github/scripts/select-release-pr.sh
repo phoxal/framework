@@ -32,7 +32,7 @@ set -euo pipefail
 GH="${GH:-gh}"
 export RELEASE_BASE="${RELEASE_BASE:-main}"
 export TRUSTED_RELEASE_AUTHOR="${TRUSTED_RELEASE_AUTHOR:-app/phoxal-release-bot}"
-OUT="${SELECTOR_OUT:-selector-output}"
+OUT="${SELECTOR_OUT:-${RUNNER_TEMP:-$(mktemp -d)}/selector-output}"
 export SELECTOR_OWNER="${GITHUB_REPOSITORY%%/*}"
 : > "$OUT"
 
@@ -100,13 +100,16 @@ validate_pull() { # <pull number> -> echoes "<url> <sha>" or fails
 
 # Version preparation failures stop the run; they are never treated as
 # "nothing to release".
-if ! release-plz release-pr 2>&1 | tee release-plz.log; then
+# Scratch files live outside the checkout: release-plz requires a
+# clean working tree, and its own log must not dirty it.
+LOG="${RELEASE_PLZ_LOG:-${RUNNER_TEMP:-$(mktemp -d)}/release-plz.log}"
+if ! release-plz release-pr 2>&1 | tee "$LOG"; then
     log "release-plz failed during version preparation; refusing to continue:"
-    cat release-plz.log >&2
+    cat "$LOG" >&2
     exit 1
 fi
 
-url="$(grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' release-plz.log | head -1 || true)"
+url="$(grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' "$LOG" | head -1 || true)"
 verdict=""
 
 if [ -n "$url" ]; then
