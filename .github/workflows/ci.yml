@@ -52,8 +52,10 @@ jobs:
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
-      - name: Release script contract test
-        run: bash .github/scripts/test-release-groups.sh
+      - name: Release script contract tests
+        run: |
+          bash .github/scripts/test-release-groups.sh
+          bash .github/scripts/test-select-release-pr.sh
 
   supervisor-acceptance:
     name: supervisor acceptance

@@ -59,40 +59,14 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Prepare or resume the version PR
+      - name: Select the release version PR
         id: prepare
         env:
           GIT_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          set -euo pipefail
-          if ! release-plz release-pr 2>&1 | tee release-plz.log; then
-            echo "release-plz failed during version preparation; refusing to continue:" >&2
-            cat release-plz.log >&2
-            exit 1
-          fi
-          url="$(grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' release-plz.log | head -1 || true)"
-          if [ -z "$url" ]; then
-            # Nothing new to release; only a genuine release-plz version
-            # PR may be resumed — never an unrelated open pull request.
-            candidate="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
-              --json number,headRefName \
-              --jq '[.[] | select(.headRefName | startswith("release-plz-"))] | first(.[]) | .number' || true)"
-            if [ -n "$candidate" ]; then
-              url="https://github.com/$GITHUB_REPOSITORY/pull/$candidate"
-              echo "resuming the open release-plz version PR $url"
-            fi
-          fi
-          if [ -z "$url" ]; then
-            echo "no version PR was created and no release-plz PR is open; nothing to release." >&2
-            exit 1
-          fi
-          head_ref="$(gh pr view "$url" --json headRefName --jq .headRefName)"
-          case "$head_ref" in
-            release-plz-*) ;;
-            *) echo "refusing to resume $url: head $head_ref is not a release-plz version branch" >&2; exit 1 ;;
-          esac
-          echo "pr-url=$url" >> "$GITHUB_OUTPUT"
+          bash .github/scripts/select-release-pr.sh
+          cat selector-output >> "$GITHUB_OUTPUT"
       - name: Enable auto-merge on the selected PR and wait
         id: merge
         env:
@@ -100,7 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           url="${{ steps.prepare.outputs.pr-url }}"
-          head="$(gh pr view "$url" --json headRefOid --jq .headRefOid)"
+          # Bind the merge to the exact head the selector validated.
+          head="${{ steps.prepare.outputs.pr-head }}"
           gh pr merge "$url" --repo "$GITHUB_REPOSITORY" --auto --squash \
             --match-head-commit "$head"
           for _ in $(seq 1 120); do
