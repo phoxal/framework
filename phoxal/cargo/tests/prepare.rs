@@ -92,6 +92,34 @@ fn write_rust_contract_provider(
     Ok(())
 }
 
+/// Finds the unique prepared-contract directory whose key contains the
+/// given fragment, under a project's `.phoxal/prepared` root.
+fn find_prepared(project: &std::path::Path, fragment: &str) -> std::io::Result<std::path::PathBuf> {
+    let root = project.join(".phoxal/prepared");
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.contains(fragment) {
+            matches.push(entry.path());
+        }
+    }
+    let listing = fs::read_dir(&root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one prepared contract matching {fragment:?}; .phoxal/prepared holds {listing:?}"
+    );
+    Ok(matches.remove(0))
+}
+
 #[test]
 fn local_participant_prepares_from_its_compiled_artifact() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -132,13 +160,8 @@ fn local_participant_prepares_from_its_compiled_artifact() -> Result<(), Box<dyn
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let endpoints = fs::read_to_string(
-        robot
-            .join(".phoxal/local")
-            .join("provider-bin-DEFAULT")
-            .join("contract")
-            .join("endpoints.json"),
-    )?;
+    let endpoints =
+        fs::read_to_string(find_prepared(&robot, "path-provider")?.join("contract.json"))?;
     assert!(
         endpoints.contains("proof.registry.v1.Status"),
         "local preparation extracts the participant's compiled contract: {endpoints}"
@@ -246,13 +269,7 @@ fn exact_git_revision_prepares_the_alternate_binary_contract()
         String::from_utf8_lossy(&output.stderr)
     );
     let endpoints = fs::read_to_string(
-        robot
-            .join(".phoxal/git")
-            .join(package)
-            .join(&revision)
-            .join("bin-provider_2ddaemon")
-            .join("contract")
-            .join("endpoints.json"),
+        find_prepared(&robot, &format!("git-{package}@"))?.join("contract.json"),
     )?;
     assert!(
         endpoints.contains("\"telemetry\""),
@@ -324,13 +341,12 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
             "schema: phoxal/robot/v0\nrobot: {{ id: proof-robot }}\nservices:\n  provider:\n    source:\n      package: {{ name: {package}, version: '{version}', registry: proof }}\n"
         ),
     )?;
-    let prepared = robot
-        .join(".phoxal/registry/proof")
-        .join(package)
-        .join(version)
-        .join("bin-DEFAULT")
-        .join("contract")
-        .join("endpoints.json");
+    let prepared = || -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        Ok(
+            find_prepared(&robot, &format!("registry-proof-{package}@{version}"))?
+                .join("contract.json"),
+        )
+    };
     let prepare = || -> Result<std::process::Output, Box<dyn std::error::Error>> {
         Ok(Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
             .arg("prepare")
@@ -349,7 +365,7 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    let endpoints = fs::read_to_string(&prepared)?;
+    let endpoints = fs::read_to_string(prepared()?)?;
     assert!(
         endpoints.contains("proof.registry.v1.Status"),
         "the prepared contract carries the installed artifact's payload identity"
@@ -381,7 +397,7 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
         "{}",
         String::from_utf8_lossy(&recovered.stderr)
     );
-    assert!(fs::read_to_string(&prepared)?.contains("proof.registry.v1.Status"));
+    assert!(fs::read_to_string(prepared()?)?.contains("proof.registry.v1.Status"));
 
     fs::write(&archive_path, b"tampered archive")?;
     fs::remove_dir_all(robot.join(".phoxal"))?;
@@ -530,19 +546,13 @@ fn registry_rust_contract_participant_prepares_from_the_installed_artifact()
         String::from_utf8_lossy(&first.stdout),
         String::from_utf8_lossy(&first.stderr),
     );
-    let contract_dir = robot
-        .join(".phoxal/registry")
-        .join("proof")
-        .join(package)
-        .join(version)
-        .join("bin-DEFAULT")
-        .join("contract");
-    let endpoints = fs::read_to_string(contract_dir.join("endpoints.json"))?;
+    let contract_dir = find_prepared(&robot, &format!("registry-proof-{package}@{version}"))?;
+    let endpoints = fs::read_to_string(contract_dir.join("contract.json"))?;
     assert!(
         endpoints.contains("proof.registry.v1.Status"),
         "the registry selection's prepared contract carries its payload identity"
     );
-    assert!(!fs::read(contract_dir.join("descriptors.bin"))?.is_empty());
+    assert!(!fs::read(contract_dir.join("descriptors.pb"))?.is_empty());
     assert!(contains_file(
         &phoxal_home.join("packages/registry/proof"),
         package

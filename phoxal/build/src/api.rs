@@ -325,15 +325,11 @@ fn assemble_units(
             // runs without them. Watch the prepared root — not just the
             // self directory — so their later appearance reruns this
             // script and the consumers compiled after it see them.
-            if let Some(root) = prepared_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_owned)
-            {
+            if let Some(root) = prepared_dir.parent().map(Path::to_owned) {
                 println!("cargo:rerun-if-changed={}", root.display());
             }
         }
-        if prepared_dir.join(crate::prepared::ENDPOINTS_FILE).is_file() {
+        if prepared_dir.join(crate::prepared::CONTRACT_FILE).is_file() {
             if emit_changes {
                 println!("cargo:rerun-if-changed={}", prepared_dir.display());
             }
@@ -707,7 +703,15 @@ fn add_selection(
             (
                 tree.clone(),
                 format!("{} {}", source.name, source.version),
-                crate::prepared::remote_prepared_dir(&tree, binary),
+                crate::prepared::prepared_dir(
+                    package_root,
+                    &crate::prepared::PreparedSelection::Registry {
+                        registry: registry.to_owned(),
+                        name: source.name.clone(),
+                        version: source.version.clone(),
+                    },
+                    binary,
+                ),
             )
         }
         Source::Git(GitSourceWrapper { git: ref source }) => {
@@ -732,7 +736,14 @@ fn add_selection(
             (
                 tree.clone(),
                 format!("{} @ {}", source.name, source.rev),
-                crate::prepared::remote_prepared_dir(&tree, binary),
+                crate::prepared::prepared_dir(
+                    package_root,
+                    &crate::prepared::PreparedSelection::Git {
+                        name: source.name.clone(),
+                        revision: source.rev.clone(),
+                    },
+                    binary,
+                ),
             )
         }
         Source::Path(PathSource { ref path }) => {
@@ -745,11 +756,17 @@ fn add_selection(
             (
                 package_root.join(path),
                 "local path".to_owned(),
-                crate::prepared::local_prepared_dir(package_root, path, binary),
+                crate::prepared::prepared_dir(
+                    package_root,
+                    &crate::prepared::PreparedSelection::Path {
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    binary,
+                ),
             )
         }
     };
-    if prepared_dir.join(crate::prepared::ENDPOINTS_FILE).is_file() {
+    if prepared_dir.join(crate::prepared::CONTRACT_FILE).is_file() {
         // Composition prepared this participant's Rust contract from its
         // compiled artifact; the brain binds through those products.
         let contract = crate::prepared::read_prepared(&prepared_dir)?;

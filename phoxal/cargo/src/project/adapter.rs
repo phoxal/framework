@@ -248,20 +248,25 @@ fn read_brain_contract(
         },
     })?;
     let descriptors = super::participant::merge_descriptor_closures(&contract)?;
-    let provenance = format!(
-        "{} {}-{}",
-        super::participant::digest_of(&executable)?,
-        target.package,
-        root.version
-    );
     let prepared_dir = phoxal_build::self_prepared_dir(layout.root());
-    let provenance_path = prepared_dir.join(phoxal_build::PROVENANCE_FILE);
-    if !fs::read_to_string(&provenance_path).is_ok_and(|current| current == provenance) {
+    let selection = phoxal_build::PreparedSelection::SelfHosted {
+        package: target.package.clone(),
+    };
+    let executable_record = phoxal_build::PreparedExecutable {
+        sha256: super::participant::digest_of(&executable)?,
+        package: target.package.clone(),
+        version: Some(root.version.to_string()),
+    };
+    if !phoxal_build::read_prepared(&prepared_dir)
+        .is_ok_and(|prepared| prepared.file.executable == executable_record)
+    {
         super::participant::write_prepared_contract(
             &prepared_dir,
+            &selection,
+            None,
             &contract.runtime,
             &descriptors,
-            &provenance,
+            &executable_record,
         )?;
     }
     Ok(contract.runtime)
@@ -273,7 +278,7 @@ fn read_contract(
     binary: Option<&str>,
 ) -> Result<Option<RuntimeRecord>, Error> {
     let path =
-        manifest_check::prepared_root(root, source, binary).join(phoxal_build::ENDPOINTS_FILE);
+        manifest_check::prepared_root(root, source, binary).join(phoxal_build::CONTRACT_FILE);
     if !path.is_file() {
         return Ok(None);
     }
@@ -281,8 +286,12 @@ fn read_contract(
         path: path.clone(),
         source,
     })?;
-    let record = serde_json::from_slice(&bytes).map_err(|error| Error::DeclarationCheck {
-        message: format!("invalid prepared contract {}: {error}", path.display()),
+    let file: phoxal_build::PreparedContractFile =
+        serde_json::from_slice(&bytes).map_err(|error| Error::DeclarationCheck {
+            message: format!("invalid prepared contract {}: {error}", path.display()),
+        })?;
+    let record = serde_json::from_value(file.runtime).map_err(|error| Error::DeclarationCheck {
+        message: format!("invalid prepared runtime {}: {error}", path.display()),
     })?;
     Ok(Some(record))
 }
