@@ -677,7 +677,7 @@ fn add_selection(
             format!("{instance} selects binary `{selected}` with an invalid name"),
         ));
     }
-    let (root, label, prepared_dir) = match source {
+    let (root, label, prepared_dir, selection_identity) = match source {
         Source::Package(PackageSourceWrapper {
             package: ref source,
         }) => {
@@ -700,18 +700,16 @@ fn add_selection(
                 .join(registry)
                 .join(&source.name)
                 .join(&source.version);
+            let identity = crate::prepared::PreparedSelection::Registry {
+                registry: registry.to_owned(),
+                name: source.name.clone(),
+                version: source.version.clone(),
+            };
             (
                 tree.clone(),
                 format!("{} {}", source.name, source.version),
-                crate::prepared::prepared_dir(
-                    package_root,
-                    &crate::prepared::PreparedSelection::Registry {
-                        registry: registry.to_owned(),
-                        name: source.name.clone(),
-                        version: source.version.clone(),
-                    },
-                    binary,
-                ),
+                crate::prepared::prepared_dir(package_root, &identity, binary),
+                identity,
             )
         }
         Source::Git(GitSourceWrapper { git: ref source }) => {
@@ -733,17 +731,15 @@ fn add_selection(
                 .join(".phoxal/git")
                 .join(&source.name)
                 .join(&source.rev);
+            let identity = crate::prepared::PreparedSelection::Git {
+                name: source.name.clone(),
+                revision: source.rev.clone(),
+            };
             (
                 tree.clone(),
                 format!("{} @ {}", source.name, source.rev),
-                crate::prepared::prepared_dir(
-                    package_root,
-                    &crate::prepared::PreparedSelection::Git {
-                        name: source.name.clone(),
-                        revision: source.rev.clone(),
-                    },
-                    binary,
-                ),
+                crate::prepared::prepared_dir(package_root, &identity, binary),
+                identity,
             )
         }
         Source::Path(PathSource { ref path }) => {
@@ -753,23 +749,24 @@ fn add_selection(
                     format!("{instance} local source must be a nonempty relative path"),
                 ));
             }
+            let identity = crate::prepared::PreparedSelection::Path {
+                path: path.to_string_lossy().into_owned(),
+            };
             (
                 package_root.join(path),
                 "local path".to_owned(),
-                crate::prepared::prepared_dir(
-                    package_root,
-                    &crate::prepared::PreparedSelection::Path {
-                        path: path.to_string_lossy().into_owned(),
-                    },
-                    binary,
-                ),
+                crate::prepared::prepared_dir(package_root, &identity, binary),
+                identity,
             )
         }
     };
     if prepared_dir.join(crate::prepared::CONTRACT_FILE).is_file() {
         // Composition prepared this participant's Rust contract from its
-        // compiled artifact; the brain binds through those products.
-        let contract = crate::prepared::read_prepared(&prepared_dir)?;
+        // compiled artifact; the brain binds through those products,
+        // and only if the recorded complete identity — selection and
+        // binary — is the one this selection asked for.
+        let contract =
+            crate::prepared::read_prepared_for(&prepared_dir, &selection_identity, binary)?;
         println!("cargo:rerun-if-changed={}", prepared_dir.display());
         let index = units.len();
         units.push(Unit {

@@ -41,20 +41,22 @@ pub(crate) fn validate_prepared_connections(
         let Some((source, binary)) = selected(instance) else {
             continue;
         };
-        let contract_path = prepared_root(root, source, binary).join(phoxal_build::CONTRACT_FILE);
-        if !contract_path.is_file() {
+        let contract_dir = prepared_root(root, source, binary);
+        if !contract_dir.join(phoxal_build::CONTRACT_FILE).is_file() {
             continue;
         }
-        let bytes = std::fs::read(&contract_path).map_err(|source| Error::DeclarationCheck {
-            message: format!("participant {instance}: cannot read prepared contract: {source}"),
-        })?;
-        let file: phoxal_build::PreparedContractFile =
-            serde_json::from_slice(&bytes).map_err(|error| Error::DeclarationCheck {
-                message: format!("participant {instance}: prepared contract is invalid: {error}"),
-            })?;
+        let prepared =
+            phoxal_build::read_prepared_for(&contract_dir, &selection_identity(source), binary)
+                .map_err(|error| Error::DeclarationCheck {
+                    message: format!("participant {instance}: {error}"),
+                })?;
         let runtime: RuntimeRecord =
-            serde_json::from_value(file.runtime).map_err(|error| Error::DeclarationCheck {
-                message: format!("participant {instance}: prepared runtime is invalid: {error}"),
+            serde_json::from_value(prepared.file.runtime).map_err(|error| {
+                Error::DeclarationCheck {
+                    message: format!(
+                        "participant {instance}: prepared runtime is invalid: {error}"
+                    ),
+                }
             })?;
         contracts.insert(
             instance.clone(),

@@ -272,6 +272,8 @@ fn two_binaries_of_one_package_keep_distinct_prepared_contracts()
             "[package]\nname = \"proof-multi-provider\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
              [[bin]]\nname = \"alpha\"\npath = \"src/alpha.rs\"\n\
              [[bin]]\nname = \"beta\"\npath = \"src/beta.rs\"\n\
+             [[bin]]\nname = \"sensor-a\"\npath = \"src/alpha.rs\"\n\
+             [[bin]]\nname = \"sensor_a\"\npath = \"src/beta.rs\"\n\
              [dependencies]\n{}",
             phoxal_dep("\"runtime\"")
         ),
@@ -295,7 +297,7 @@ fn two_binaries_of_one_package_keep_distinct_prepared_contracts()
     )?;
     fs::write(robot.join("src/main.rs"), BRAIN_MAIN)?;
     let robot_yaml = robot.join("robot.yaml");
-    let valid_wiring = "schema: phoxal/robot/v0\nrobot: { id: proof-multi-robot }\nservices:\n  first:\n    source: { path: provider }\n    binary: alpha\n  second:\n    source: { path: provider }\n    binary: beta\nconnections:\n  brain.probe: first.probe\n";
+    let valid_wiring = "schema: phoxal/robot/v0\nrobot: { id: proof-multi-robot }\nservices:\n  first:\n    source: { path: provider }\n    binary: alpha\n  second:\n    source: { path: provider }\n    binary: beta\n  third:\n    source: { path: provider }\n    binary: sensor-a\n  fourth:\n    source: { path: provider }\n    binary: sensor_a\nconnections:\n  brain.probe: first.probe\n";
     fs::write(&robot_yaml, valid_wiring)?;
 
     let prepare = invoke(&robot, &["prepare", "--offline"]);
@@ -318,6 +320,43 @@ fn two_binaries_of_one_package_keep_distinct_prepared_contracts()
             dir.display()
         );
     }
+    // Fold-colliding binary names (`sensor-a` vs `sensor_a`) fold to the
+    // same readable suffix; they must still occupy TWO directories whose
+    // recorded exact binaries are distinct — the complete-identity
+    // digest separates them.
+    let mut folded: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(&local)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with("--bin-sensor-a")
+        {
+            folded.push(entry.path());
+        }
+    }
+    assert_eq!(
+        folded.len(),
+        2,
+        "fold-colliding binaries keep two directories"
+    );
+    let mut recorded = Vec::new();
+    for dir in &folded {
+        let contract = fs::read_to_string(dir.join("contract.json"))?;
+        let binary = contract
+            .split("\"binary\": ")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .unwrap_or_default()
+            .to_owned();
+        recorded.push(binary);
+    }
+    recorded.sort();
+    assert_eq!(
+        recorded,
+        vec!["\"sensor-a\"", "\"sensor_a\""],
+        "each directory records its own exact binary"
+    );
     let alpha_endpoints = fs::read_to_string(alpha_dir.join("contract.json"))?;
     let beta_endpoints = fs::read_to_string(beta_dir.join("contract.json"))?;
     assert!(
@@ -347,7 +386,7 @@ fn two_binaries_of_one_package_keep_distinct_prepared_contracts()
     // additional component vocabulary to the SDK's canonical types instead
     // of duplicating them into the robot API.
     let mut generated_packages = BTreeMap::new();
-    for entry in fs::read_dir(robot.join("target/debug/build"))
+    for entry in fs::read_dir(shared_target_dir().join("debug/build"))
         .expect("the checked robot keeps its build directory")
         .filter_map(|entry| Some(entry.ok()?.path().join("out/phoxal-api/merged")))
         .filter(|out| out.is_dir())
@@ -476,10 +515,31 @@ fn prepared_dir_for(local: &std::path::Path, suffix: &str) -> PathBuf {
 }
 
 /// Runs the compiled `cargo-phoxal` binary with an isolated Phoxal home.
+/// One shared dependency-build cache per test process: the fixtures'
+/// dependency trees are identical (the workspace phoxal path dependency
+/// plus the same crates.io resolution), so the first fixture pays the
+/// cold build and the rest reuse it. Cargo's target-dir file lock keeps
+/// concurrent fixture builds correct; fixture sources still rebuild on
+/// their own edits. The cold path itself stays proven by the first
+/// build in every suite.
+fn shared_target_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "phoxal-{}-target-{}",
+        std::path::Path::new(file!())
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "suite".to_owned()),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("shared target directory");
+    dir
+}
+
 fn invoke(cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
         .current_dir(cwd)
         .env("PHOXAL_HOME", cwd.join(".phoxal-home"))
+        .env("CARGO_TARGET_DIR", shared_target_dir())
         .args(args)
         .output()
         .unwrap_or_else(|error| panic!("spawn cargo-phoxal: {error}"))

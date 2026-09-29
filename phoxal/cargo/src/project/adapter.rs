@@ -277,22 +277,25 @@ fn read_contract(
     source: &Source,
     binary: Option<&str>,
 ) -> Result<Option<RuntimeRecord>, Error> {
-    let path =
-        manifest_check::prepared_root(root, source, binary).join(phoxal_build::CONTRACT_FILE);
-    if !path.is_file() {
+    let contract_dir = manifest_check::prepared_root(root, source, binary);
+    if !contract_dir.join(phoxal_build::CONTRACT_FILE).is_file() {
         return Ok(None);
     }
-    let bytes = fs::read(&path).map_err(|source| Error::ArtifactFile {
-        path: path.clone(),
-        source,
+    let prepared = phoxal_build::read_prepared_for(
+        &contract_dir,
+        &manifest_check::selection_identity(source),
+        binary,
+    )
+    .map_err(|error| Error::DeclarationCheck {
+        message: format!("{error}"),
     })?;
-    let file: phoxal_build::PreparedContractFile =
-        serde_json::from_slice(&bytes).map_err(|error| Error::DeclarationCheck {
-            message: format!("invalid prepared contract {}: {error}", path.display()),
+    let record =
+        serde_json::from_value(prepared.file.runtime).map_err(|error| Error::DeclarationCheck {
+            message: format!(
+                "invalid prepared runtime {}: {error}",
+                contract_dir.display()
+            ),
         })?;
-    let record = serde_json::from_value(file.runtime).map_err(|error| Error::DeclarationCheck {
-        message: format!("invalid prepared runtime {}: {error}", path.display()),
-    })?;
     Ok(Some(record))
 }
 

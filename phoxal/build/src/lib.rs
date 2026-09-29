@@ -22,7 +22,7 @@ pub use api::{BuildApiConfig, api};
 pub use prepared::{
     CONTRACT_FILE, CONTRACT_GENERATION, DESCRIPTORS_FILE, PREPARED_ROOT, PreparedContract,
     PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_key,
-    read_prepared, self_prepared_dir, validate_prepared_key,
+    read_prepared, read_prepared_for, self_prepared_dir, validate_prepared_key,
 };
 
 /// Framework version whose generated API contract this helper implements.

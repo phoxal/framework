@@ -65,7 +65,8 @@ jobs:
           GIT_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          bash .github/scripts/select-release-pr.sh
+          SELECTOR_OUT="$RUNNER_TEMP/selector-output" \
+            bash .github/scripts/select-release-pr.sh
           cat "$RUNNER_TEMP/selector-output" >> "$GITHUB_OUTPUT"
       - name: Enable auto-merge on the selected PR and wait
         id: merge
