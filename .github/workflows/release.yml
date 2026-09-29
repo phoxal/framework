@@ -184,13 +184,18 @@ jobs:
       - name: Build a scratch consumer pinned to this release
         run: |
           set -euo pipefail
-          mkdir -p src .cargo
+          # A scratch directory of its own: building inside the
+          # framework workspace would collide with its manifest.
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer/src" "$consumer/.cargo"
+          cd "$consumer"
           printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
             > .cargo/config.toml
-          python3 - <<'PY'
+          MANIFEST="$GITHUB_WORKSPACE/published-manifest.json" python3 - <<'PY'
           import json
+          import os
           entries = {e["name"]: e["version"] for e in
-                     json.load(open("published-manifest.json"))["published"]}
+                     json.load(open(os.environ["MANIFEST"]))["published"]}
           wanted = ["phoxal", "phoxal-supervisor", "phoxal-build"]
           missing = [name for name in wanted if name not in entries]
           if missing:
