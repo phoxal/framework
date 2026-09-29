@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Exercises the release version-PR selector with mocked release-plz
+# and gh executables. No remote state is touched and no release is
+# minted: every scenario is a controlled fake in a scenario directory.
+#
+# Scenarios (all must hold for the suite to pass):
+#  1. a failed release-plz preparation stops the run;
+#  2. success without output and no open PR reports nothing to release;
+#  3. an untrusted author or a forked/cross-repository release-plz-* PR
+#     is never selected — via discovery and via a printed URL;
+#  4. two eligible candidates are an ambiguity error;
+#  5. a genuine App-authored same-repository version PR is selected
+#     with its head SHA.
+
+set -euo pipefail
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SELECTOR="$SCRIPT_DIR/select-release-pr.sh"
+
+pass=0
+fail=0
+check() { # check <description> <expected: ok|fail> <command...>
+    local description="$1" expected="$2"
+    shift 2
+    if "$@" >"$WORK/out.log" 2>"$WORK/err.log"; then
+        actual=ok
+    else
+        actual=fail
+    fi
+    if [ "$actual" = "$expected" ]; then
+        printf 'PASS: %s\n' "$description"
+        pass=$((pass + 1))
+    else
+        printf 'FAIL: %s (expected %s, got %s)\n--- stderr ---\n%s\n' \
+            "$description" "$expected" "$actual" "$(tail -4 "$WORK/err.log")"
+        fail=$((fail + 1))
+    fi
+}
+
+# Writes one open-pull record shaped like `gh pr view/list --json`.
+pull_json() { # <number> <head> <author> <is_bot> <owner> <cross> [state] [base]
+    python3 - "$@" <<'PY'
+import json, sys
+number, head, author, is_bot, owner, cross = sys.argv[1:7]
+state = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else "OPEN"
+base = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else "main"
+print(json.dumps({
+    "number": int(number),
+    "url": f"https://github.com/phoxal/framework/pull/{number}",
+    "state": state,
+    "baseRefName": base,
+    "headRefName": head,
+    "headRepositoryOwner": {"login": owner},
+    "isCrossRepository": cross == "true",
+    "author": {"login": author, "is_bot": is_bot == "true"},
+    "headRefOid": f"sha{number}",
+}))
+PY
+}
+
+# Builds a scenario with faked release-plz and gh on PATH. The fakes
+# are driven by files in $SCENARIO/state:
+#   prep-fails     release-plz exits 1 with a message
+#   prep-output    text release-plz prints (default: nothing to release)
+#   pulls.json     array of pull records for `gh pr list`
+make_scenario() { # <dir>
+    local scenario="$1"
+    mkdir -p "$scenario/bin" "$scenario/state"
+    echo 0 > "$scenario/state/prep-fails"
+    echo "Nothing to release." > "$scenario/state/prep-output"
+    echo "[]" > "$scenario/state/pulls.json"
+    cat > "$scenario/bin/release-plz" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\$(cat "$scenario/state/prep-fails")" = "1" ]; then
+  echo "release-plz panicked during preparation" >&2
+  exit 1
+fi
+cat "$scenario/state/prep-output"
+EOF
+    cat > "$scenario/bin/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# gh pr view <number> --json ...
+if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
+  number="\$3"
+  python3 -c '
+import json, sys
+pulls = json.load(open(sys.argv[1]))
+if isinstance(pulls, dict):
+    pulls = [pulls]
+match = next(p for p in pulls if str(p["number"]) == sys.argv[2])
+print(json.dumps(match))
+' "$scenario/state/pulls.json" "\$number"
+  exit 0
+fi
+# gh pr list --state open --json ...
+if [ "\$1" = "pr" ] && [ "\$2" = "list" ]; then
+  cat "$scenario/state/pulls.json"
+  exit 0
+fi
+echo "unexpected gh invocation: \$*" >&2
+exit 1
+EOF
+    chmod +x "$scenario/bin/release-plz" "$scenario/bin/gh"
+}
+
+run_selector() { # <scenario-dir>
+    local scenario="$1"
+    ( cd "$scenario" && \
+      PATH="$scenario/bin:$PATH" \
+      GITHUB_REPOSITORY="phoxal/framework" \
+      SELECTOR_OUT="$scenario/selector-output" \
+      bash "$SELECTOR" )
+}
+
+# ---------------------------------------------------------------- scenario 1
+S="$WORK/prep-fails"; make_scenario "$S"; echo 1 > "$S/state/prep-fails"
+check "failed version preparation stops the run" fail run_selector "$S"
+
+# ---------------------------------------------------------------- scenario 2
+S="$WORK/no-candidate"; make_scenario "$S"
+check "no eligible open PR reports nothing to release" fail run_selector "$S"
+grep -q "no eligible release-plz PR is open" "$WORK/err.log" \
+    && { echo "PASS: explicit no-candidate message"; pass=$((pass + 1)); } \
+    || { echo "FAIL: no explicit no-candidate message"; fail=$((fail + 1)); }
+
+# ---------------------------------------------------------------- scenario 3
+S="$WORK/untrusted"; make_scenario "$S"
+pull_json 777 release-plz-untrusted mallory false phoxal false > /tmp/p1.json
+pull_json 778 release-plz-untrusted app/phoxal-release-bot true someone-else true > /tmp/p2.json
+python3 -c "import json; print(json.dumps([json.load(open('/tmp/p1.json')), json.load(open('/tmp/p2.json'))]))" > "$S/state/pulls.json"
+check "untrusted-author and forked release-plz-* PRs are never selected" fail \
+    run_selector "$S"
+grep -q "no eligible" "$WORK/err.log" \
+    && { echo "PASS: untrusted candidates excluded by the filter"; pass=$((pass + 1)); } \
+    || { echo "FAIL: untrusted candidates not excluded"; fail=$((fail + 1)); }
+
+# A printed URL to an untrusted pull is refused just the same.
+S="$WORK/untrusted-url"; make_scenario "$S"
+cp /tmp/p1.json "$S/state/pulls.json"
+echo "Opened PR at https://github.com/phoxal/framework/pull/777" > "$S/state/prep-output"
+check "a printed URL to an untrusted pull is refused" fail run_selector "$S"
+grep -q "failed validation" "$WORK/err.log" \
+    && { echo "PASS: untrusted URL rejected in validation"; pass=$((pass + 1)); } \
+    || { echo "FAIL: untrusted URL not rejected"; fail=$((fail + 1)); }
+
+# ---------------------------------------------------------------- scenario 4
+S="$WORK/ambiguous"; make_scenario "$S"
+pull_json 801 release-plz-a app/phoxal-release-bot true phoxal false > /tmp/a1.json
+pull_json 802 release-plz-b app/phoxal-release-bot true phoxal false > /tmp/a2.json
+python3 -c "import json; print(json.dumps([json.load(open('/tmp/a1.json')), json.load(open('/tmp/a2.json'))]))" > "$S/state/pulls.json"
+check "two eligible candidates are an ambiguity error" fail run_selector "$S"
+grep -q "ambiguous" "$WORK/err.log" \
+    && { echo "PASS: ambiguity reported"; pass=$((pass + 1)); } \
+    || { echo "FAIL: ambiguity not reported"; fail=$((fail + 1)); }
+
+# ---------------------------------------------------------------- scenario 5
+S="$WORK/genuine"; make_scenario "$S"
+pull_json 495 release-plz-2026-09-28T20-12-17Z app/phoxal-release-bot true phoxal false > /tmp/g495.json
+python3 -c "import json; print(json.dumps([json.load(open('/tmp/g495.json'))]))" > "$S/state/pulls.json"
+check "a genuine App version PR is selected" ok run_selector "$S"
+if grep -q "pr-url=https://github.com/phoxal/framework/pull/495" "$S/selector-output" \
+   && grep -q "pr-head=sha495" "$S/selector-output"; then
+    echo "PASS: selection records the validated URL and head SHA"
+    pass=$((pass + 1))
+else
+    echo "FAIL: selection output incomplete: $(cat "$S/selector-output")"
+    fail=$((fail + 1))
+fi
+
+# The genuine shape also flows through release-plz's printed URL.
+S="$WORK/genuine-url"; make_scenario "$S"
+cp "$WORK/genuine/state/pulls.json" "$S/state/pulls.json"
+echo "here: https://github.com/phoxal/framework/pull/495" > "$S/state/prep-output"
+check "a genuine printed URL is selected with its head SHA" ok run_selector "$S"
+grep -q "pr-head=sha495" "$S/selector-output" \
+    && { echo "PASS: URL path records the head SHA"; pass=$((pass + 1)); } \
+    || { echo "FAIL: URL path missing head SHA"; fail=$((fail + 1)); }
+
+printf '\n%s\n' "select-release-pr contract: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]
