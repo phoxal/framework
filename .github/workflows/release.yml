@@ -210,7 +210,9 @@ jobs:
           )
           open("src/main.rs", "w").write("fn main() {}\n")
           PY
-          cargo build --locked
+          # The scratch project starts without a lockfile; the pinned
+          # `=` versions bind resolution to this release's manifest.
+          cargo build
           echo "resolved phoxal dependency graph:"
           cargo tree --prefix none | grep -E "phoxal" | sort -u
           if cargo tree --prefix none | grep -q "path+file"; then
