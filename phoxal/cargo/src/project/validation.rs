@@ -32,7 +32,16 @@ pub(crate) fn validate_configurations(
         };
         let role = prepared.executable_role(&instance);
         let (field, mut value) = authored_configuration(prepared, &instance, &role)?;
-        let RuntimeRecord::V0 { config_schema, .. } = &contract.runtime;
+        // The conversion instance validates against its hosted record, not
+        // the brain's primary one (assembly has already established the
+        // hosted record exists).
+        let hosted = (instance == super::adapter::INSTANCE)
+            .then(|| contract.hosted(&instance))
+            .flatten();
+        let runtime = hosted
+            .as_ref()
+            .map_or(&contract.runtime, |hosted| &hosted.runtime);
+        let RuntimeRecord::V0 { config_schema, .. } = runtime;
         if schema_is_null(config_schema) && value.is_object() {
             // `Config = ()` has no authored fields.  Omission and an empty
             // object are the two source forms accepted for that declaration;
@@ -92,6 +101,12 @@ fn authored_configuration(
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             Ok((format!("robot.components.{instance}.driver.config"), value))
         }
+        // The hosted conversion runtime declares `Config = ()` and the
+        // lowered service entry never carries authored configuration.
+        "adapter" => Ok((
+            format!("services.{instance}.config"),
+            serde_json::Value::Null,
+        )),
         _ => Err(Error::ConfigurationInvalid {
             role: role.to_owned(),
             instance: instance.to_owned(),
@@ -115,7 +130,16 @@ pub(crate) fn validate_connections_for_document_with_virtual_producers(
     let mut instance_contracts = BTreeMap::new();
     for (instance, target) in prepared.assembly_targets() {
         let key = (target.package_id.clone(), target.target.clone());
-        if let Some(contract) = contracts.get(&key) {
+        let Some(contract) = contracts.get(&key) else {
+            continue;
+        };
+        if instance == super::adapter::INSTANCE {
+            // The conversion instance executes the brain binary's named
+            // hosted record, not the brain's primary record.
+            if let Some(hosted) = contract.hosted(&instance) {
+                instance_contracts.insert(instance, hosted);
+            }
+        } else {
             instance_contracts.insert(instance, contract.clone());
         }
     }

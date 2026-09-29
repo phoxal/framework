@@ -46,6 +46,7 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) observed_attempts: BTreeMap<&'static str, u64>,
     pub(super) stream_terminal: BTreeSet<&'static str>,
     pub(super) last_input_receipts: Vec<RuntimeInputReceipt>,
+    pub(super) arrivals: Option<Arc<tokio::sync::Notify>>,
     pub(super) stopped: bool,
     pub(super) _runtime: PhantomData<fn() -> R>,
 }
@@ -452,6 +453,9 @@ pub(super) struct DeliveryReceiver {
     pub(super) ack_leg: String,
     pub(super) cancel: CancellationToken,
     pub(super) reply_admission: Option<ReplyAdmission>,
+    /// Signaled after an unstamped hardware delivery is admitted so an
+    /// arrival-aligned runtime can convert without waiting for its tick.
+    pub(super) arrivals: Option<Arc<tokio::sync::Notify>>,
 }
 
 pub(super) struct ReplyAdmission {
@@ -512,6 +516,7 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         ack_leg,
         cancel,
         reply_admission,
+        arrivals,
     } = receiver;
     loop {
         let sample = tokio::select! {
@@ -571,10 +576,13 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
                 Ok(queue) => queue,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            if queue.admit_untracked(wire).is_ok()
-                && let Some(reply) = &reply_admission
-            {
-                reply.admit(reply_identity.0, reply_identity.1);
+            if queue.admit_untracked(wire).is_ok() {
+                if let Some(reply) = &reply_admission {
+                    reply.admit(reply_identity.0, reply_identity.1);
+                }
+                if let Some(arrivals) = &arrivals {
+                    arrivals.notify_one();
+                }
             }
             continue;
         }
@@ -898,9 +906,18 @@ impl<R> ExecutionInputAdapter<R> {
             observed_attempts: BTreeMap::new(),
             stream_terminal: BTreeSet::new(),
             last_input_receipts: Vec::new(),
+            arrivals: None,
             stopped: false,
             _runtime: PhantomData,
         }
+    }
+
+    /// Shares one arrival signal with every delivery worker, so the
+    /// transport loop can pull the next release forward when a sample is
+    /// admitted (only consulted for arrival-aligned runtimes).
+    pub(super) fn with_arrivals(mut self, arrivals: Arc<tokio::sync::Notify>) -> Self {
+        self.arrivals = Some(arrivals);
+        self
     }
 
     pub(super) fn with_shared_state(
@@ -1006,6 +1023,7 @@ impl<R> ExecutionInputAdapter<R> {
                 let worker_target = format!("{}.{}", manifest.instance_id, route.field);
                 let worker_port = route.binding.name.clone();
                 let worker_direction = route.direction.key_direction().to_owned();
+                let worker_arrivals = self.arrivals.clone();
                 let reply_admission = if route.direction == InputDirection::Reply {
                     self.correlations.as_ref().zip(route.caller_rank).map(
                         |(correlations, caller_rank)| ReplyAdmission {
@@ -1031,6 +1049,7 @@ impl<R> ExecutionInputAdapter<R> {
                         ack_leg,
                         cancel: worker_cancel,
                         reply_admission,
+                        arrivals: worker_arrivals,
                     })
                     .await;
                     if let Err(error) = result {

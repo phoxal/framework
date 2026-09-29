@@ -7,6 +7,7 @@
 pub mod artifact;
 pub mod connection;
 mod core;
+pub mod dispatch;
 pub mod execution_protocol;
 pub mod input;
 mod operation;
@@ -32,6 +33,7 @@ pub use core::{
     Runtime, RuntimeContract, RuntimeOwner, RuntimeSpec, RuntimeSpecError, RuntimeStatus, Sample,
     StepContext, initialize, invoke, run,
 };
+pub use dispatch::{HostedRole, RoleRegistration, dispatch_hosted};
 pub use operation::{
     ManagedOperation, OperationCompletion, OperationError, OperationKey, OperationOutcome,
     OperationPolicy, OperationState,

@@ -30,15 +30,40 @@ fn phoxal_dep(features: &str) -> String {
 /// concurrent fixture builds correct; fixture sources still rebuild on
 /// their own edits. The cold path itself stays proven by the first
 /// build in every suite.
+///
+/// The cache is lifetime-bounded: sibling trees from earlier processes
+/// older than a day are removed on creation, so crashed or finished runs
+/// cannot accumulate unbounded disk. A live concurrent suite keeps its
+/// tree (it is continuously written and stays younger than the cutoff),
+/// and a removal racing a live build is ignored.
 fn shared_target_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "phoxal-{}-target-{}",
+    const MAX_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let prefix = format!(
+        "phoxal-{}-target-",
         std::path::Path::new(file!())
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "suite".to_owned()),
-        std::process::id()
-    ));
+            .unwrap_or_else(|| "suite".to_owned())
+    );
+    let parent = std::env::temp_dir();
+    let own = format!("{prefix}{}", std::process::id());
+    if let Ok(entries) = std::fs::read_dir(&parent) {
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) || name == own {
+                continue;
+            }
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && modified.elapsed().is_ok_and(|age| age > MAX_CACHE_AGE)
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let dir = parent.join(&own);
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|error| panic!("shared target directory {}: {error}", dir.display()));
     dir
@@ -468,8 +493,15 @@ fn git_participant_revision_bump_keeps_preparation_green() -> Result<(), Box<dyn
 /// adapter's retained schema must cover the complete reachable closure.
 fn converting_brain_main() -> String {
     r#"//! Brain: expects its own private telemetry record; the robot converts
-//! the provider's payload into it through the generated adapter.
+//! the provider's payload into it inside this same executable, which also
+//! hosts the generated conversion role. The authored conversion module
+//! reads generated bindings, so it compiles only once the package's own
+//! prepared products exist (the same cfg integration tests gate on).
+#[cfg(phoxal_self_prepared)]
+mod conversions;
+
 phoxal::api!();
+phoxal::conversions!();
 
 use phoxal::contracts::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
@@ -535,7 +567,7 @@ impl Runtime for Brain {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(Brain)
+    run_hosted_roles(Brain)
 }
 "#
     .to_owned()
@@ -559,10 +591,13 @@ impl From<ProviderState> for TelemetryIn {
 }
 "#;
 
-/// Selecting the generated adapter as a participant consumes its compiled
-/// contract: the adapter binary must retain the schema of the brain-side
-/// payload it serves, even though that payload's generated bindings carry
-/// no frame in the brain's own compilation.
+/// The hosted conversion role's compiled contract stays consumable: no
+/// generated source-tree file or Cargo target ever appears, the discovered
+/// edges persist as the sidecar plan, and bundle assembly validates the
+/// hosted record's retained schema — including the brain-side payload's
+/// nested messages, enumerations, and payload-enum variants the conversion
+/// serves, whose generated bindings carry no frames in the brain's own
+/// compilation.
 #[test]
 fn adapter_compiled_contract_stays_consumable() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -591,34 +626,33 @@ fn adapter_compiled_contract_stays_consumable() -> Result<(), Box<dyn std::error
     let check = invoke(&robot, &["check", "--offline"]);
     assert!(
         check.status.success(),
-        "check compiles the generated adapter and its conversion:\n{}",
+        "check compiles the hosted conversion role and its conversion:\n{}",
         report(&check)
     );
     assert!(
-        robot.join("src/bin/phoxal-adapter.rs").is_file(),
-        "the adapter target was generated"
+        !robot.join("src/bin/phoxal-adapter.rs").exists(),
+        "no generated adapter target may appear in the authored tree"
+    );
+    let plan = robot.join(".phoxal/conversions/edges.json");
+    assert!(
+        plan.is_file(),
+        "the discovered edges persist as the sidecar"
+    );
+    let plan_text = fs::read_to_string(&plan)?;
+    assert!(
+        plan_text.contains("brain.telemetry") && plan_text.contains("provider.provider_status"),
+        "the sidecar records the conversion edge: {plan_text}"
     );
 
-    // Consume the adapter's compiled contract: select the generated binary
-    // as a participant while the authored conversion edge keeps it
-    // generated, then prepare again. Binding the adapter instance reads
-    // its extracted closure, which must still define the brain-side
-    // payload the adapter serves.
-    fs::write(
-        robot.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot: { id: proof-cycle-robot }\nbrain: { binary: proof-cycle-robot }\nservices:\n  provider:\n    source: { path: provider }\n  adapter:\n    source: { path: . }\n    binary: phoxal-adapter\nconnections:\n  adapter.source_0: provider.provider_status\n  brain.telemetry: provider.provider_status\n",
-    )?;
-    let second = invoke(&robot, &["prepare", "--offline"]);
+    // Consume the hosted record's compiled contract: bundle assembly
+    // extracts the named hosted record from the robot executable and
+    // validates its complete retained closure through the descriptor
+    // consistency check.
+    let build = invoke(&robot, &["build", "--offline"]);
     assert!(
-        second.status.success(),
-        "preparing the selected adapter consumes its compiled contract:\n{}",
-        report(&second)
-    );
-    let final_check = invoke(&robot, &["check", "--offline"]);
-    assert!(
-        final_check.status.success(),
-        "check binds the adapter instance through its prepared products:\n{}",
-        report(&final_check)
+        build.status.success(),
+        "the bundle consumes the hosted conversion record:\n{}",
+        report(&build)
     );
     Ok(())
 }

@@ -177,10 +177,17 @@ pub(crate) fn assemble_with_inputs(
         .filter_map(|(instance, target)| {
             artifacts
                 .get(&(target.package_id.clone(), target.target.clone()))
-                .map(|(_, _, contract)| (instance, contract.summary()))
+                .and_then(|(_, _, contract)| {
+                    if instance == super::adapter::INSTANCE {
+                        contract.hosted(&instance)
+                    } else {
+                        Some(contract.clone())
+                    }
+                })
+                .map(|contract| (instance, contract.summary()))
         })
         .collect::<BTreeMap<_, _>>();
-    let mut executable_records = Vec::new();
+    let mut executable_records: Vec<BundleExecutable> = Vec::new();
     for (instance, target) in prepared.assembly_targets() {
         if simulation_facts.is_some() && prepared.executable_role(&instance) == "driver" {
             continue;
@@ -192,6 +199,39 @@ pub(crate) fn assemble_with_inputs(
                 target: target.target.clone(),
                 message: "Cargo did not produce a selected executable".to_owned(),
             })?;
+        if instance == super::adapter::INSTANCE {
+            // The conversion role is the named hosted record of the same
+            // brain binary: the bundle carries one more launch identity,
+            // not a second copy of the executable.
+            let hosted = contract
+                .hosted(&instance)
+                .ok_or_else(|| Error::ArtifactInvalid {
+                    path: prepared.cargo_manifest_path().to_owned(),
+                    message: format!(
+                        "the robot executable hosts no `{instance}` conversion record; attach \
+                         phoxal::conversions!() and enter the executable through run_hosted_roles"
+                    ),
+                })?;
+            let brain_path = executable_records
+                .iter()
+                .find(|record| record.instance == "brain")
+                .map(|record| record.path.clone())
+                .ok_or_else(|| Error::ArtifactCapture {
+                    package: built_target.package.clone(),
+                    target: built_target.target.clone(),
+                    message: "the conversion role needs the brain executable first".to_owned(),
+                })?;
+            executable_records.push(BundleExecutable {
+                role: prepared.executable_role(&instance),
+                instance: instance.clone(),
+                package_id: public_package_id(prepared, &built_target.package_id),
+                package: built_target.package.clone(),
+                target: built_target.target.clone(),
+                path: brain_path,
+                artifact: Some(hosted.summary().into()),
+            });
+            continue;
+        }
         let destination_name = safe_bundle_name(&instance)?;
         let relative = format!("{BIN_DIR}/{destination_name}");
         let destination = staged_root.join(&relative);
@@ -219,10 +259,31 @@ pub(crate) fn assemble_with_inputs(
     )?;
     ensure_regular_executable(&supervisor_source, "supervisor")?;
 
-    let contract_map = artifacts
+    let mut contract_map = artifacts
         .iter()
         .map(|(key, (_, _, contract))| (key.clone(), contract.clone()))
         .collect::<BTreeMap<_, _>>();
+    // The hosted conversion record must clear the same descriptor-closure
+    // consistency check as every primary record; register it under its own
+    // instance-labelled key.
+    if let Some((_, target)) = prepared
+        .assembly_targets()
+        .iter()
+        .find(|(instance, _)| instance == super::adapter::INSTANCE)
+    {
+        let key = (target.package_id.clone(), target.target.clone());
+        if let Some((_, _, contract)) = artifacts.get(&key)
+            && let Some(hosted) = contract.hosted(super::adapter::INSTANCE)
+        {
+            contract_map.insert(
+                (
+                    target.package_id.clone(),
+                    super::adapter::INSTANCE.to_owned(),
+                ),
+                hosted,
+            );
+        }
+    }
     let document = prepared.document().clone();
     let mut execution_document = document.clone();
     if let Some(scenario) = simulation_run.as_ref() {

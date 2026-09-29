@@ -62,6 +62,7 @@ pub(crate) fn validate_prepared_connections(
             instance.clone(),
             super::artifact::ArtifactContract {
                 runtime,
+                hosted: BTreeMap::new(),
                 descriptors: Vec::new(),
                 schemas: Vec::new(),
             },
@@ -72,15 +73,31 @@ pub(crate) fn validate_prepared_connections(
         .services
         .get(super::adapter::INSTANCE)
     {
+        // The conversion role executes inside the robot's brain executable;
+        // its contract is that binary's named hosted record. The selected
+        // target is the brain itself, so a missing hosted record means the
+        // robot source does not attach `phoxal::conversions!()` — stated
+        // here explicitly instead of failing later on missing endpoints.
         let target = &adapter.binary;
         let output = super::cargo::build_target(project, target, options)?;
         let executable = super::cargo::artifact_path(&output.stdout, target)?;
         let contract =
             super::artifact::inspect_file(&executable).map_err(|error| Error::ArtifactInvalid {
-                path: executable,
+                path: executable.clone(),
                 message: error.to_string(),
             })?;
-        contracts.insert(super::adapter::INSTANCE.to_owned(), contract);
+        let hosted =
+            contract
+                .hosted(super::adapter::INSTANCE)
+                .ok_or_else(|| Error::DeclarationCheck {
+                    message: format!(
+                        "the robot executable {} hosts no `{}` conversion record; attach \
+                     phoxal::conversions!() and enter the executable through run_hosted_roles",
+                        executable.display(),
+                        super::adapter::INSTANCE,
+                    ),
+                })?;
+        contracts.insert(super::adapter::INSTANCE.to_owned(), hosted);
     }
     let prepared_count = contracts.len();
 

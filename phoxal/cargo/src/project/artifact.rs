@@ -45,8 +45,13 @@ const MAX_DESCRIPTOR_FILES: usize = 1_024;
 /// A native artifact contract extracted without executing the binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactContract {
-    /// Runtime timing, configuration, and binding metadata.
+    /// Runtime timing, configuration, and binding metadata of the
+    /// executable's primary runtime.
     pub runtime: RuntimeRecord,
+    /// Named hosted-role records retained by the same binary (for example
+    /// a robot executable's `phoxal-adapter` conversion role). Each entry
+    /// shares the binary's descriptor and schema context.
+    pub hosted: BTreeMap<String, RuntimeRecord>,
     /// Original descriptor closures embedded by generated contract owners.
     pub descriptors: Vec<DescriptorInfo>,
     /// Schema records retained by Rust-authored messages in this artifact.
@@ -64,6 +69,29 @@ impl ArtifactContract {
                 .iter()
                 .map(DescriptorInfo::summary)
                 .collect(),
+        }
+    }
+
+    /// A contract view for one hosted role, sharing this artifact's
+    /// descriptor and schema context. `None` when the binary hosts no such
+    /// role.
+    #[must_use]
+    pub fn hosted(&self, role: &str) -> Option<ArtifactContract> {
+        self.hosted.get(role).map(|runtime| ArtifactContract {
+            runtime: runtime.clone(),
+            hosted: BTreeMap::new(),
+            descriptors: self.descriptors.clone(),
+            schemas: self.schemas.clone(),
+        })
+    }
+
+    /// The launch instance named by this contract's record, when it is a
+    /// hosted role rather than the executable's primary runtime.
+    #[cfg(test)]
+    #[must_use]
+    pub fn runtime_role(&self) -> Option<String> {
+        match &self.runtime {
+            RuntimeRecord::V0 { role, .. } => role.clone(),
         }
     }
 }
@@ -188,18 +216,41 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
             records.extend(parse_artifact_records(section)?);
             Ok(records)
         })?;
-    if records.len() != 1 {
-        return Err(if records.is_empty() {
-            Error::MissingRecord
-        } else {
-            Error::MalformedFrame {
-                kind: "runtime",
-                message: format!("expected one record, found {}", records.len()),
+    // Exactly one primary record remains mandatory for every executable;
+    // additional records must each name a distinct hosted role, so record
+    // selection is an explicit named lookup rather than a positional one.
+    let mut primary: Option<RuntimeRecord> = None;
+    let mut hosted: BTreeMap<String, RuntimeRecord> = BTreeMap::new();
+    for record in &records {
+        let runtime: RuntimeRecord = serde_json::from_slice(record)?;
+        validate_runtime(&runtime)?;
+        let RuntimeRecord::V0 { role, .. } = &runtime;
+        match role.clone() {
+            None => {
+                if primary.is_some() {
+                    return Err(Error::MalformedFrame {
+                        kind: "runtime",
+                        message: format!(
+                            "expected exactly one primary record, found {}",
+                            records.len()
+                        ),
+                    });
+                }
+                primary = Some(runtime);
             }
-        });
+            Some(name) => {
+                if hosted.insert(name.clone(), runtime).is_some() {
+                    return Err(Error::MalformedFrame {
+                        kind: "runtime",
+                        message: format!("hosted role `{name}` is recorded more than once"),
+                    });
+                }
+            }
+        }
     }
-    let runtime: RuntimeRecord = serde_json::from_slice(records[0])?;
-    validate_runtime(&runtime)?;
+    let Some(runtime) = primary else {
+        return Err(Error::MissingRecord);
+    };
     let schemas = schema_sections
         .iter()
         .try_fold(Vec::new(), |mut schemas, section| {
@@ -283,6 +334,7 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<ArtifactContract, Error> {
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(ArtifactContract {
         runtime,
+        hosted,
         descriptors,
         schemas,
     })
@@ -406,6 +458,7 @@ fn parse_descriptor_frames(section: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
 fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
     let RuntimeRecord::V0 {
         record,
+        role,
         period_ms,
         timeout_ms,
         init_timeout_ms,
@@ -418,6 +471,22 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
         return Err(Error::InvalidContract(format!(
             "record '{record}' is not {RUNTIME_RECORD}"
         )));
+    }
+    if let Some(role) = role {
+        if role.is_empty()
+            || !role
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(Error::InvalidContract(format!(
+                "hosted role `{role}` is not a non-empty lowercase segment"
+            )));
+        }
+        if role == "brain" {
+            return Err(Error::InvalidContract(
+                "a hosted role may not claim the reserved `brain` instance".to_owned(),
+            ));
+        }
     }
     if *period_ms == 0 || *timeout_ms == 0 || *init_timeout_ms == 0 {
         return Err(Error::InvalidContract(
@@ -674,6 +743,63 @@ mod tests {
         assert!(contract.descriptors.is_empty());
     }
 
+    fn multi_record_artifact(jsons: &[&str]) -> Vec<u8> {
+        let mut object = Object::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let section = object.add_section(
+            Vec::new(),
+            b".phoxal_art".to_vec(),
+            SectionKind::ReadOnlyData,
+        );
+        for json in jsons {
+            object.append_section_data(section, &frame(json), 1);
+        }
+        object.write().expect("synthetic object")
+    }
+
+    fn hosted_runtime(role: &str) -> String {
+        EMPTY_RUNTIME.replace(
+            "\"record\":\"runtime\"",
+            &format!("\"record\":\"runtime\",\"role\":\"{role}\""),
+        )
+    }
+
+    #[test]
+    fn one_binary_selects_its_primary_and_hosted_records_by_name() {
+        let bytes = multi_record_artifact(&[EMPTY_RUNTIME, &hosted_runtime("phoxal-adapter")]);
+        let contract = inspect_bytes(&bytes).expect("primary plus one hosted record");
+        assert!(contract.runtime_role().is_none());
+        let hosted = contract
+            .hosted("phoxal-adapter")
+            .expect("the hosted conversion record is selected by name");
+        assert_eq!(hosted.runtime_role().as_deref(), Some("phoxal-adapter"));
+        assert!(hosted.descriptors == contract.descriptors);
+    }
+
+    #[test]
+    fn two_primary_records_are_rejected() {
+        let bytes = multi_record_artifact(&[EMPTY_RUNTIME, EMPTY_RUNTIME]);
+        let error = inspect_bytes(&bytes).expect_err("a binary has exactly one primary record");
+        assert!(
+            error.to_string().contains("exactly one primary record"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_hosted_role_is_rejected() {
+        let hosted = hosted_runtime("phoxal-adapter");
+        let bytes = multi_record_artifact(&[EMPTY_RUNTIME, &hosted, &hosted]);
+        let error = inspect_bytes(&bytes).expect_err("hosted roles stay unique");
+        assert!(error.to_string().contains("more than once"), "{error}");
+    }
+
+    #[test]
+    fn a_hosted_role_may_not_claim_the_brain_instance() {
+        let bytes = multi_record_artifact(&[EMPTY_RUNTIME, &hosted_runtime("brain")]);
+        let error = inspect_bytes(&bytes).expect_err("brain stays primary");
+        assert!(error.to_string().contains("reserved `brain`"), "{error}");
+    }
+
     #[test]
     fn reads_the_descriptor_frame_emitted_by_the_sdk() {
         let descriptor = descriptor("shared.proto", field_descriptor_proto::Type::String);
@@ -738,8 +864,10 @@ connections:
             lease_valid_for_ms: None,
         };
         let producer = ArtifactContract {
+            hosted: BTreeMap::new(),
             runtime: RuntimeRecord::V0 {
                 record: RUNTIME_RECORD.to_owned(),
+                role: None,
                 period_ms: 1,
                 timeout_ms: 1,
                 init_timeout_ms: 1,
@@ -768,8 +896,10 @@ connections:
             schemas: Vec::new(),
         };
         let consumer = ArtifactContract {
+            hosted: BTreeMap::new(),
             runtime: RuntimeRecord::V0 {
                 record: RUNTIME_RECORD.to_owned(),
+                role: None,
                 period_ms: 1,
                 timeout_ms: 1,
                 init_timeout_ms: 1,
@@ -803,6 +933,7 @@ connections:
     #[test]
     fn rejects_incompatible_imported_definitions_across_bundle_artifacts() {
         let contract = |descriptor| ArtifactContract {
+            hosted: BTreeMap::new(),
             runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
             descriptors: vec![descriptor],
             schemas: Vec::new(),
@@ -826,6 +957,7 @@ connections:
     #[test]
     fn accepts_identical_imported_definitions_across_bundle_artifacts() {
         let contract = |descriptor| ArtifactContract {
+            hosted: BTreeMap::new(),
             runtime: serde_json::from_str(EMPTY_RUNTIME).expect("runtime"),
             descriptors: vec![descriptor],
             schemas: Vec::new(),

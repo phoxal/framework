@@ -3,9 +3,13 @@
 //! compiled contract and carries the same schema and codec contract as an
 //! authored message; the brain owns only the disarmed projection.
 
+#[cfg(phoxal_self_prepared)]
+mod conversions;
+
 use phoxal::contracts::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 phoxal::api!();
+phoxal::conversions!();
 
 /// The brain's endpoint contract: one leased manual projection over the
 /// controller's generated payload type.
@@ -63,5 +67,5 @@ impl Runtime for Brain {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(Brain)
+    run_hosted_roles(Brain)
 }

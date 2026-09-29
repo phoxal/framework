@@ -500,7 +500,10 @@ fn admit_source(root: PathBuf, mut manifest: SourceManifest) -> Result<SourceBun
     let mut seen = std::collections::BTreeSet::new();
     let mut has_brain = false;
     for executable in executables.iter_mut() {
-        if !matches!(executable.role.as_str(), "brain" | "service" | "driver") {
+        if !matches!(
+            executable.role.as_str(),
+            "brain" | "service" | "driver" | "adapter"
+        ) {
             bail!("unsupported executable role `{}`", executable.role);
         }
         validate_segment(&executable.instance, "executable instance")?;

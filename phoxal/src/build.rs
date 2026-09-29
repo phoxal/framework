@@ -15,5 +15,6 @@
 //! own not-yet-built library to generate its own protocols.
 
 pub use phoxal_build::{
-    BuildApiConfig, Error, api, compile_protos, compile_protos_with_output, include_dir,
+    BuildApiConfig, ConversionEdge, ConversionPlan, Error, api, compile_protos,
+    compile_protos_with_output, include_dir,
 };

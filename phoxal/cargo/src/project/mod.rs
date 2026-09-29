@@ -439,6 +439,9 @@ impl PreparedProject {
         if instance == "brain" {
             return "brain".to_owned();
         }
+        if instance == adapter::INSTANCE {
+            return "adapter".to_owned();
+        }
         if self.cargo_sources.services.contains_key(instance) {
             return "service".to_owned();
         }

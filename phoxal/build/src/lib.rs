@@ -11,6 +11,7 @@ use std::process::Command;
 use prost_reflect::DescriptorPool;
 
 mod api;
+pub mod conversions;
 mod manifest;
 mod prepared;
 mod provider;
@@ -19,6 +20,8 @@ mod typed;
 
 pub use api::validate_project_api;
 pub use api::{BuildApiConfig, api};
+pub use conversions::{ConversionEdge, ConversionPlan};
+
 pub use prepared::{
     CONTRACT_FILE, CONTRACT_GENERATION, DESCRIPTORS_FILE, PREPARED_ROOT, PreparedContract,
     PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_key,
@@ -131,6 +134,10 @@ pub enum Error {
         path: PathBuf,
         source: serde_yaml::Error,
     },
+    /// The conversion-plan sidecar or generated runtime file cannot be read,
+    /// parsed, or written.
+    #[error("conversion plan failure: {0}")]
+    Conversions(#[from] conversions::Error),
 }
 
 /// Compiles owned Protobuf message files and their imported closure.

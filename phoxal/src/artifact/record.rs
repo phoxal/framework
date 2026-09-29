@@ -47,6 +47,15 @@ pub enum RuntimeRecord {
     V0 {
         /// Runtime record discriminator.
         record: String,
+        /// Named hosted role when this record is not the executable's
+        /// primary runtime (`None` for every ordinary single-role
+        /// participant). One binary may host additional runtimes — a robot
+        /// executable hosting its conversion runtime — and each hosted
+        /// record carries its launch instance id here so inspection,
+        /// assembly, and dispatch all select the same record explicitly
+        /// instead of by position.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
         /// Logical runtime period in milliseconds.
         period_ms: u64,
         /// Complete invocation deadline in milliseconds.
@@ -215,6 +224,7 @@ mod tests {
     fn sample_runtime() -> RuntimeRecord {
         RuntimeRecord::V0 {
             record: RUNTIME_RECORD.to_owned(),
+            role: None,
             period_ms: 20,
             timeout_ms: 100,
             init_timeout_ms: 1_000,

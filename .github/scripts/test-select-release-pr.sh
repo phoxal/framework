@@ -182,13 +182,16 @@ grep -q "pr-head=sha495" "$S/selector-output" \
 
 
 # ---------------------------------------------------------------- boundary
-# The real workflow caller boundary: a clean git checkout, RUNNER_TEMP
-# and GITHUB_OUTPUT as the runner provides them, the exact caller
-# commands from release.yml, and the assertions that the checkout stays
-# clean and the caller receives the output.
+# The real workflow caller boundary: a clean git checkout containing the
+# workflow's own caller script, RUNNER_TEMP and GITHUB_OUTPUT as the
+# runner provides them, the same `run:` command release.yml uses, and the
+# assertions that the checkout stays clean and the caller receives the
+# output. The caller commands are executed, never re-typed here.
 S="$WORK/boundary"; make_scenario "$S"
 pull_json 495 release-plz-2026-09-29T05-00-00Z app/phoxal-release-bot true phoxal false > "$WORK/b495.json"
 python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1]))]))" "$WORK/b495.json" > "$S/state/pulls.json"
+mkdir -p "$S/.github/scripts"
+cp "$SCRIPT_DIR/select-release-pr.sh" "$SCRIPT_DIR/run-release-selector.sh" "$S/.github/scripts/"
 git -C "$S" init -q
 git -C "$S" add -A
 git -C "$S" -c user.name=t -c user.email=t@t commit -qm base
@@ -196,12 +199,10 @@ runner_temp="$WORK/boundary-runner"; mkdir -p "$runner_temp"
 # The runner provides GITHUB_OUTPUT outside the workspace; pointing it
 # into the checkout would itself dirty the tree.
 GITHUB_OUTPUT="$runner_temp/github-output" \
-SELECTOR_OUT="$runner_temp/selector-output" \
 PATH="$S/bin:$PATH" GITHUB_REPOSITORY="phoxal/framework" \
 RUNNER_TEMP="$runner_temp" bash -c \
-    'cd "$1" && bash "$2/select-release-pr.sh" && \
-     cat "$RUNNER_TEMP/selector-output" >> "$GITHUB_OUTPUT"' \
-    _ "$S" "$SCRIPT_DIR" > "$WORK/boundary-out.log" 2>&1
+    'cd "$1" && bash .github/scripts/run-release-selector.sh' \
+    _ "$S" > "$WORK/boundary-out.log" 2>&1
 boundary_rc=$?
 if [ "$boundary_rc" -eq 0 ]; then
     echo "PASS: the caller boundary selects in a clean checkout"

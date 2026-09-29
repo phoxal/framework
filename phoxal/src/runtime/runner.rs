@@ -1208,6 +1208,10 @@ where
     let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
     let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
     let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    // Arrival signals stay inert unless the runtime registered arrival
+    // releases: the delivery workers always notify, only the hardware loop
+    // below selects on the signal, and only for arrival-aligned specs.
+    let arrivals = Arc::new(tokio::sync::Notify::new());
     let input = ExecutionInputAdapter::<R>::unbound()
         .with_shared_state(
             Arc::clone(&correlations),
@@ -1219,7 +1223,8 @@ where
         .with_generated_calls(
             Arc::clone(&generated_correlations),
             Arc::clone(&generated_completions),
-        );
+        )
+        .with_arrivals(Arc::clone(&arrivals));
     let output = ExecutionOutputAdapter::<R>::unbound()
         .with_shared_state(
             correlations,
@@ -1356,14 +1361,20 @@ where
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut clock = SystemClock::new();
             loop {
-                tokio::select! {
+                let arrival = tokio::select! {
                     biased;
                     _ = &mut shutdown => break Ok(()),
-                    _ = ticker.tick() => match runner.poll(clock.now()) {
-                        Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
-                        Ok(PollOutcome::Stopped) => break Ok(()),
-                        Err(error) => break Err(error),
-                    },
+                    _ = ticker.tick() => false,
+                    _ = arrivals.notified(), if R::SPEC.arrival_releases => true,
+                };
+                let now = clock.now();
+                if arrival {
+                    runner.arrive(now);
+                }
+                match runner.poll(now) {
+                    Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
+                    Ok(PollOutcome::Stopped) => break Ok(()),
+                    Err(error) => break Err(error),
                 }
             }
         }
@@ -2004,6 +2015,14 @@ where
     fn initialize_controlled_state(&mut self, timeline_id: &str) -> crate::Result<()> {
         self.outputs.prepare_delivery(0, timeline_id)?;
         self.bootstrap(ExecutionTime::default())
+    }
+
+    /// Pull the next nominal release forward to `now` after an admitted
+    /// input arrival. A no-op unless the runtime registered
+    /// [`crate::runtime::RuntimeSpec::arrival_releases`] callers gate the signal on; the
+    /// schedule's period stays a hard rate bound.
+    pub fn arrive(&mut self, now: ExecutionTime) {
+        self.schedule.arrive(now);
     }
 
     /// Poll one candidate at an explicit host input-freeze time.

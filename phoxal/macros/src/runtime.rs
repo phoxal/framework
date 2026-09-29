@@ -191,6 +191,20 @@ fn expand(
     let period = options.period_ms;
     let timeout = options.timeout_ms;
     let init_timeout = options.init_timeout_ms;
+    let role = match options.role.as_deref() {
+        None => quote! { None },
+        Some(role) => quote! { Some(#role) },
+    };
+    let spec = if options.arrival_releases {
+        quote! {
+            ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout)
+                .with_arrival_releases()
+        }
+    } else {
+        quote! {
+            ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout)
+        }
+    };
     let contract_attachment = match &attachment {
         Attachment::Contract { contract, .. } => {
             // The binding resolves through the contract type alone: the
@@ -249,8 +263,7 @@ fn expand(
         #implementation
 
         impl ::phoxal::runtime::RegisteredRuntime for #self_type {
-            const SPEC: ::phoxal::runtime::RuntimeSpec =
-                ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout);
+            const SPEC: ::phoxal::runtime::RuntimeSpec = #spec;
 
             fn retain_artifact_metadata() {
                 #schema_retention
@@ -279,11 +292,12 @@ fn expand(
             #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_art"))]
             pub(crate) static #artifact_static: ::phoxal::runtime::artifact::ArtifactRecord =
             ::phoxal::runtime::artifact::runtime_record(
-                ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout),
+                <super::#self_type as ::phoxal::runtime::RegisteredRuntime>::SPEC,
                 <<super::#self_type as ::phoxal::runtime::Runtime>::Config as ::phoxal::runtime::Config>::SCHEMA_JSON,
                 <<super::#self_type as ::phoxal::runtime::Runtime>::Inputs as ::phoxal::runtime::input::InputSet>::FIELDS,
                 <<super::#self_type as ::phoxal::runtime::Runtime>::Outputs as ::phoxal::runtime::outputs::OutputSet>::FIELDS,
                 <super::#self_type as ::phoxal::runtime::outputs::OutputBindings>::FIELDS,
+                #role,
             );
 
             const fn #check_name<T: ::phoxal::runtime::input::InputSet>() {}
@@ -301,17 +315,21 @@ fn expand(
     output
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Options {
     period_ms: u64,
     timeout_ms: u64,
     init_timeout_ms: u64,
+    role: Option<String>,
+    arrival_releases: bool,
 }
 
 fn parse_options(attr: TokenStream) -> syn::Result<(Options, Option<syn::Path>)> {
     let mut period_ms = None;
     let mut timeout_ms = None;
     let mut init_timeout_ms = None;
+    let mut role = None;
+    let mut arrival_releases = false;
     let mut contract = None;
     syn::meta::parser(|meta| {
         let name = meta
@@ -324,6 +342,38 @@ fn parse_options(attr: TokenStream) -> syn::Result<(Options, Option<syn::Path>)>
                 return Err(meta.error("duplicate runtime option `contract`"));
             }
             contract = Some(meta.value()?.parse::<syn::Path>()?);
+            return Ok(());
+        }
+        if name == "role" {
+            if role.is_some() {
+                return Err(meta.error("duplicate runtime option `role`"));
+            }
+            let literal = meta.value()?.parse::<syn::LitStr>()?;
+            let parsed = literal.value();
+            if parsed.is_empty()
+                || !parsed
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(meta.error(
+                    "`role` must be a non-empty lowercase segment naming the hosted launch instance",
+                ));
+            }
+            if parsed == "brain" {
+                return Err(meta.error(
+                    "`role` cannot be `brain`; the primary runtime already owns that instance",
+                ));
+            }
+            role = Some(parsed);
+            return Ok(());
+        }
+        if name == "arrival_releases" {
+            // Flag-only option: a value form (`arrival_releases = true`)
+            // fails the probe below, and repeats are rejected.
+            if arrival_releases || meta.value().is_ok() {
+                return Err(meta.error("`arrival_releases` is a one-shot flag"));
+            }
+            arrival_releases = true;
             return Ok(());
         }
         let slot = match name.as_str() {
@@ -359,6 +409,8 @@ fn parse_options(attr: TokenStream) -> syn::Result<(Options, Option<syn::Path>)>
         init_timeout_ms: init_timeout_ms.ok_or_else(|| {
             syn::Error::new(Span::call_site(), "runtime requires init_timeout_ms")
         })?,
+        role,
+        arrival_releases,
     };
     Ok((options, contract))
 }

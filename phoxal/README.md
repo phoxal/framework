@@ -64,9 +64,12 @@ Enum fields use typed Rust enums with explicit stable discriminants; unknown num
 Place `phoxal::api!();` once at a binary or library crate root to attach its generated `api` module.
 The helper reads local prepared products only, so prepare selected registry or Git participants with `cargo phoxal prepare` before the first bare Cargo build.
 The project compiler owns source preparation and project validation inside the `cargo-phoxal` package.
-When a selected output type differs from an input expectation, place an ordinary `From` or `TryFrom` implementation in the robot's `src/conversions.rs`.
-Preparation generates one robot-owned adapter runtime for those connections; direct identity connections keep their original route.
-Conversion errors fault that adapter before it publishes a replacement value, preserving the source timestamp of successful conversions.
+When a selected output type differs from an input expectation, place an ordinary `From` or `TryFrom` implementation in the robot's `src/conversions.rs` and declare the module gated on the package's own prepared products (`#[cfg(phoxal_self_prepared)] mod conversions;`).
+Preparation persists those edges and the build helper emits the conversion runtime into `OUT_DIR`; the robot executable attaches it with `phoxal::conversions!();` and enters through the generated `run_hosted_roles(Brain)`.
+The robot's own executable then hosts both the brain runtime and the conversion role — no generated source file or Cargo target ever appears in the project — and the supervisor launches that same executable once more under the `phoxal-adapter` instance id.
+Direct identity connections keep their original route.
+In hardware mode the conversion role forwards on input arrival (rate-bounded by its nominal period); controlled simulation keeps strictly stepped input cuts.
+Conversion errors fault the conversion role before it publishes a replacement value, preserving the source timestamp of successful conversions.
 
 Use <https://docs.rs/phoxal> as the authority for the published Rust API.
 Visit <https://phoxal.com> for the project vision and public introduction.

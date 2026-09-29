@@ -47,12 +47,17 @@ impl ArtifactRecord {
 }
 
 /// Builds the one runtime record retained by a registered service.
+///
+/// `role` names a hosted secondary runtime (for example a robot
+/// executable's conversion role); `None` marks the executable's primary
+/// record.
 pub const fn runtime_record(
     spec: RuntimeSpec,
     config_schema: &str,
     inputs: &[InputField],
     transient_outputs: &[OutputField],
     service_outputs: &[OutputField],
+    role: Option<&str>,
 ) -> ArtifactRecord {
     let mut record = RecordBuilder::new();
     record.push_bytes(&ARTIFACT_MAGIC);
@@ -60,7 +65,12 @@ pub const fn runtime_record(
     record.push_bytes(&[0, 0, 0, 0]);
     record.push_str("{\"schema\":");
     record.push_quoted(ARTIFACT_SCHEMA);
-    record.push_str(",\"record\":\"runtime\",\"period_ms\":");
+    record.push_str(",\"record\":\"runtime\"");
+    if let Some(role) = role {
+        record.push_str(",\"role\":");
+        record.push_quoted(role);
+    }
+    record.push_str(",\"period_ms\":");
     record.push_u64(spec.period.as_millis());
     record.push_str(",\"timeout_ms\":");
     record.push_u64(spec.timeout.as_millis());
