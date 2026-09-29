@@ -177,11 +177,7 @@ jobs:
           mkdir -p ~/.cargo
           printf '[registries.phoxal]\nindex = "sparse+%s/"\n' "$REGISTRY_INDEX" \
             >> ~/.cargo/config.toml
-          version="$(python3 -c "
-            import json
-            entries = json.load(open('published-manifest.json'))['published']
-            print(next(e['version'] for e in entries if e['name'] == 'cargo-phoxal'))
-          ")"
+          version="$(python3 -c "import json; entries = json.load(open('published-manifest.json'))['published']; print(next(e['version'] for e in entries if e['name'] == 'cargo-phoxal'))")"
           echo "installing cargo-phoxal $version from this release"
           cargo install cargo-phoxal --registry phoxal --version "$version" \
             --locked --root "$RUNNER_TEMP/cli"
@@ -222,11 +218,7 @@ jobs:
             echo "### Release consumer verification"
             echo "Release revision: \`${{ needs.publish.outputs.release-sha }}\`"
             echo "Published manifest:"
-            python3 -c "
-              import json
-              for entry in json.load(open('published-manifest.json'))['published']:
-                  print(f\"- {entry['name']} {entry['version']} sha256 {entry['sha256']}\")
-            "
+            python3 -c "import json; entries = json.load(open('published-manifest.json'))['published']; [print('- ' + e['name'] + ' ' + e['version'] + ' sha256 ' + e['sha256']) for e in entries]"
             echo "The scratch consumer resolved every phoxal dependency to the"
             echo "versions above from the live registry, with no local overlays."
           } >> "$GITHUB_STEP_SUMMARY"
