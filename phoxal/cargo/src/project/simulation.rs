@@ -35,12 +35,13 @@ use phoxal::scenario::plan_support::{Action, Capture, Program};
 
 /// The official independently installed native simulation application.
 pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator";
-/// The first simulator package release selected by the framework tool.
-pub const DEFAULT_SIMULATOR_VERSION: &str = "0.0.0-dev.1";
+/// The simulator package release selected by the framework tool: the
+/// first revision that consumes the hosted-conversion record shape.
+pub const DEFAULT_SIMULATOR_VERSION: &str = "0.0.0-dev.2";
 /// The binary target exposed by the official simulator package.
 pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator";
 const DEFAULT_SIMULATOR_ARCHIVE_SHA256: &str =
-    "947eca4fa90282d6c87bf533919a8f33d0dc08dd038fa51a0732cab615372481";
+    "89261e104b28e09a96727280ec78ca20fe53ac940f79c35bc35886af0077fc16";
 const PHOXAL_REGISTRY_DOWNLOAD_ROOT: &str = "https://phoxal.github.io/registry/crates";
 const SELECTION_FILE: &str = "selection.json";
 const PROVISION_LOCK: &str = "provision.lock";

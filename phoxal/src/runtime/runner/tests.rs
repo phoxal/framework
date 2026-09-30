@@ -3338,6 +3338,280 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
     Ok(())
 }
 
+/// The conversion-role scheduling shape: an arrival-aligned runtime whose
+/// step mirrors the generated conversion glue — a bounded-freshness Latest
+/// input that forwards only fresh samples, and an optional conversion
+/// failure surfaced as a step error.
+struct ArrivalRuntime {
+    seen: Arc<Mutex<Option<i32>>>,
+    fail_on_admit: bool,
+}
+
+impl Runtime for ArrivalRuntime {
+    type Config = ();
+    type State = ();
+    type Inputs = ArrivalInputs;
+    type Outputs = ();
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(())
+    }
+
+    fn step(
+        &self,
+        ctx: &StepContext,
+        state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        if inputs.state.is_fresh_at(ctx.now(), Some(50))
+            && let Some(sample) = inputs.state.sample()
+        {
+            if self.fail_on_admit {
+                return Err(anyhow::anyhow!("converted payload rejected"));
+            }
+            *self.seen.lock().expect("arrival observation lock") = Some(sample.payload().value);
+        }
+        Ok((state, ()))
+    }
+}
+
+impl RegisteredRuntime for ArrivalRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(20, 200, 200).with_arrival_releases();
+
+    fn retain_artifact_metadata() {}
+}
+
+impl crate::runtime::outputs::OutputBindings for ArrivalRuntime {
+    const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+}
+
+#[crate::runtime::inputs]
+struct ArrivalInputs {
+    #[crate::runtime::input(max_age_ms = 50)]
+    state: crate::runtime::Latest<TypedState>,
+}
+
+async fn arrival_runner(
+    seen: Arc<Mutex<Option<i32>>>,
+    fail_on_admit: bool,
+) -> crate::Result<(
+    RuntimeRunner<
+        ArrivalRuntime,
+        super::ExecutionInputAdapter<ArrivalRuntime>,
+        super::ExecutionOutputAdapter<ArrivalRuntime>,
+    >,
+    crate::runtime::connection::ConnectionOwner,
+    crate::runtime::connection::Connection,
+)> {
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("arrival-consumer")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let signature = SourceMethodSignature {
+        endpoint: SOURCE_STATE.name.to_owned(),
+        service: SOURCE_STATE.service.to_owned(),
+        method: SOURCE_STATE.method.to_owned(),
+        shape: crate::artifact::MethodShape::Observation,
+        request: SOURCE_STATE.request.to_owned(),
+        response: SOURCE_STATE.response.to_owned(),
+        retained_latest: true,
+        lease_valid_for_ms: None,
+    };
+    let mut connections = BTreeMap::new();
+    connections.insert(
+        "consumer.state".to_owned(),
+        vec!["producer.state".to_owned()],
+    );
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert(
+        "producer".to_owned(),
+        SourceRuntimeRecord {
+            period_ms: Some(20),
+            timeout_ms: Some(200),
+            init_timeout_ms: Some(200),
+            inputs: Vec::new(),
+            transient_outputs: Vec::new(),
+            service_outputs: vec![SourceOutputRecord {
+                name: "state".to_owned(),
+                role: "method".to_owned(),
+                port: Some("state".to_owned()),
+                signature: Some(signature),
+                input: None,
+                max_items: Some(1),
+                max_bytes: Some(64),
+                max_request_bytes: None,
+            }],
+        },
+    );
+    let manifest = RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "arrival-test".to_owned(),
+        instance_id: "consumer".to_owned(),
+        executable: PathBuf::from("arrival-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections,
+        requirement_destinations: BTreeMap::new(),
+        artifacts,
+        scenario_producers: BTreeMap::new(),
+        observation_providers: BTreeMap::new(),
+    };
+    let mut input = super::ExecutionInputAdapter::<ArrivalRuntime>::unbound();
+    input.bind(bus.clone(), &manifest).await?;
+    let mut output = super::ExecutionOutputAdapter::<ArrivalRuntime>::unbound();
+    output.bind_direct(bus.clone(), "consumer");
+    let runner = RuntimeRunner::new(
+        ArrivalRuntime {
+            seen,
+            fail_on_admit,
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+    Ok((runner, owner, bus))
+}
+
+async fn publish_state(
+    bus: &crate::runtime::connection::Connection,
+    stamp: ExecutionTime,
+) -> crate::Result<()> {
+    let prepared = PreparedOutput::response(
+        SOURCE_STATE,
+        &TypedState { value: 42 },
+        64,
+        crate::runtime::transport::publication_metadata(
+            "producer",
+            StepContext::first(stamp, ExecutionDuration::from_millis(20)),
+            0,
+        ),
+    )?;
+    crate::runtime::transport::publish_batch(bus, "producer", &[prepared])?;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_arrival_pulled_release_converts_between_period_ticks() -> crate::Result<()> {
+    const MS: u64 = 1_000_000;
+    let seen = Arc::new(Mutex::new(None));
+    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(0)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 0
+        })
+    ));
+    publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
+    assert_eq!(
+        *seen.lock().expect("arrival observation lock"),
+        None,
+        "no release ran between ticks"
+    );
+    // The closeout review's probe: mid-period the nominal schedule is not
+    // due, so a plain poll waits for the tick...
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(5 * MS)),
+        Ok(PollOutcome::NotDue { .. })
+    ));
+    // ...while the admitted arrival pulls the release to its own instant
+    // and the fresh sample converts immediately.
+    runner.arrive(ExecutionTime::from_nanos(5 * MS));
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(5 * MS)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 1
+        })
+    ));
+    assert_eq!(
+        *seen.lock().expect("arrival observation lock"),
+        Some(42),
+        "the arrival-triggered release forwarded the fresh sample"
+    );
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_sample_through_an_arrival_release_is_not_forwarded() -> crate::Result<()> {
+    const MS: u64 = 1_000_000;
+    let seen = Arc::new(Mutex::new(None));
+    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
+    // A late first poll (60 ms) skips missed releases; the schedule's next
+    // release is 80 ms, so the 70 ms polls below only run through arrivals.
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(60 * MS)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 0
+        })
+    ));
+    // A sample stamped at the start is already older than the 50 ms bound.
+    publish_state(&bus, ExecutionTime::from_nanos(0)).await?;
+    runner.arrive(ExecutionTime::from_nanos(70 * MS));
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(70 * MS)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 1
+        })
+    ));
+    assert_eq!(
+        *seen.lock().expect("arrival observation lock"),
+        None,
+        "stale data must not be forwarded through the arrival path"
+    );
+    // A fresh sample through the same path converts.
+    publish_state(&bus, ExecutionTime::from_nanos(65 * MS)).await?;
+    runner.arrive(ExecutionTime::from_nanos(75 * MS));
+    assert!(runner.poll(ExecutionTime::from_nanos(75 * MS)).is_ok());
+    assert_eq!(*seen.lock().expect("arrival observation lock"), Some(42));
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conversion_failure_through_an_arrival_release_fails_visibly() -> crate::Result<()> {
+    const MS: u64 = 1_000_000;
+    let seen = Arc::new(Mutex::new(None));
+    let (mut runner, owner, bus) = arrival_runner(seen.clone(), true).await?;
+    assert!(runner.poll(ExecutionTime::from_nanos(0)).is_ok());
+    publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
+    runner.arrive(ExecutionTime::from_nanos(5 * MS));
+    let error = runner
+        .poll(ExecutionTime::from_nanos(5 * MS))
+        .expect_err("a conversion failure must surface, never publish a default");
+    assert!(
+        error.to_string().contains("converted payload rejected"),
+        "{error}"
+    );
+    let _ = owner.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_holds_through_arrival_releases() -> crate::Result<()> {
+    const MS: u64 = 1_000_000;
+    let seen = Arc::new(Mutex::new(None));
+    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
+    assert!(runner.poll(ExecutionTime::from_nanos(0)).is_ok());
+    publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
+    runner.stop()?;
+    runner.arrive(ExecutionTime::from_nanos(5 * MS));
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(5 * MS)),
+        Ok(PollOutcome::Stopped)
+    ));
+    assert_eq!(*seen.lock().expect("arrival observation lock"), None);
+    owner.close().await;
+    Ok(())
+}
+
 #[test]
 fn reply_receipts_preserve_the_source_port_and_select_only_the_admitted_caller() {
     let mut reply = PreparedOutput::reply(
