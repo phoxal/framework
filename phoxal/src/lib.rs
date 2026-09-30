@@ -109,7 +109,9 @@ pub mod generated {
         hash
     }
 
-    pub const API_GENERATOR_MARKER: u64 = version_marker(env!("CARGO_PKG_VERSION"));
+    // Package versions are independent. Compare the generator used to build
+    // this SDK with the generator emitting the consumer bindings.
+    pub const API_GENERATOR_MARKER: u64 = version_marker(env!("PHOXAL_API_GENERATOR_VERSION"));
 }
 
 // Private compatibility descriptors used only by runtime and scenario

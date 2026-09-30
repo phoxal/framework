@@ -1,4 +1,8 @@
 fn main() -> Result<(), phoxal_build::Error> {
+    println!(
+        "cargo:rustc-env=PHOXAL_API_GENERATOR_VERSION={}",
+        phoxal_build::GENERATOR_VERSION
+    );
     phoxal_build::compile_protos(
         &[
             "proto/phoxal/bootstrap/v1/bootstrap.proto",

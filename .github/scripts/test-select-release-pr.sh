@@ -181,53 +181,6 @@ grep -q "pr-head=sha495" "$S/selector-output" \
     || { echo "FAIL: URL path missing head SHA"; fail=$((fail + 1)); }
 
 
-# ---------------------------------------------------------------- alignment
-# The SDK asserts phoxal and phoxal-build carry identical versions; a
-# version branch that bumped only the SDK must gain an alignment commit
-# on the helper (crate manifest and workspace pin) before selection,
-# with the worktree restored afterwards.
-S="$WORK/align"; make_scenario "$S"
-pull_json 496 release-plz-align-x app/phoxal-release-bot true phoxal false > "$WORK/a496.json"
-python3 -c "import json,sys; print(json.dumps([json.load(open(sys.argv[1]))]))" "$WORK/a496.json" > "$S/state/pulls.json"
-# cargo is not exercised beyond lock refresh; a no-op fake keeps the
-# scenario hermetic.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$S/bin/cargo"
-chmod +x "$S/bin/cargo"
-mkdir -p "$S/phoxal/build"
-printf '[package]\nname = "phoxal"\nversion = "0.0.0-dev.6"\n' > "$S/phoxal/Cargo.toml"
-printf '[package]\nname = "phoxal-build"\nversion = "0.0.0-dev.6"\n' > "$S/phoxal/build/Cargo.toml"
-printf '[workspace.dependencies]\nphoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.6", registry = "phoxal" }\n' > "$S/Cargo.toml"
-git -C "$S" init -q -b main
-git -C "$S" add -A
-git -C "$S" -c user.name=t -c user.email=t@t commit -qm base
-git -C "$S" checkout -q -b release-plz-align-x
-perl -pi -e 's/^version = ".*"$/version = "0.0.0-dev.7"/' "$S/phoxal/Cargo.toml"
-git -C "$S" add -A
-git -C "$S" -c user.name=t -c user.email=t@t commit -qm "chore(release): update package versions"
-git -C "$S" checkout -q main
-git -C "$S" remote add origin "$S"
-check "a drifted helper version still selects" ok run_selector "$S"
-alignment="$(git -C "$S" log -1 --format=%s "origin/release-plz-align-x")"
-helper_version="$(git -C "$S" show "origin/release-plz-align-x:phoxal/build/Cargo.toml" | perl -ne 'if (/^version = "(.+)"/) { print $1; last }')"
-pinned="$(git -C "$S" show "origin/release-plz-align-x:Cargo.toml" | perl -ne 'if (/phoxal-build = \{ path = "phoxal\/build", version = "=([^"]+)"/) { print $1; last }')"
-if [ "$alignment" = "Align phoxal-build with the SDK version 0.0.0-dev.7" ] \
-   && [ "$helper_version" = "0.0.0-dev.7" ] \
-   && [ "$pinned" = "0.0.0-dev.7" ]; then
-    echo "PASS: the helper version and workspace pin were aligned on the branch"
-    pass=$((pass + 1))
-else
-    echo "FAIL: alignment commit: $alignment; helper: $helper_version; pin: $pinned"
-    fail=$((fail + 1))
-fi
-if [ "$(git -C "$S" branch --show-current)" = "main" ] \
-   && [ -z "$(git -C "$S" status --porcelain -uno)" ]; then
-    echo "PASS: the alignment restores the original checkout"
-    pass=$((pass + 1))
-else
-    echo "FAIL: worktree not restored after alignment"
-    fail=$((fail + 1))
-fi
-
 # ---------------------------------------------------------------- boundary
 # The real workflow caller boundary: a clean git checkout containing the
 # workflow's own caller script, RUNNER_TEMP and GITHUB_OUTPUT as the

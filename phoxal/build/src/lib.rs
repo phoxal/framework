@@ -28,8 +28,8 @@ pub use prepared::{
     read_prepared, read_prepared_for, self_prepared_dir, validate_prepared_key,
 };
 
-/// Framework version whose generated API contract this helper implements.
-pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version of the build helper generating the SDK and consumer bindings.
+pub const GENERATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Rust path of a built-in payload identity in generated robot code.
 #[must_use]

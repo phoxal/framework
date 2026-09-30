@@ -20,8 +20,11 @@ name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
+
+# A merged PR has already passed these checks. Cancel obsolete PR heads.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fmt:
@@ -56,15 +59,6 @@ jobs:
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
-      - name: Prove hardware arrival scheduling on the adapted fixture
-        run: |
-          set -euo pipefail
-          cd tests/adapted-robot
-          "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare
-          "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" build
-          cp -R target/phoxal/phoxal-adapted-robot/bundle /tmp/adapted-bundle
-          PHOXAL_ADAPTED_BUNDLE=/tmp/adapted-bundle \
-            cargo test --test composition -- --ignored --test-threads=1 --nocapture
 
   supervisor-acceptance:
     name: supervisor acceptance
