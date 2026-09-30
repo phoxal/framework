@@ -347,9 +347,10 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
                 .join("contract.json"),
         )
     };
-    let prepare = || -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let prepare = |offline: bool| -> Result<std::process::Output, Box<dyn std::error::Error>> {
         Ok(Command::new(env!("CARGO_BIN_EXE_cargo-phoxal"))
             .arg("prepare")
+            .args(offline.then_some("--offline"))
             .current_dir(&robot)
             .env("CARGO_HOME", &cargo_home)
             .env("PHOXAL_HOME", &phoxal_home)
@@ -359,7 +360,7 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
             )
             .output()?)
     };
-    let first = prepare()?;
+    let first = prepare(false)?;
     assert!(
         first.status.success(),
         "{}",
@@ -378,7 +379,7 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
         &phoxal_home.join("packages/registry/proof"),
         "Cargo.toml"
     )?);
-    let warm = prepare()?;
+    let warm = prepare(false)?;
     assert!(
         warm.status.success(),
         "{}",
@@ -391,7 +392,7 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
 
     fs::remove_dir_all(robot.join(".phoxal"))?;
     fs::remove_dir_all(cargo_home.join("registry"))?;
-    let recovered = prepare()?;
+    let recovered = prepare(true)?;
     assert!(
         recovered.status.success(),
         "{}",
@@ -401,9 +402,8 @@ fn exact_registry_participant_recovers_prepared_contract_without_cargo_cache()
 
     fs::write(&archive_path, b"tampered archive")?;
     fs::remove_dir_all(robot.join(".phoxal"))?;
-    fs::remove_dir_all(cargo_home.join("registry"))?;
     fs::remove_dir_all(phoxal_home.join("packages/registry"))?;
-    let rejected = prepare()?;
+    let rejected = prepare(false)?;
     assert!(!rejected.status.success());
     assert!(
         String::from_utf8_lossy(&rejected.stderr).contains("checksum"),
