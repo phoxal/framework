@@ -137,7 +137,7 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # role it is. Every member below names its own.
 phoxal = { path = "phoxal", version = "=0.0.0-dev.7", registry = "phoxal", default-features = false }
 phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.7", registry = "phoxal" }
-phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.6", registry = "phoxal" }
+phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.7", registry = "phoxal" }
 
 [workspace.lints.rust]
 unused = "warn"
