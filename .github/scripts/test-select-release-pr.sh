@@ -227,6 +227,14 @@ else
     echo "FAIL: worktree not restored after alignment"
     fail=$((fail + 1))
 fi
+pushed_head="$(git -C "$S" rev-parse "origin/release-plz-align-x")"
+if grep -q "pr-head=$pushed_head" "$S/selector-output"; then
+    echo "PASS: selection binds to the pushed alignment head"
+    pass=$((pass + 1))
+else
+    echo "FAIL: selection did not bind to the pushed head: $(cat "$S/selector-output")"
+    fail=$((fail + 1))
+fi
 
 # ---------------------------------------------------------------- boundary
 # The real workflow caller boundary: a clean git checkout containing the

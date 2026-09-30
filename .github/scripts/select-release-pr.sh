@@ -114,20 +114,25 @@ fi
 # plans independent per-package releases: a release whose commits
 # changed only phoxal leaves the helper behind and every generated
 # consumer fails the marker assert. Re-align the helper with the SDK on
-# the version branch before anything is selected or merged. No-op
-# without the helper manifest (the contract-test scenarios), without an
-# open release-plz PR, or when the pair already agrees.
+# the version branch before anything is selected or merged. When an
+# alignment commit is pushed, its exact head is recorded so selection
+# binds to the pushed sha — the pull API can briefly keep serving the
+# previous head oid. No-op without the helper manifest (the
+# contract-test scenarios), without an open release-plz PR, or when the
+# pair already agrees.
+ALIGN_HEAD_FILE="${RUNNER_TEMP:-$(mktemp -d)}/release-alignment-head"
 align_build_helper_version() {
     [ -f phoxal/build/Cargo.toml ] || return 0
-    local original_sha original_ref branch sdk helper
+    local original_sha original_ref branch number sdk helper
     original_sha="$(git rev-parse HEAD)"
     original_ref="$(git rev-parse --abbrev-ref HEAD)"
-    branch="$("$GH" pr list --state open --json headRefName | python3 -c '
+    read -r number branch < <("$GH" pr list --state open --json number,headRefName | python3 -c '
 import json, sys
-heads = [pull["headRefName"] for pull in json.load(sys.stdin)]
-print(next((head for head in heads if head.startswith("release-plz-")), ""))
-')"
-    [ -n "$branch" ] || return 0
+pulls = json.load(sys.stdin)
+match = next((pull for pull in pulls if (pull["headRefName"] or "").startswith("release-plz-")), None)
+print(str(match["number"]) + " " + match["headRefName"] if match else "")
+')
+    [ -n "$number" ] && [ -n "$branch" ] || return 0
     git fetch -q origin "$branch"
     git checkout -q -B release-alignment "origin/$branch"
     sdk="$(perl -ne 'if (!$d && /^version = "(.*)"/) { print $1; $d = 1 }' phoxal/Cargo.toml)"
@@ -146,6 +151,7 @@ print(next((head for head in heads if head.startswith("release-plz-")), ""))
             -c user.email=release-bot@phoxal.invalid \
             commit -qm "Align phoxal-build with the SDK version $sdk"
         git push -q origin "HEAD:$branch"
+        printf '%s %s\n' "$number" "$(git rev-parse HEAD)" > "$ALIGN_HEAD_FILE"
     fi
     if [ "$original_ref" != "HEAD" ]; then
         git checkout -q "$original_ref"
@@ -190,6 +196,16 @@ else
 fi
 
 read -r selected_url selected_head <<< "$verdict"
+# When the alignment pushed a new head for this very pull, bind to the
+# pushed sha: the pull API can briefly keep serving the previous head
+# oid after the push.
+if [ -f "$ALIGN_HEAD_FILE" ]; then
+    read -r aligned_number aligned_head < "$ALIGN_HEAD_FILE"
+    if [ "$aligned_number" = "${selected_url##*/}" ]; then
+        selected_head="$aligned_head"
+        log "binding to the alignment head $selected_head"
+    fi
+fi
 {
     echo "pr-url=$selected_url"
     echo "pr-head=$selected_head"
