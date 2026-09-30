@@ -9,7 +9,7 @@ description = "Internal four-wheel native-motion qualification robot."
 
 [dependencies]
 phoxal = { workspace = true, features = ["runtime"] }
-phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.6" }
+phoxal-supervisor = { path = "../../supervisor", version = "=0.0.0-dev.7" }
 serde_json.workspace = true
 
 [dev-dependencies]
