@@ -156,18 +156,20 @@ impl HardwareSchedule {
     /// input arrival, so an arrival-aligned runtime converts without
     /// waiting out the remaining tick.
     ///
-    /// The nominal period stays a hard rate bound: at most one early
-    /// release is admitted per period since the last accepted freeze, a
-    /// reversed clock is ignored, and an already-due schedule is left to
-    /// the normal ticker path. Controlled execution never calls this.
+    /// Bounded semantics: an arrival only ever moves a NOT-yet-due release
+    /// earlier (an already-due schedule is left to the normal ticker
+    /// path), a reversed clock is ignored, and the invocation rate stays
+    /// bounded because the transport loop coalesces arrival
+    /// notifications — however many deliveries queue up, one poll drains
+    /// them — so extra releases cannot exceed the admitted input arrival
+    /// rate of the runtime's own bounded ports. The nominal period
+    /// remains the floor cadence through the ticker. Controlled execution
+    /// never calls this.
     pub(crate) fn arrive(&mut self, now: ExecutionTime) {
         let Some(previous) = self.previous_freeze else {
             return;
         };
-        if now < previous || now < self.next_release {
-            return;
-        }
-        if now.as_nanos() - previous.as_nanos() < self.period.as_nanos() {
+        if now < previous || now >= self.next_release {
             return;
         }
         self.next_release = now;
@@ -214,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arrival_releases_pull_only_due_and_period_bounded_freezes() {
+    fn an_arrival_between_releases_pulls_the_next_release_to_itself() {
         const MS: u64 = 1_000_000;
         let mut schedule = HardwareSchedule::new(
             ExecutionTime::from_nanos(0),
@@ -228,23 +230,28 @@ mod tests {
             .candidate(ExecutionTime::from_nanos(0))
             .expect("due");
         schedule.accept(first).expect("accept");
-        // next_release is now 20 ms; an arrival 5 ms in is rate-capped.
+        // The closeout review's probe: next_release is now 20 ms, and an
+        // arrival at 5 ms must pull the release to 5 ms — the converted
+        // observation cannot wait out the remaining tick.
         schedule.arrive(ExecutionTime::from_nanos(5 * MS));
-        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(20 * MS));
-        // An arrival one full period after the last freeze pulls the next
-        // release to itself, ahead of the nominal grid.
-        schedule.arrive(ExecutionTime::from_nanos(21 * MS));
-        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(21 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(5 * MS));
         let pulled = schedule
-            .candidate(ExecutionTime::from_nanos(21 * MS))
-            .expect("pulled release is due");
+            .candidate(ExecutionTime::from_nanos(5 * MS))
+            .expect("the pulled release is due immediately");
         schedule.accept(pulled).expect("accept");
-        // An arrival exactly one period later is admitted at its own
-        // instant, and a reversed clock never moves the schedule back.
-        schedule.arrive(ExecutionTime::from_nanos(41 * MS));
-        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(41 * MS));
+        // The grid continues from the pulled release; a later arrival pulls
+        // again, an even earlier one wins (the release happens at the
+        // earliest unserviced arrival — one poll drains them all), and a
+        // reversed clock never moves the schedule back.
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(25 * MS));
+        schedule.arrive(ExecutionTime::from_nanos(9 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(9 * MS));
+        schedule.arrive(ExecutionTime::from_nanos(7 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(7 * MS));
+        // An arrival at or after next_release changes nothing: the normal
+        // ticker path already executes it.
         schedule.arrive(ExecutionTime::from_nanos(30 * MS));
-        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(41 * MS));
+        assert_eq!(schedule.next_release(), ExecutionTime::from_nanos(7 * MS));
     }
 
     #[test]

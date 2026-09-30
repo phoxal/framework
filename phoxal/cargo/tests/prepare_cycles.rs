@@ -23,50 +23,24 @@ fn phoxal_dep(features: &str) -> String {
 }
 
 /// Runs the compiled `cargo-phoxal` binary with an isolated Phoxal home.
-/// One shared dependency-build cache per test process: the fixtures'
-/// dependency trees are identical (the workspace phoxal path dependency
-/// plus the same crates.io resolution), so the first fixture pays the
-/// cold build and the rest reuse it. Cargo's target-dir file lock keeps
-/// concurrent fixture builds correct; fixture sources still rebuild on
-/// their own edits. The cold path itself stays proven by the first
-/// build in every suite.
-///
-/// The cache is lifetime-bounded: sibling trees from earlier processes
-/// older than a day are removed on creation, so crashed or finished runs
-/// cannot accumulate unbounded disk. A live concurrent suite keeps its
-/// tree (it is continuously written and stays younger than the cutoff),
-/// and a removal racing a live build is ignored.
+/// One stable, suite-owned dependency-build tree under the workspace's
+/// ignored `target/` directory: the fixtures' dependency trees are
+/// identical (the workspace phoxal path dependency plus the same
+/// crates.io resolution), so the first fixture in the first run pays the
+/// cold build and every later fixture and later run reuses it. No
+/// per-process directories are created, so repeated runs cannot
+/// accumulate retained trees; `cargo clean` reclaims the space; and
+/// cargo's target-dir file lock keeps concurrent fixture builds correct.
+/// Fixture sources still rebuild on their own edits, and the cold path
+/// itself stays proven by a clean checkout's first run.
 fn shared_target_dir() -> std::path::PathBuf {
-    const MAX_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-    let prefix = format!(
-        "phoxal-{}-target-",
-        std::path::Path::new(file!())
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "suite".to_owned())
-    );
-    let parent = std::env::temp_dir();
-    let own = format!("{prefix}{}", std::process::id());
-    if let Ok(entries) = std::fs::read_dir(&parent) {
-        for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if !name.starts_with(&prefix) || name == own {
-                continue;
-            }
-            if let Ok(metadata) = entry.metadata()
-                && let Ok(modified) = metadata.modified()
-                && modified.elapsed().is_ok_and(|age| age > MAX_CACHE_AGE)
-            {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-    let dir = parent.join(&own);
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|error| panic!("shared target directory {}: {error}", dir.display()));
-    dir
+    let suite = std::path::Path::new(file!())
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "suite".to_owned());
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/suites")
+        .join(suite)
 }
 
 fn invoke(cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
