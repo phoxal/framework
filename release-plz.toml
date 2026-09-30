@@ -26,11 +26,3 @@ git_tag_name = "{name}-v{version}"
 git_release_enable = false
 semver_check = true
 pr_name = "chore(release): update package versions"
-
-# The SDK asserts that phoxal and phoxal-build carry identical versions
-# (the generated-code marker hashes the crate version), so the build
-# helper releases with the SDK even when a release's commits touched it
-# only through the shared workspace pin.
-[[package]]
-name = "phoxal-build"
-release_always = true
