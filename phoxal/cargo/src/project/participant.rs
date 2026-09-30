@@ -447,11 +447,30 @@ fn prepare_selection_products(
         }
     })?;
     let executable = workdir.join(executable.strip_prefix(&workdir).unwrap_or(&executable));
-    let executable_digest = digest_of(&executable)?;
+    prepare_executable_contract(
+        &executable,
+        &selection.package,
+        &selection.version,
+        selection_identity,
+        selection_binary,
+        contract_dir,
+    )
+}
+
+/// Restores project-local metadata from an existing executable without
+/// acquiring or compiling its package again.
+fn prepare_executable_contract(
+    executable: &Path,
+    package: &str,
+    version: &str,
+    selection_identity: &phoxal_build::PreparedSelection,
+    selection_binary: Option<&str>,
+    contract_dir: &Path,
+) -> Result<bool, Error> {
     let executable_record = phoxal_build::PreparedExecutable {
-        sha256: executable_digest,
-        package: selection.package.clone(),
-        version: Some(selection.version.clone()),
+        sha256: digest_of(executable)?,
+        package: package.to_owned(),
+        version: Some(version.to_owned()),
     };
     if contract_dir.join(phoxal_build::CONTRACT_FILE).is_file()
         && phoxal_build::read_prepared_for(contract_dir, selection_identity, selection_binary)
@@ -460,7 +479,7 @@ fn prepare_selection_products(
         return Ok(false);
     }
     let contract =
-        super::artifact::inspect_file(&executable).map_err(|error| Error::ContractPreparation {
+        super::artifact::inspect_file(executable).map_err(|error| Error::ContractPreparation {
             message: format!("cannot inspect {}: {error}", executable.display()),
         })?;
     let descriptors = merge_descriptor_closures(&contract)?;
@@ -687,17 +706,26 @@ fn prepare_selection(
     let declared_binary = binary;
     let binary = binary.unwrap_or(package);
     let installed = store.join("bin").join(binary);
-    // A Rust-contract participant carries its endpoint surface in the
-    // installed binary; its prepared products under the robot's tree
-    // complete that installation.
-    let rust_contract_install = installed.is_file()
+    // The installation is shared across robots. Project-local metadata can
+    // always be recovered from its binary, including after deleting `.phoxal`.
+    if installed.is_file()
         && store.join(".crates.toml").is_file()
         && store.join("package-id").is_file()
         && store.join("package-version").is_file()
-        && phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary)
-            .join(phoxal_build::CONTRACT_FILE)
-            .is_file();
-    if rust_contract_install {
+    {
+        let version_path = store.join("package-version");
+        let version = fs::read_to_string(&version_path).map_err(|source| Error::ArtifactFile {
+            path: version_path,
+            source,
+        })?;
+        prepare_executable_contract(
+            &installed,
+            package,
+            &version,
+            &selection_identity,
+            declared_binary,
+            &phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary),
+        )?;
         return Ok(None);
     }
     let staging = home.join("packages/.staging");
@@ -781,32 +809,14 @@ fn prepare_selection(
         ));
     }
     retain_package_files(&source_root, install.path())?;
-    // The installed executable is the authoritative contract: extract it
-    // from the exact binary, exactly like a local path selection.
-    {
-        let executable = install.path().join("bin").join(binary);
-        let contract_dir =
-            phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary);
-        let executable_record = phoxal_build::PreparedExecutable {
-            sha256: digest_of(&executable)?,
-            package: package.to_owned(),
-            version: Some(version.clone()),
-        };
-        let contract = super::artifact::inspect_file(&executable).map_err(|error| {
-            Error::ContractPreparation {
-                message: format!("cannot inspect {}: {error}", executable.display()),
-            }
-        })?;
-        let descriptors = merge_descriptor_closures(&contract)?;
-        write_prepared_contract(
-            &contract_dir,
-            &selection_identity,
-            declared_binary,
-            &contract.runtime,
-            &descriptors,
-            &executable_record,
-        )?;
-    }
+    prepare_executable_contract(
+        &install.path().join("bin").join(binary),
+        package,
+        &version,
+        &selection_identity,
+        declared_binary,
+        &phoxal_build::prepared_dir(layout.root(), &selection_identity, declared_binary),
+    )?;
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
             path: parent.to_owned(),
