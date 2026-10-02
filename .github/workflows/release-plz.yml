@@ -1,12 +1,16 @@
 name: release-plz
 
-# Release-plz prepares a reviewable version PR when a maintainer starts a
-# release train. Automatic runs cannot observe publication in the static
-# registry and would create redundant follow-up bumps after every merge.
-# Publication is performed through the reviewed `phoxal` registry path after
-# the owner PR has been merged and its exact package archives are verified.
+# Release-plz keeps a reviewable version PR open after every merge to
+# main. Each changed Cargo package owns its version, no unrelated
+# package is pulled into that PR, and its diff is the current list of
+# packages the next release train would publish. Planning is safe to
+# run automatically because only the release train merges this PR, and
+# the train publishes every version it merges through the reviewed
+# `phoxal` registry path, verifying the exact package archives.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
