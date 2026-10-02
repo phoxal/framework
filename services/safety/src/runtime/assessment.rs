@@ -4,11 +4,12 @@ use super::*;
 
 pub(super) fn assess_world(
     state: &SafetyState,
-    inputs: &SafetyInputs,
+    world_view: &Observation<'_, WorldBelief>,
+    revision_view: &Observation<'_, WorldRevision>,
     now: ExecutionTime,
     constraints: &mut Vec<Constraint>,
 ) {
-    let Some(world) = fresh_latest(&inputs.world, now, state.config.input_max_age_ms) else {
+    let Some(world) = world_view.fresh_within(state.config.input_max_age_ms) else {
         constraints.push(stop_constraint(ConstraintReason::WorldUnavailable));
         return;
     };
@@ -29,8 +30,7 @@ pub(super) fn assess_world(
             f64::from(world.confidence),
         ));
     }
-    let Some(revision) = fresh_latest(&inputs.world_revision, now, state.config.input_max_age_ms)
-    else {
+    let Some(revision) = revision_view.fresh_within(state.config.input_max_age_ms) else {
         constraints.push(stop_constraint(ConstraintReason::MapUnavailable));
         return;
     };
@@ -48,11 +48,11 @@ pub(super) fn assess_world(
 
 pub(super) fn assess_motion(
     state: &SafetyState,
-    inputs: &SafetyInputs,
-    now: ExecutionTime,
+    motion_view: &Observation<'_, MotionStatus>,
+    _now: ExecutionTime,
     constraints: &mut Vec<Constraint>,
 ) {
-    let Some(motion) = fresh_latest(&inputs.motion, now, state.config.input_max_age_ms) else {
+    let Some(motion) = motion_view.fresh_within(state.config.input_max_age_ms) else {
         constraints.push(stop_constraint(ConstraintReason::MotionUnavailable));
         return;
     };
@@ -63,11 +63,11 @@ pub(super) fn assess_motion(
 
 pub(super) fn assess_ranges(
     state: &mut SafetyState,
-    inputs: &SafetyInputs,
+    ranges: &Samples<RangeSample>,
     now: ExecutionTime,
     constraints: &mut Vec<Constraint>,
 ) {
-    for sample in inputs.ranges.items() {
+    for sample in ranges.items() {
         if !state
             .config
             .ranges
@@ -152,13 +152,6 @@ pub(super) fn assess_ranges(
     }
 }
 
-fn fresh_latest<T>(latest: &Latest<T>, now: ExecutionTime, max_age_ms: u64) -> Option<&T> {
-    latest
-        .is_fresh_at(now, Some(max_age_ms))
-        .then(|| latest.value())
-        .flatten()
-}
-
 fn stop_constraint(reason: ConstraintReason) -> Constraint {
     observed_constraint(reason, 0.0)
 }
@@ -199,13 +192,17 @@ pub(super) fn is_stop_reason(constraint: &Constraint) -> bool {
 
 /// Preserve the oldest piece of evidence used by this protective decision.
 /// The availability assessments separately reject missing or invalid inputs.
-pub(super) fn oldest_capture(state: &SafetyState, inputs: &SafetyInputs) -> Option<u64> {
-    let mut oldest = inputs
-        .world
+pub(super) fn oldest_capture(
+    state: &SafetyState,
+    world: &Observation<'_, WorldBelief>,
+    world_revision: &Observation<'_, WorldRevision>,
+    motion: &Observation<'_, MotionStatus>,
+) -> Option<u64> {
+    let mut oldest = world
         .value()?
         .oldest_capture_time_nanos?
-        .min(inputs.world_revision.value()?.oldest_capture_time_nanos?)
-        .min(inputs.motion.sample()?.stamp().capture_time().as_nanos());
+        .min(world_revision.value()?.oldest_capture_time_nanos?)
+        .min(motion.sample()?.stamp().capture_time().as_nanos());
     for range in &state.config.ranges {
         oldest = oldest.min(
             state

@@ -1,0 +1,21 @@
+[package]
+name = "phoxal-countdown-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Standalone authored countdown provider for launch and transport acceptance."
+
+[[bin]]
+name = "countdown-authoring-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

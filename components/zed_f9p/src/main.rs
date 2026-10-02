@@ -4,5 +4,5 @@ mod config;
 mod runtime;
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(runtime::ZedF9p)
+    phoxal::runtime::run::<runtime::ZedF9p>()
 }

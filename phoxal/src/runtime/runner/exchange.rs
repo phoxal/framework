@@ -7,6 +7,14 @@ use std::time::Instant;
 
 pub(super) const MAX_EXPIRED_CORRELATIONS: usize = 4096;
 
+/// Upper bound of completions retained across cuts in one execution. The
+/// sender-side outstanding cap already bounds outstanding calls per
+/// endpoint; this bound protects runtimes with many call endpoints.
+pub(super) const MAX_RETAINED_COMPLETIONS: usize = 256;
+/// Upper bound of encoded response bytes the retained completion mailbox
+/// may hold across cuts; reserved before a completion is exposed.
+pub(super) const MAX_RETAINED_COMPLETION_BYTES: usize = 256 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExchangeKind {
     Read,
@@ -46,7 +54,7 @@ pub(super) enum ExchangeCompletion {
 pub(super) type ExchangeCompletionQueue = Arc<Mutex<Vec<ExchangeCompletion>>>;
 
 pub(super) struct GeneratedCorrelation {
-    pub(super) ticket: u64,
+    pub(super) ticket: u128,
     pub(super) expected_source: String,
     pub(super) endpoint: String,
     pub(super) caller: String,

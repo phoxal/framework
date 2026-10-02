@@ -1,10 +1,29 @@
-use phoxal::runtime::{ExecutionDuration, ExecutionTime, ObservationStamp, StepContext};
+use phoxal::runtime::{ExecutionDuration, ExecutionTime, ObservationStamp, StepContext, invoke};
 
+use super::phoxal_runtime_kinematics;
 use super::*;
 use crate::contract::kinematics_api::Inputs as ServiceInputs;
 
 fn config() -> KinematicsConfig {
     KinematicsConfig::default()
+}
+
+fn new_service(config: KinematicsConfig) -> Kinematics {
+    Kinematics::new(config).expect("valid configuration")
+}
+
+fn step(
+    service: Kinematics,
+    context: &StepContext,
+    inputs: &ServiceInputs,
+) -> (Kinematics, crate::contract::kinematics_api::Outputs) {
+    invoke(
+        &phoxal_runtime_kinematics::Adapter::new(),
+        context,
+        service,
+        inputs,
+    )
+    .expect("the kinematics step accepts the inputs")
 }
 
 fn sample(
@@ -38,7 +57,7 @@ fn context(index: u64, now_ms: u64, previous_ms: Option<u64>) -> StepContext {
 
 #[test]
 fn one_encoder_batch_produces_joints_odometry_and_frames() {
-    let state = KinematicsState::new(config());
+    let service = new_service(config());
     let inputs = ServiceInputs {
         encoders: Samples::new(vec![
             sample("left_encoder", 2.0, 4.0, 20),
@@ -46,9 +65,7 @@ fn one_encoder_batch_produces_joints_odometry_and_frames() {
         ]),
         lookup_frame: Default::default(),
     };
-    let (state, outputs) = Kinematics
-        .step(&context(0, 20, None), state, &inputs)
-        .expect("complete wheel batch");
+    let (service, outputs) = step(service, &context(0, 20, None), &inputs);
     assert_eq!(outputs.joints.len(), 2);
     assert!(
         outputs
@@ -56,62 +73,56 @@ fn one_encoder_batch_produces_joints_odometry_and_frames() {
             .iter()
             .any(|joint| joint.joint_id == "left_wheel" && joint.position_rad == 2.0)
     );
-    assert!(state.available);
-    assert_eq!(state.revision, 1);
-    assert!(validation::frame_tree(&state.frames()).is_ok());
+    assert!(service.state.available);
+    assert_eq!(service.state.revision, 1);
+    assert!(validation::frame_tree(&service.state.frames()).is_ok());
 }
 
 #[test]
 fn expired_wheel_is_explicitly_unavailable_and_does_not_integrate() {
-    let state = KinematicsState::new(config());
-    let (state, _) = Kinematics
-        .step(
-            &context(0, 20, None),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![
-                    sample("left_encoder", 0.0, 4.0, 20),
-                    sample("right_encoder", 0.0, 4.0, 20),
-                ]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .expect("complete wheel batch");
-    let (state, _) = Kinematics
-        .step(
-            &context(1, 140, Some(20)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![sample("left_encoder", 0.0, 4.0, 140)]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .expect("partial input is a valid transition");
-    assert!(!state.available);
-    assert_eq!(state.linear_x_mps, 0.0);
-    assert_eq!(state.angular_z_radps, 0.0);
-    assert_eq!(state.revision, 1);
+    let service = new_service(config());
+    let (service, _) = step(
+        service,
+        &context(0, 20, None),
+        &ServiceInputs {
+            encoders: Samples::new(vec![
+                sample("left_encoder", 0.0, 4.0, 20),
+                sample("right_encoder", 0.0, 4.0, 20),
+            ]),
+            lookup_frame: Default::default(),
+        },
+    );
+    let (service, _) = step(
+        service,
+        &context(1, 140, Some(20)),
+        &ServiceInputs {
+            encoders: Samples::new(vec![sample("left_encoder", 0.0, 4.0, 140)]),
+            lookup_frame: Default::default(),
+        },
+    );
+    assert!(!service.state.available);
+    assert_eq!(service.state.linear_x_mps, 0.0);
+    assert_eq!(service.state.angular_z_radps, 0.0);
+    assert_eq!(service.state.revision, 1);
 }
 
 #[test]
 fn stale_measurements_are_not_reused_as_fresh_motion() {
-    let state = KinematicsState::new(config());
-    let (state, outputs) = Kinematics
-        .step(
-            &context(0, 200, None),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![
-                    sample("left_encoder", 0.0, 4.0, 20),
-                    sample("right_encoder", 0.0, 4.0, 20),
-                ]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .expect("stale input is a valid transition");
+    let service = new_service(config());
+    let (service, outputs) = step(
+        service,
+        &context(0, 200, None),
+        &ServiceInputs {
+            encoders: Samples::new(vec![
+                sample("left_encoder", 0.0, 4.0, 20),
+                sample("right_encoder", 0.0, 4.0, 20),
+            ]),
+            lookup_frame: Default::default(),
+        },
+    );
     assert!(outputs.joints.is_empty());
-    assert!(!state.available);
-    assert_eq!(state.linear_x_mps, 0.0);
+    assert!(!service.state.available);
+    assert_eq!(service.state.linear_x_mps, 0.0);
 }
 
 #[test]
@@ -132,124 +143,111 @@ fn four_wheels_use_every_calibration_and_preserve_the_oldest_capture() {
         gear_ratio: 2.0,
     });
     validate_config(&cfg).unwrap();
-    let state = KinematicsState::new(cfg);
-    let (state, outputs) = Kinematics
-        .step(
-            &context(0, 20, Some(0)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![
-                    sample("left_encoder", 0.0, 2.0, 20),
-                    sample("left_rear", 0.0, -8.0, 10),
-                    sample("right_encoder", 0.0, 4.0, 20),
-                    sample("right_rear", 0.0, -12.0, 20),
-                ]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
-    assert!(state.available);
+    let service = new_service(cfg);
+    let (service, outputs) = step(
+        service,
+        &context(0, 20, Some(0)),
+        &ServiceInputs {
+            encoders: Samples::new(vec![
+                sample("left_encoder", 0.0, 2.0, 20),
+                sample("left_rear", 0.0, -8.0, 10),
+                sample("right_encoder", 0.0, 4.0, 20),
+                sample("right_rear", 0.0, -12.0, 20),
+            ]),
+            lookup_frame: Default::default(),
+        },
+    );
+    assert!(service.state.available);
     assert_eq!(outputs.joints.len(), 4);
-    assert!((state.linear_x_mps - 0.4).abs() < 1e-12);
-    assert!((state.angular_z_radps - 0.5).abs() < 1e-12);
-    assert_eq!(state.oldest_capture_time_nanos, Some(10_000_000));
+    assert!((service.state.linear_x_mps - 0.4).abs() < 1e-12);
+    assert!((service.state.angular_z_radps - 0.5).abs() < 1e-12);
+    assert_eq!(service.state.oldest_capture_time_nanos, Some(10_000_000));
     // Exact constant-twist integration over 20 ms: radius .8 m, angle .01 rad.
-    assert!((state.x_m - 0.8 * 0.01_f64.sin()).abs() < 1e-12);
-    assert!((state.y_m - 0.8 * (1.0 - 0.01_f64.cos())).abs() < 1e-12);
-    assert_eq!(state.frames().transforms.len(), 5);
-    let rear = state
+    assert!((service.state.x_m - 0.8 * 0.01_f64.sin()).abs() < 1e-12);
+    assert!((service.state.y_m - 0.8 * (1.0 - 0.01_f64.cos())).abs() < 1e-12);
+    assert_eq!(service.state.frames().transforms.len(), 5);
+    let rear = service
+        .state
         .frames()
         .transforms
         .into_iter()
         .find(|frame| frame.child_frame_id == "left_rear_wheel")
         .unwrap();
     assert_eq!((rear.x_m, rear.y_m), (-0.18, 0.2));
-    let (state, outputs) = Kinematics
-        .step(
-            &context(1, 40, Some(20)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::default(),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
+    let (service, outputs) = step(
+        service,
+        &context(1, 40, Some(20)),
+        &ServiceInputs {
+            encoders: Samples::default(),
+            lookup_frame: Default::default(),
+        },
+    );
     assert!(
-        state.available,
+        service.state.available,
         "slower captures remain usable within their original age bound"
     );
-    assert_eq!(state.oldest_capture_time_nanos, Some(10_000_000));
+    assert_eq!(service.state.oldest_capture_time_nanos, Some(10_000_000));
     assert!(
         outputs.joints.is_empty(),
         "retention does not republish measured samples"
     );
-    let (state, _) = Kinematics
-        .step(
-            &context(2, 111, Some(40)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::default(),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
+    let (service, _) = step(
+        service,
+        &context(2, 111, Some(40)),
+        &ServiceInputs {
+            encoders: Samples::default(),
+            lookup_frame: Default::default(),
+        },
+    );
     assert!(
-        !state.available,
+        !service.state.available,
         "the oldest rear wheel expires before the other three"
     );
 }
 
 #[test]
 fn invalid_new_encoder_replaces_old_evidence_until_a_new_valid_capture() {
-    let initial = KinematicsState::new(config());
-    let (state, _) = Kinematics
-        .step(
-            &context(0, 20, None),
-            initial,
-            &ServiceInputs {
-                encoders: Samples::new(vec![
-                    sample("left_encoder", 0.0, 1.0, 20),
-                    sample("right_encoder", 0.0, 1.0, 20),
-                ]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
-    let (state, _) = Kinematics
-        .step(
-            &context(1, 40, Some(20)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![sample("left_encoder", 0.0, f64::NAN, 40)]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
-    assert!(!state.available);
-    let (state, _) = Kinematics
-        .step(
-            &context(2, 60, Some(40)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::default(),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
+    let service = new_service(config());
+    let (service, _) = step(
+        service,
+        &context(0, 20, None),
+        &ServiceInputs {
+            encoders: Samples::new(vec![
+                sample("left_encoder", 0.0, 1.0, 20),
+                sample("right_encoder", 0.0, 1.0, 20),
+            ]),
+            lookup_frame: Default::default(),
+        },
+    );
+    let (service, _) = step(
+        service,
+        &context(1, 40, Some(20)),
+        &ServiceInputs {
+            encoders: Samples::new(vec![sample("left_encoder", 0.0, f64::NAN, 40)]),
+            lookup_frame: Default::default(),
+        },
+    );
+    assert!(!service.state.available);
+    let (service, _) = step(
+        service,
+        &context(2, 60, Some(40)),
+        &ServiceInputs {
+            encoders: Samples::default(),
+            lookup_frame: Default::default(),
+        },
+    );
     assert!(
-        !state.available,
+        !service.state.available,
         "a quiet interval cannot revive the older valid sample"
     );
-    let (state, _) = Kinematics
-        .step(
-            &context(3, 80, Some(60)),
-            state,
-            &ServiceInputs {
-                encoders: Samples::new(vec![sample("left_encoder", 0.0, 1.0, 80)]),
-                lookup_frame: Default::default(),
-            },
-        )
-        .unwrap();
-    assert!(state.available);
-    assert_eq!(state.oldest_capture_time_nanos, Some(20_000_000));
+    let (service, _) = step(
+        service,
+        &context(3, 80, Some(60)),
+        &ServiceInputs {
+            encoders: Samples::new(vec![sample("left_encoder", 0.0, 1.0, 80)]),
+            lookup_frame: Default::default(),
+        },
+    );
+    assert!(service.state.available);
+    assert_eq!(service.state.oldest_capture_time_nanos, Some(20_000_000));
 }

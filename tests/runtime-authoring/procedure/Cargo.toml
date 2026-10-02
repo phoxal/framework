@@ -1,0 +1,18 @@
+[package]
+name = "phoxal-procedure-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Component-owned bounded procedure fixture over the behavior facility."
+
+[[bin]]
+name = "procedure-authoring-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+
+[lints]
+workspace = true

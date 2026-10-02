@@ -20,7 +20,7 @@ pub struct EncoderApi {
     )]
     measure_encoder: RequestReply<Empty, EncoderSample>,
 }
-use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal::runtime::Context;
 
 #[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
 struct EncoderConfig {
@@ -34,13 +34,12 @@ fn default_base_position() -> f64 {
 }
 
 #[derive(Debug)]
-struct EncoderState {
+struct EncoderB {
     base_position_rad: f64,
     step: u64,
     sample: EncoderSample,
+    applied_invocation: u64,
 }
-
-struct EncoderB;
 
 fn sample(base: f64, step: u64) -> EncoderSample {
     EncoderSample {
@@ -49,38 +48,50 @@ fn sample(base: f64, step: u64) -> EncoderSample {
     }
 }
 
-#[phoxal::runtime(contract = EncoderApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for EncoderB {
-    type Config = EncoderConfig;
-    type State = EncoderState;
-
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(EncoderState {
+#[phoxal::runtime(contract = EncoderApi, period_ms = 20)]
+impl EncoderB {
+    #[init]
+    fn new(config: EncoderConfig) -> phoxal::Result<Self> {
+        Ok(Self {
             base_position_rad: config.base_position_rad,
             step: 0,
             sample: sample(config.base_position_rad, 0),
+            applied_invocation: u64::MAX,
         })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        state.step = state.step.saturating_add(1);
-        state.sample = sample(state.base_position_rad, state.step);
-        let mut outputs = Self::Outputs::default();
-        outputs.encoder(state.sample)?;
-        outputs.ticks(vec![state.sample])?;
-        for request in inputs.measure_encoder.items() {
-            // A side-effect-free read of the current measurement.
-            outputs.measure_encoder_reply(request.reply(state.sample))?;
+    /// A side-effect-free read of the invocation's current measurement.
+    #[handle(measure_encoder)]
+    fn measure(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        _request: Empty,
+    ) -> phoxal::Result<EncoderSample> {
+        self.advance_once(ctx);
+        Ok(self.sample)
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.advance_once(ctx);
+        ctx.publish_encoder(self.sample)?;
+        ctx.emit_ticks(self.sample)?;
+        Ok(())
+    }
+
+    /// Advances this invocation's measurement exactly once, so a read
+    /// dispatched before the periodic step observes the measurement the
+    /// unified step published.
+    fn advance_once(&mut self, ctx: &Context<'_, Self>) {
+        if self.applied_invocation == ctx.invocation_index() {
+            return;
         }
-        Ok((state, outputs))
+        self.applied_invocation = ctx.invocation_index();
+        self.step = self.step.saturating_add(1);
+        self.sample = sample(self.base_position_rad, self.step);
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(EncoderB)
+    phoxal::runtime::run::<EncoderB>()
 }

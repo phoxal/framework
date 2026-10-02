@@ -4,5 +4,5 @@ mod config;
 mod runtime;
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(runtime::Ddsm115)
+    phoxal::runtime::run::<runtime::Ddsm115>()
 }

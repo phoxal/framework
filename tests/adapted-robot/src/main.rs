@@ -13,7 +13,7 @@ phoxal::api!();
 phoxal::conversions!();
 
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal::runtime::Context;
 
 /// The brain's own expectation of the latest world revision.
 #[phoxal::message]
@@ -37,45 +37,41 @@ pub struct BrainApi {
     odometry: Latest<::phoxal::contracts::robotics::OdometryState>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Brain;
-
-impl brain_api::projections::Projections for Brain {
-    type State = ::phoxal::contracts::robotics::OdometryState;
-
-    fn heartbeat(&self, _state: &Self::State) -> ::phoxal::contracts::Empty {
-        ::phoxal::contracts::Empty::default()
-    }
-
-    fn odometry(&self, state: &Self::State) -> ::phoxal::contracts::robotics::OdometryState {
-        state.clone()
-    }
+#[derive(Clone, Debug, Default)]
+struct Brain {
+    odometry: ::phoxal::contracts::robotics::OdometryState,
 }
 
-#[phoxal::runtime(contract = BrainApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = ::phoxal::contracts::robotics::OdometryState;
-
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(Self::State {
-            available: true,
-            ..Self::State::default()
+#[phoxal::runtime(contract = BrainApi, period_ms = 20)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self {
+            odometry: ::phoxal::contracts::robotics::OdometryState {
+                available: true,
+                ..Default::default()
+            },
         })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        mut state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        state.revision = state.revision.saturating_add(1);
-        state.oldest_capture_time_nanos = Some(_ctx.now().as_nanos());
-        Ok((state, Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.odometry.revision = self.odometry.revision.saturating_add(1);
+        self.odometry.oldest_capture_time_nanos = Some(ctx.now().as_nanos());
+        Ok(())
+    }
+
+    #[publish(heartbeat)]
+    fn heartbeat(&self) -> ::phoxal::contracts::Empty {
+        ::phoxal::contracts::Empty::default()
+    }
+
+    #[publish(odometry)]
+    fn odometry_projection(&self) -> ::phoxal::contracts::robotics::OdometryState {
+        self.odometry.clone()
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    run_hosted_roles(Brain)
+    run_hosted_roles(phoxal_runtime_brain::Adapter::new())
 }

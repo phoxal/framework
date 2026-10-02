@@ -203,33 +203,18 @@ pub struct ResolvedOutput {
     pub on_change: bool,
 }
 
-/// One declared served operation or required call after resolution.
-#[derive(Clone, Debug)]
-pub struct ResolvedOperation {
-    /// Local endpoint name.
-    pub name: String,
-    /// Request message.
-    pub request: ResolvedMessage,
-    /// Response message.
-    pub response: ResolvedMessage,
-    /// Outstanding/batch item bound.
-    pub max_items: u64,
-    /// Encoded-byte bound.
-    pub max_bytes: u64,
-}
-
 /// A fully resolved service document: the single normalized endpoint
 /// authority shared by code generation and composition validation.
+/// Declared operations and calls are validated during resolution but not
+/// retained — the authored contract in the package's source owns their
+/// endpoint surface; only the standard input/output fragment is
+/// generated from here.
 #[derive(Clone, Debug)]
 pub struct ResolvedService {
     /// Validated input endpoints in authored order.
     pub inputs: Vec<ResolvedInput>,
     /// Validated output endpoints in authored order.
     pub outputs: Vec<ResolvedOutput>,
-    /// Validated served operations in authored order.
-    pub operations: Vec<ResolvedOperation>,
-    /// Validated required calls in authored order.
-    pub calls: Vec<ResolvedOperation>,
 }
 
 /// A component.yaml's raw capabilities.
@@ -631,25 +616,23 @@ pub fn resolve_standard_document(
         });
     }
 
-    let mut operations = Vec::new();
+    // Declared operations and calls are validated for name, contract,
+    // payload resolution, and bounds; their resolved forms are not
+    // retained because the package's authored contract owns that
+    // endpoint surface.
     for (name, decl) in &document.operations {
         ensure_name(name, "operations")?;
         let resolved = resolve_exchange(name, &decl.contract, &decl.request, &decl.response, path)?;
-        operations.push(ResolvedOperation {
-            name: name.clone(),
-            request: resolved.0,
-            response: resolved.1,
-            max_items: decl.max_items.unwrap_or(1),
-            max_bytes: require_bound(
-                decl.max_bytes,
-                &format!("operation {name:?}"),
-                "max_bytes",
-                path,
-            )?,
-        });
+        let _ = resolved;
+        let _ = require_bound(
+            decl.max_bytes,
+            &format!("operation {name:?}"),
+            "max_bytes",
+            path,
+        )?;
+        let _ = decl.max_items;
     }
 
-    let mut calls = Vec::new();
     for (name, decl) in &document.calls {
         ensure_name(name, "calls")?;
         if !decl.required {
@@ -659,21 +642,12 @@ pub fn resolve_standard_document(
             )));
         }
         let resolved = resolve_exchange(name, &decl.contract, &decl.request, &decl.response, path)?;
-        calls.push(ResolvedOperation {
-            name: name.clone(),
-            request: resolved.0,
-            response: resolved.1,
-            max_items: decl.max_items.unwrap_or(1),
-            max_bytes: require_bound(decl.max_bytes, &format!("call {name:?}"), "max_bytes", path)?,
-        });
+        let _ = resolved;
+        let _ = require_bound(decl.max_bytes, &format!("call {name:?}"), "max_bytes", path)?;
+        let _ = decl.max_items;
     }
 
-    Ok(ResolvedService {
-        inputs,
-        outputs,
-        operations,
-        calls,
-    })
+    Ok(ResolvedService { inputs, outputs })
 }
 
 fn resolve_exchange(

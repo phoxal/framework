@@ -383,11 +383,33 @@ fn assemble_units(
 }
 
 /// Rejects an instance name that would shadow a generated module.
+/// Upper-CamelCases one endpoint name for its marker type.
+fn to_upper_camel(name: &str) -> String {
+    let mut out = String::new();
+    let mut upper = true;
+    for character in name.chars() {
+        if character == '_' {
+            upper = true;
+        } else if upper {
+            out.extend(character.to_uppercase());
+            upper = false;
+        } else {
+            out.push(character);
+        }
+    }
+    out
+}
+
+/// SHOUTY_SNAKE_CASES one endpoint name for its method constant.
+fn shouty_snake(name: &str) -> String {
+    name.to_uppercase()
+}
+
 fn emit_reserved_module_check(
     public_names: &mut BTreeSet<String>,
     instance: &str,
 ) -> Result<(), Error> {
-    const RESERVED: &[&str] = &["api", "types", "service_methods"];
+    const RESERVED: &[&str] = &["api", "types", "service_methods", "operations"];
     if RESERVED.contains(&instance) || !public_names.insert(instance.to_owned()) {
         return Err(input(
             Path::new("robot.yaml"),
@@ -562,6 +584,151 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
         output.push_str("}\n");
     }
 
+    // Canonical provider operation markers: one zero-sized type per
+    // call-shaped provider endpoint, nested by the provider's package and
+    // named after the endpoint. A brain's call field names the marker; the
+    // identity and payload types come from the compiled contract, never
+    // from YAML strings.
+    struct OperationMarker {
+        package: String,
+        name: String,
+        /// Full descriptor identity: service, method, endpoint, request,
+        /// response, and lease semantics, plus the normalized Rust payload
+        /// paths — every emitted method semantic, so two markers with the
+        /// same spelling are equivalent only when their contracts are.
+        identity: MarkerIdentity,
+        impl_block: String,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    struct MarkerIdentity {
+        service: String,
+        method: String,
+        endpoint: String,
+        request: String,
+        response: String,
+        lease_valid_for_ms: Option<u64>,
+        request_path: String,
+        response_path: String,
+    }
+    let mut markers: Vec<OperationMarker> = Vec::new();
+    for (_instance, index) in &bindings {
+        let unit = &units[*index];
+        let compiled_unit = &compiled[*index];
+        let Some(prepared) = &unit.prepared else {
+            continue;
+        };
+        for signature in prepared.runtime_call_signatures() {
+            let Some((package, _)) = signature.service.rsplit_once('.') else {
+                continue;
+            };
+            let request_path = crate::prepared::rust_message_path(
+                &compiled_unit.pool,
+                &signature.request,
+                "crate::api::types",
+            )?;
+            let response_path = crate::prepared::rust_message_path(
+                &compiled_unit.pool,
+                &signature.response,
+                "crate::api::types",
+            )?;
+            let name = to_upper_camel(&signature.endpoint);
+            markers.push(OperationMarker {
+                package: package.to_owned(),
+                identity: MarkerIdentity {
+                    service: signature.service.to_owned(),
+                    method: signature.method.to_owned(),
+                    endpoint: signature.endpoint.to_owned(),
+                    request: signature.request.to_owned(),
+                    response: signature.response.to_owned(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                    request_path: request_path.clone(),
+                    response_path: response_path.clone(),
+                },
+                impl_block: format!(
+                    "    /// One typed provider operation marker.\n    pub struct {name};\n\n    impl ::phoxal::contracts::Operation for {name} {{\n        type Request = {request_path};\n        type Response = {response_path};\n        const METHOD: ::phoxal::contracts::CallMethod<Self::Request, Self::Response> =\n            crate::api::service_methods::u{index}::{constant};\n    }}\n",
+                    constant = shouty_snake(&signature.endpoint),
+                ),
+                name,
+            });
+        }
+    }
+    markers.sort_by(|a, b| {
+        (&a.package, &a.name, &a.identity).cmp(&(&b.package, &b.name, &b.identity))
+    });
+    // Deduplicate only fully equivalent descriptors: multiple instances of
+    // one contract share every identity field, so they collapse to a
+    // single marker. The same Rust marker spelling carrying unequal
+    // identities is a real ambiguity and is diagnosed, never silently
+    // resolved by retaining one side.
+    let mut deduplicated: Vec<&OperationMarker> = Vec::new();
+    for marker in &markers {
+        match deduplicated
+            .iter()
+            .find(|kept| kept.package == marker.package && kept.name == marker.name)
+        {
+            Some(kept) if kept.identity == marker.identity => {}
+            Some(kept) => {
+                return Err(input(
+                    package,
+                    format!(
+                        "operation marker collision in package {}: `{}` names both \
+                         {}::{} (method {}, request {}, response {}) and {}::{} (method {}, \
+                         request {}, response {}); rename one endpoint or align the contracts",
+                        marker.package,
+                        marker.name,
+                        kept.identity.service,
+                        kept.identity.endpoint,
+                        kept.identity.method,
+                        kept.identity.request,
+                        kept.identity.response,
+                        marker.identity.service,
+                        marker.identity.endpoint,
+                        marker.identity.method,
+                        marker.identity.request,
+                        marker.identity.response,
+                    ),
+                ));
+            }
+            None => deduplicated.push(marker),
+        }
+    }
+    if !deduplicated.is_empty() {
+        // One canonical module tree: packages sharing a prefix nest inside
+        // one shared module instead of reopening it per package.
+        #[derive(Default)]
+        struct PackageNode<'marker> {
+            markers: Vec<&'marker str>,
+            children: BTreeMap<String, PackageNode<'marker>>,
+        }
+        let mut root = PackageNode::default();
+        for marker in &deduplicated {
+            let mut node = &mut root;
+            for segment in marker.package.split('.') {
+                node = node.children.entry(segment.to_snake_case()).or_default();
+            }
+            node.markers.push(&marker.impl_block);
+        }
+        fn emit_package_node(node: &PackageNode<'_>, depth: usize, body: &mut String) {
+            let indent = "    ".repeat(depth + 1);
+            for (segment, child) in &node.children {
+                body.push_str(&format!("{indent}pub mod {segment} {{\n"));
+                emit_package_node(child, depth + 1, body);
+                body.push_str(&format!("{indent}}}\n"));
+            }
+            for impl_block in &node.markers {
+                for line in impl_block.lines() {
+                    body.push_str(&format!("{indent}{line}\n"));
+                }
+            }
+        }
+        let mut body = String::new();
+        emit_package_node(&root, 0, &mut body);
+        output.push_str(&format!(
+            "/// Canonical provider operation markers, nested by package.\npub mod operations {{\n{body}}}\n"
+        ));
+    }
+
     let mut public_names = BTreeSet::new();
     for (instance, index) in bindings {
         let unit = &units[index];
@@ -587,32 +754,40 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
         emit_reserved_module_check(&mut public_names, &instance)?;
         output.push_str(&module);
     }
-    let mut provider = String::new();
+    // The provider glue module is gone from this generator: a stale
+    // phoxal-provider.rs from an older build is removed on every
+    // regeneration, whether or not this package still declares a
+    // capability manifest, so no target directory keeps a file nothing
+    // attaches anymore.
+    let historical_provider = out.join("phoxal-provider.rs");
+    if historical_provider.is_file() {
+        fs::remove_file(&historical_provider).map_err(|source| Error::Path {
+            path: historical_provider.clone(),
+            source,
+        })?;
+    }
     let mut fragment = String::new();
     if let Some(resolved) = compiled.iter().find_map(|unit| unit.manifest.as_ref()) {
-        // The local capability unit attaches its standard provider glue.
-        provider = crate::provider::emit_provider(resolved);
-        write_stable(&out.join("phoxal-provider.rs"), provider.as_bytes())?;
-        // The standard endpoint surface also travels as a field fragment:
-        // an explicitly authored contract in this package splices it in, so
+        // The standard endpoint surface travels as a field fragment: an
+        // explicitly authored contract in this package splices it in, so
         // standard capability endpoints and component-specific endpoints
-        // assemble into one Runtime contract without repetition.
+        // assemble into one Runtime contract without repetition. The
+        // historical provider glue module is gone — capability packages
+        // attach through their authored contracts.
         fragment = standard_endpoint_fragment(resolved);
         write_stable(
             &out.join("phoxal-standard-endpoints.rs"),
             fragment.as_bytes(),
         )?;
     } else {
-        // A removed or renamed manifest must not leave stale attachment of
-        // either generated file.
-        for name in ["phoxal-provider.rs", "phoxal-standard-endpoints.rs"] {
-            let stale = out.join(name);
-            if stale.is_file() {
-                fs::remove_file(&stale).map_err(|source| Error::Path {
-                    path: stale.clone(),
-                    source,
-                })?;
-            }
+        // A removed or renamed manifest must not leave stale attachment
+        // of a generated fragment.
+        let stale = out.join("phoxal-standard-endpoints.rs");
+        if stale.is_file() {
+            fs::remove_file(&stale).map_err(|source| Error::Path {
+                path: stale.clone(),
+                source,
+            })?;
         }
     }
     sync_tree(&candidate_root, &out.join("phoxal-api"))?;
@@ -629,7 +804,7 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
     // directions.
     println!(
         "cargo:rustc-env=PHOXAL_GENERATED_SURFACE={:016x}",
-        surface_digest(&[provider.as_bytes(), fragment.as_bytes(), output.as_bytes()])
+        surface_digest(&[fragment.as_bytes(), output.as_bytes()])
     );
     // The retained-frame blocks for this package's own recorded
     // definitions live in one stable file so the hosted conversion
@@ -1305,6 +1480,33 @@ mod manifest_tests {
         let api = fs::read_to_string(out.join("phoxal_api.rs"))?;
         assert!(!api.contains("pub mod service_methods"));
         assert!(!out.join("phoxal-provider.rs").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn regeneration_removes_a_stale_provider_file_even_with_a_manifest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        // A capability package: no robot.yaml, a component.yaml whose
+        // capabilities derive the standard endpoint surface.
+        fs::write(
+            directory.path().join("component.yaml"),
+            "schema: phoxal/component/v0\nmodel: { file: model.xml, root_body: mount }\ncapabilities:\n  encoder:\n    kind: encoder\n    publish_rate_hz: 50.0\n",
+        )?;
+        let out = directory.path().join("out");
+        fs::create_dir_all(&out)?;
+        // A stale provider module from an older generator sits in the
+        // same OUT_DIR.
+        fs::write(
+            out.join("phoxal-provider.rs"),
+            "// stale from an older generator\n",
+        )?;
+        generate(directory.path(), &out, None)?;
+        assert!(
+            !out.join("phoxal-provider.rs").is_file(),
+            "the generator removes its historical file on every regeneration"
+        );
+        assert!(out.join("phoxal-standard-endpoints.rs").is_file());
         Ok(())
     }
 }

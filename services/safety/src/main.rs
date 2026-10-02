@@ -4,5 +4,5 @@ mod runtime;
 mod validation;
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(runtime::Safety)
+    phoxal::runtime::run::<runtime::Safety>()
 }

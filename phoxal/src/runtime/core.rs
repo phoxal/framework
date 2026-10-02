@@ -357,6 +357,7 @@ pub struct StepContext {
     elapsed: ExecutionDuration,
     missed_releases: u64,
     invocation_index: u64,
+    execution_epoch: u64,
 }
 
 impl StepContext {
@@ -375,7 +376,26 @@ impl StepContext {
             elapsed,
             missed_releases,
             invocation_index,
+            execution_epoch: 0,
         }
+    }
+
+    /// Names the execution this invocation belongs to.
+    ///
+    /// The runtime adapter stamps every invocation with the epoch its
+    /// initialization drew, so tree-owned ticket ids can never alias the
+    /// ids of a different execution. Hand-built contexts keep epoch zero,
+    /// the raw pre-execution layout.
+    #[must_use]
+    pub const fn with_execution_epoch(mut self, epoch: u64) -> Self {
+        self.execution_epoch = epoch;
+        self
+    }
+
+    /// The execution epoch this invocation was stamped with.
+    #[must_use]
+    pub const fn execution_epoch(self) -> u64 {
+        self.execution_epoch
     }
 
     /// Creates the first context for a runtime.
@@ -563,6 +583,16 @@ pub trait Runtime {
         state: Self::State,
         inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)>;
+
+    /// Accepts the candidate that `step` produced: the owning boundary has
+    /// admitted the complete output set, so ownership staged with the
+    /// candidate becomes durable. The default does nothing.
+    fn accepted(&self) {}
+
+    /// Discards the candidate that `step` produced: preparation or
+    /// admission failed, so nothing the candidate staged may survive into
+    /// a usable execution. The default does nothing.
+    fn discarded(&self) {}
 }
 
 /// A Rust-authored endpoint contract attached by `#[phoxal::runtime]`.
@@ -575,11 +605,28 @@ pub trait RuntimeContract {
     type Inputs;
     /// The generated output transaction.
     type Outputs: super::outputs::OutputSet;
+    /// The generated endpoint view over one invocation of a runtime
+    /// attached to this contract.
+    type View<'a>
+    where
+        Self: 'a;
+
+    /// The contract's harness endpoint view, reached through the contract
+    /// type so any import spelling attaches identically.
+    type HarnessView;
 
     /// The served projection ports bound to runtimes attached to this
     /// contract.  Mirrors the `OutputBindings::FIELDS` a manifest-authored
     /// service declares on its inherent output methods.
     const BINDINGS: &'static [super::outputs::OutputField];
+
+    /// Builds the endpoint view over one invocation's frozen inputs and
+    /// staged outputs.
+    fn endpoints_view<'a>(
+        step: &'a StepContext,
+        inputs: &'a Self::Inputs,
+        outputs: &'a mut Self::Outputs,
+    ) -> Self::View<'a>;
 
     /// Retains every locally authored schema frame reachable from this
     /// contract so the final artifact carries the complete closure.
@@ -913,10 +960,12 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
         let (next_state, outputs) = match result {
             Ok(Ok(products)) => products,
             Ok(Err(error)) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(error);
             }
             Err(_) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
@@ -927,10 +976,12 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
         match hook_result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(error);
             }
             Err(_) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
@@ -940,14 +991,20 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
         })) {
             Ok(Ok(reservation)) => reservation,
             Ok(Err(error)) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(error);
             }
             Err(_) => {
+                self.service.discarded();
                 self.status = RuntimeStatus::Failed;
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
         };
+        // The complete candidate — state, outputs, and every ownership
+        // record it staged — is accepted: make the staged ownership
+        // durable.
+        self.service.accepted();
         self.state = Some(next_state);
         self.last_time = Some(context.now());
         self.next_index = self.next_index.saturating_add(1);
@@ -988,16 +1045,49 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     }
 }
 
-/// Run one registered runtime process from the supervisor's explicit launch
+/// One authored runtime type that can launch its own process.
+///
+/// The runtime attachment implements this for the authored type; the type
+/// names its generated adapter, which owns configuration decoding,
+/// initialization, admission, reset, and shutdown through the ordinary
+/// registered-runtime path. Authored application code never constructs a
+/// runtime value or references the adapter.
+pub trait LaunchedRuntime {
+    /// Runs the process from the supervisor's explicit launch contract
+    /// until SIGINT or SIGTERM.
+    fn launch() -> crate::Result<()>;
+}
+
+/// Run one authored runtime process from the supervisor's explicit launch
 /// contract.
+///
+/// The type parameter names the authored runtime; its attachment supplies
+/// the registered adapter, and configuration still comes only from the
+/// immutable bundle named by argv. There is no default configuration or
+/// source-tree fallback.
+pub fn run<R>() -> crate::Result<()>
+where
+    R: LaunchedRuntime,
+{
+    R::launch()
+}
+
+/// Run one registered runtime value from the supervisor's explicit launch
+/// contract.
+///
+/// The internal launch entrypoint for generated launch glue (the hosted
+/// conversion role and `LaunchedRuntime`): the caller supplies the
+/// constructed adapter value. Authored runtimes launch through [`run`].
 ///
 /// The process entrypoint owns its Tokio runtime, parses `RuntimeLaunch`,
 /// attaches a bus session scoped to the admitted execution, and drives the
 /// serialized runtime owner until SIGINT or SIGTERM. Configuration and the
-/// selected executable are read from the immutable bundle named by argv;
-/// there is no default configuration or source-tree fallback.
-#[allow(dead_code, reason = "the transport-owned binary calls this entrypoint")]
-pub fn run<R>(service: R) -> crate::Result<()>
+/// selected executable are read from the immutable bundle named by argv.
+#[allow(
+    dead_code,
+    reason = "binary mains and generated launch glue call this entrypoint"
+)]
+pub fn run_registered<R>(service: R) -> crate::Result<()>
 where
     R: RegisteredRuntime,
     R::Inputs: super::input::TransportInputSet + super::input::TransportInputSink,

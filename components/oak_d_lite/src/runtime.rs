@@ -1,43 +1,36 @@
 use crate::config::OakDLiteConfig;
 use anyhow::Result;
 use anyhow::anyhow;
-use phoxal::runtime::InitContext;
-use phoxal::runtime::Runtime;
-use phoxal::runtime::StepContext;
+use phoxal::runtime::Context;
 
 const BACKEND_UNAVAILABLE: &str = "oak_d_lite hardware backend unavailable: refusing to publish fabricated camera, depth, or IMU measurements";
-
-/// Driver state retained by the Runtime owner.
-#[derive(Debug)]
-pub struct OakDLiteState;
 
 /// The OAK-D Lite hardware component driver.
 pub struct OakDLite;
 
+/// The OakDLite endpoint contract: the derived standard surface of
+/// its declared capabilities.
+#[phoxal::endpoints]
+pub struct OakDLiteApi {}
+
 /// The hardware backend is intentionally unavailable until a real DepthAI
 /// transport can publish camera, depth, and IMU observations.
-#[phoxal::runtime(period_ms = 10, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for OakDLite {
-    type Config = OakDLiteConfig;
-    type State = OakDLiteState;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> Result<Self::State> {
+#[phoxal::runtime(contract = OakDLiteApi, period_ms = 10, timeout_ms = 100, init_timeout_ms = 1_000)]
+impl OakDLite {
+    #[init]
+    fn new(_config: OakDLiteConfig) -> Result<Self> {
         Err(anyhow!(BACKEND_UNAVAILABLE))
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        _state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> Result<(Self::State, Self::Outputs)> {
+    #[step]
+    fn unavailable(&mut self, _ctx: &mut Context<'_, Self>) -> Result<()> {
         Err(anyhow!(BACKEND_UNAVAILABLE))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKEND_UNAVAILABLE, OakDLite, OakDLiteConfig};
+    use super::{BACKEND_UNAVAILABLE, OakDLiteConfig};
     use phoxal::contracts::component::{camera, imu};
     use phoxal::contracts::{MethodDescriptor, MethodShape};
     use phoxal::runtime::Runtime;
@@ -74,7 +67,7 @@ mod tests {
         assert!(camera::CameraFrame::retain_schema() > 0);
         assert!(imu::ImuSample::retain_schema() > 0);
         assert_eq!(
-            <OakDLite as Runtime>::Outputs::FIELDS
+            <super::phoxal_runtime_oak_d_lite::Adapter as Runtime>::Outputs::FIELDS
                 .iter()
                 .map(|field| field.name)
                 .collect::<Vec<_>>(),
@@ -89,7 +82,7 @@ mod tests {
             ]
         );
         assert!(
-            <OakDLite as Runtime>::Outputs::FIELDS
+            <super::phoxal_runtime_oak_d_lite::Adapter as Runtime>::Outputs::FIELDS
                 .iter()
                 .all(|field| field.port_signature.is_some())
         );
@@ -98,11 +91,14 @@ mod tests {
     #[test]
     fn initialization_fails_before_publishing_without_hardware() {
         let result = initialize(
-            &OakDLite,
+            &super::phoxal_runtime_oak_d_lite::Adapter::new(),
             ExecutionTime::default(),
             OakDLiteConfig::default(),
         );
-        let error = result.expect_err("setup must reject an unavailable hardware backend");
+        let error = match result {
+            Ok(_) => panic!("setup must reject an unavailable hardware backend"),
+            Err(error) => error,
+        };
         assert_eq!(error.to_string(), BACKEND_UNAVAILABLE);
     }
 }

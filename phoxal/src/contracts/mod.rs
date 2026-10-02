@@ -17,8 +17,49 @@ pub struct Latest<T>(PhantomData<fn() -> T>);
 /// Field wrapper marking a queued-delivery endpoint in an API declaration.
 pub struct Queue<T>(PhantomData<fn() -> T>);
 
+/// Field wrapper marking a retained state publication in an API declaration.
+///
+/// A `State<T>` output publishes its pure `#[publish]` value after successful
+/// initialization and after each accepted invocation; initial publication is
+/// part of the endpoint semantic, so no bootstrap flag is declared.
+pub struct State<T>(PhantomData<fn() -> T>);
+
 /// Field wrapper marking a request/response endpoint in an API declaration.
 pub struct RequestReply<Request, Response>(PhantomData<fn(Request) -> Response>);
+
+/// One typed outgoing operation descriptor: the canonical identity of an
+/// operation together with the request and response payloads it exchanges.
+///
+/// The same protocol serves generated provider descriptors, SDK-owned
+/// operations, and a package's privately authored expectations, so one call
+/// field spelling `#[phoxal::call] name: Desc` works regardless of where the
+/// descriptor is defined. A descriptor is inert metadata: it is not an
+/// instance handle and does not submit a request.
+pub trait Operation: Sized + Send + Sync + 'static {
+    /// The request payload submitted to the operation.
+    type Request: ProstPayload;
+    /// The response payload returned for one accepted request.
+    type Response: ProstPayload;
+    /// The complete contract-owned method identity of this operation.
+    ///
+    /// Its shape must be [`MethodShape::Call`]; the descriptor trait carries
+    /// a shape check that the endpoint expansion instantiates.
+    const METHOD: CallMethod<Self::Request, Self::Response>;
+
+    /// The canonical contract-owned method identity.
+    const SIGNATURE: MethodSignature = Self::METHOD.signature();
+
+    /// Compiles only when the descriptor names a unary call method.
+    const CALL_SHAPE: () = assert!(
+        matches!(Self::SIGNATURE.shape, MethodShape::Call),
+        "an Operation descriptor must carry a unary call identity",
+    );
+
+    /// One inert call to this operation, bound to one service instance.
+    fn bind(instance: &'static str, request: Self::Request) -> Call<Self::Request, Self::Response> {
+        Self::METHOD.bind(instance, request)
+    }
+}
 
 /// Canonical generated representation of `google.protobuf.Empty`.
 #[derive(Clone, Copy, PartialEq, Eq, prost::Message)]

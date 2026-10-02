@@ -24,6 +24,19 @@ const GENERATED_OPERATION_MAX_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct Outputs {
     operations: Vec<GeneratedOperation>,
+    /// The next per-candidate operation ordinal. Monotonic and never
+    /// reused: withdrawing an earlier submission must not let a later one
+    /// mint its identity and overwrite its ownership.
+    next_ordinal: usize,
+    /// Field ownership records for calls staged through the direct
+    /// `#[complete]` path in this candidate; promoted into the runtime's
+    /// pending-call ledger when a later invocation proves this candidate
+    /// was accepted.
+    direct_owners: Vec<(u128, &'static str)>,
+    /// Tickets of calls staged through the tree-owned path in this
+    /// candidate with their owning tree generations, promoted with the
+    /// same acceptance proof.
+    tree_owners: Vec<(u128, u64)>,
 }
 
 #[derive(Debug)]
@@ -31,7 +44,7 @@ enum GeneratedOperation {
     Send {
         instance: &'static str,
         signature: MethodSignature,
-        ticket: u64,
+        ticket: u128,
         payload: Vec<u8>,
     },
     Withdraw {
@@ -40,10 +53,21 @@ enum GeneratedOperation {
     },
 }
 
+impl GeneratedOperation {
+    /// The correlated ticket of a staged call submission, when this
+    /// operation is one.
+    fn ticket(&self) -> Option<u128> {
+        match self {
+            GeneratedOperation::Send { ticket, .. } => Some(*ticket),
+            GeneratedOperation::Withdraw { .. } => None,
+        }
+    }
+}
+
 /// Typed identity of one staged call result.
 #[derive(Debug, Eq, PartialEq)]
 pub struct CallTicket<Response> {
-    id: u64,
+    id: u128,
     response: PhantomData<fn() -> Response>,
 }
 
@@ -58,7 +82,7 @@ impl<Response> Clone for CallTicket<Response> {
 impl<Response> CallTicket<Response> {
     /// Execution-local identity used by generated completion inputs.
     #[must_use]
-    pub const fn id(&self) -> u64 {
+    pub const fn id(&self) -> u128 {
         self.id
     }
 }
@@ -67,7 +91,7 @@ impl<Response> CallTicket<Response> {
 pub trait GeneratedSend {
     type Response;
 
-    fn append_to(self, outputs: &mut Outputs, ticket: u64) -> crate::Result<()>;
+    fn append_to(self, outputs: &mut Outputs, ticket: u128) -> crate::Result<()>;
 }
 
 impl<Request, Response> GeneratedSend for Call<Request, Response>
@@ -76,7 +100,7 @@ where
 {
     type Response = Response;
 
-    fn append_to(self, outputs: &mut Outputs, ticket: u64) -> crate::Result<()> {
+    fn append_to(self, outputs: &mut Outputs, ticket: u128) -> crate::Result<()> {
         let (instance, signature, request) = self.into_parts();
         let payload = request.encode_to_vec();
         if payload.len() as u64 > GENERATED_OPERATION_MAX_BYTES {
@@ -101,7 +125,7 @@ where
 impl<Request, Response> GeneratedSend for Withdraw<Request, Response> {
     type Response = ();
 
-    fn append_to(self, outputs: &mut Outputs, _ticket: u64) -> crate::Result<()> {
+    fn append_to(self, outputs: &mut Outputs, _ticket: u128) -> crate::Result<()> {
         outputs.operations.push(GeneratedOperation::Withdraw {
             instance: self.instance(),
             signature: self.signature(),
@@ -110,8 +134,42 @@ impl<Request, Response> GeneratedSend for Withdraw<Request, Response> {
     }
 }
 
+/// The largest invocation index one execution's tickets can carry: the
+/// 32-bit half below the execution epoch. A single unbroken execution may
+/// run about 2.7 years at a 20 ms period before the checked error fires;
+/// any reinitialization starts a fresh epoch and a fresh half.
+pub const MAX_TICKET_INVOCATION: u64 = u32::MAX as u64;
+
+/// Composes one generated-call ticket: the execution epoch owns the high
+/// 64 bits, the invocation index the next 32, and the per-invocation
+/// operation ordinal the low 32. Every execution initialization draws a
+/// process-unique epoch, so no reinitialization or successor execution —
+/// on any thread — can mint or claim an id another execution minted. Each
+/// field is checked: a value past its width would silently wrap onto
+/// another call's ticket, so it is rejected instead of shifted.
+/// The wire-facing 64-bit sequence of one ticket: the low half, which is
+/// unique within an execution and is replaced by the transport command id
+/// for call submissions at reservation.
+fn wire_sequence(ticket: u128) -> u64 {
+    u64::try_from(ticket & u128::from(u64::MAX)).unwrap_or(u64::MAX)
+}
+
+pub fn compose_call_ticket(epoch: u64, invocation: u64, operation: usize) -> crate::Result<u128> {
+    if invocation > MAX_TICKET_INVOCATION {
+        return Err(crate::anyhow!(
+            "generated runtime invocation index overflowed the ticket space"
+        ));
+    }
+    let operation = u32::try_from(operation)
+        .map_err(|_| crate::anyhow!("generated runtime operation count overflowed"))?;
+    crate::Result::Ok(
+        (u128::from(epoch) << 64) | (u128::from(invocation) << 32) | u128::from(operation),
+    )
+}
+
 impl Outputs {
-    /// Stage one generated call, lease renewal, or withdrawal.
+    /// Stage one generated call, lease renewal, or withdrawal under the
+    /// direct ticket layout.
     pub fn send<O>(
         &mut self,
         context: &StepContext,
@@ -120,10 +178,91 @@ impl Outputs {
     where
         O: GeneratedSend,
     {
-        let index = u32::try_from(self.operations.len())
-            .map_err(|_| crate::anyhow!("generated runtime operation count overflowed"))?;
-        let id = (context.invocation_index() << 32) | u64::from(index);
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = self
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| crate::anyhow!("generated runtime operation count overflowed"))?;
+        let id = compose_call_ticket(
+            context.execution_epoch(),
+            context.invocation_index(),
+            ordinal,
+        )?;
         operation.append_to(self, id)?;
+        Ok(CallTicket {
+            id,
+            response: PhantomData,
+        })
+    }
+
+    /// Takes this candidate's direct-field ownership records.
+    pub fn take_direct_owners(&mut self) -> Vec<(u128, &'static str)> {
+        std::mem::take(&mut self.direct_owners)
+    }
+
+    /// Takes this candidate's tree-owned ticket records with the owning
+    /// tree generations.
+    pub fn take_tree_owners(&mut self) -> Vec<(u128, u64)> {
+        std::mem::take(&mut self.tree_owners)
+    }
+
+    /// Withdraws one not-yet-accepted request from this candidate output
+    /// transaction: cancellation before acceptance removes the submission
+    /// itself, so no remote effect is produced and no ownership is staged
+    /// for it. Returns whether a staged operation was removed.
+    pub fn withdraw(&mut self, ticket: u128) -> bool {
+        let before = self.operations.len();
+        self.operations
+            .retain(|operation| operation.ticket() != Some(ticket));
+        self.direct_owners.retain(|(owned, _)| *owned != ticket);
+        self.tree_owners.retain(|(owned, _)| *owned != ticket);
+        before != self.operations.len()
+    }
+
+    /// Stages one generated call for the direct `#[complete]` handler of
+    /// the named call field: the field's ownership record is committed
+    /// with the candidate so the completion routes to that handler exactly
+    /// once, independently of tree activity.
+    pub fn send_direct<O>(
+        &mut self,
+        context: &StepContext,
+        operation: O,
+        field: &'static str,
+    ) -> crate::Result<CallTicket<O::Response>>
+    where
+        O: GeneratedSend,
+    {
+        let ticket = self.send(context, operation)?;
+        self.direct_owners.push((ticket.id(), field));
+        crate::Result::Ok(ticket)
+    }
+
+    /// Stages one generated call owned by the behavior-tree generation
+    /// whose leaf submitted it: the ticket is qualified by this
+    /// execution's epoch so no other execution's result can ever claim
+    /// it, and the tree-generation ownership record is staged with the
+    /// candidate.
+    pub fn send_tree<O>(
+        &mut self,
+        context: &StepContext,
+        generation: u64,
+        operation: O,
+    ) -> crate::Result<CallTicket<O::Response>>
+    where
+        O: GeneratedSend,
+    {
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = self
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| crate::anyhow!("generated runtime operation count overflowed"))?;
+        let id = compose_call_ticket(
+            context.execution_epoch(),
+            context.invocation_index(),
+            ordinal,
+        )?;
+        operation.append_to(self, id)?;
+        self.tree_owners.push((id, generation));
         Ok(CallTicket {
             id,
             response: PhantomData,
@@ -281,7 +420,7 @@ impl OutputSet for Outputs {
                             crate::port::PortKind::Commands
                         },
                     );
-                    let sequence = *ticket;
+                    let sequence = wire_sequence(*ticket);
                     if let Some(lease) = signature.lease {
                         super::transport::PreparedOutput::encoded_response(
                             port,
@@ -294,8 +433,7 @@ impl OutputSet for Outputs {
                                 lease.valid_for_ms(),
                             ),
                         )
-                        .map(|output| output.for_instance(*instance))
-                        .map(super::transport::PreparedOutput::generated_operation)
+                        .map(|output| output.for_instance(*instance).generated_ticket(*ticket))
                         .map_err(Into::into)
                     } else {
                         super::transport::PreparedOutput::encoded_request(
@@ -311,8 +449,7 @@ impl OutputSet for Outputs {
                                 0,
                             ),
                         )
-                        .map(|output| output.for_instance(*instance))
-                        .map(super::transport::PreparedOutput::generated_operation)
+                        .map(|output| output.for_instance(*instance).generated_ticket(*ticket))
                         .map_err(Into::into)
                     }
                 }
@@ -320,8 +457,11 @@ impl OutputSet for Outputs {
                     instance,
                     signature,
                 } => {
-                    let sequence = (context.invocation_index() << 32)
-                        | u64::try_from(index).unwrap_or(u64::MAX);
+                    let ticket = compose_call_ticket(
+                        context.execution_epoch(),
+                        context.invocation_index(),
+                        index,
+                    )?;
                     let lease = signature.lease.ok_or_else(|| {
                         crate::anyhow!(
                             "withdrawal {}.{} has no contract lease",
@@ -334,12 +474,12 @@ impl OutputSet for Outputs {
                         super::transport::setpoint_metadata(
                             source,
                             context,
-                            sequence,
+                            wire_sequence(ticket),
                             lease.valid_for_ms(),
                         ),
                     )
                     .for_instance(*instance)
-                    .generated_operation())
+                    .generated_ticket(ticket))
                 }
             })
             .collect()

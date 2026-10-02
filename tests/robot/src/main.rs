@@ -7,7 +7,7 @@
 mod conversions;
 
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal::runtime::Context;
 phoxal::api!();
 phoxal::conversions!();
 
@@ -22,50 +22,43 @@ pub struct BrainApi {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Brain;
+struct Brain {
+    odometry: ::phoxal::contracts::robotics::OdometryState,
+}
 
-impl brain_api::projections::Projections for Brain {
-    type State = ::phoxal::contracts::robotics::OdometryState;
+#[phoxal::runtime(contract = BrainApi, period_ms = 20)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self {
+            odometry: ::phoxal::contracts::robotics::OdometryState {
+                available: true,
+                ..Default::default()
+            },
+        })
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.odometry.revision = self.odometry.revision.saturating_add(1);
+        self.odometry.oldest_capture_time_nanos = Some(ctx.now().as_nanos());
+        Ok(())
+    }
 
     /// The normal robot starts stopped.
     /// The local scenario substitutes the controller's manual input without
     /// turning the qualification program into deployed robot behavior.
-    fn manual(
-        &self,
-        _state: &Self::State,
-    ) -> Option<crate::api::types::phoxal::motion::v1::MotionIntent> {
+    #[publish(manual)]
+    fn manual(&self) -> Option<crate::api::types::phoxal::motion::v1::MotionIntent> {
         None
     }
 
-    fn odometry(&self, state: &Self::State) -> ::phoxal::contracts::robotics::OdometryState {
-        *state
-    }
-}
-
-#[phoxal::runtime(contract = BrainApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = ::phoxal::contracts::robotics::OdometryState;
-
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(Self::State {
-            available: true,
-            ..Self::State::default()
-        })
-    }
-
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        state.revision = state.revision.saturating_add(1);
-        state.oldest_capture_time_nanos = Some(ctx.now().as_nanos());
-        Ok((state, Self::Outputs::default()))
+    #[publish(odometry)]
+    fn odometry_projection(&self) -> ::phoxal::contracts::robotics::OdometryState {
+        self.odometry
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    run_hosted_roles(Brain)
+    run_hosted_roles(phoxal_runtime_brain::Adapter::new())
 }

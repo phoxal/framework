@@ -53,46 +53,41 @@ pub struct AlphaApi {
     probe: RequestReply<Empty, AlphaState>,
 }
 
-pub struct Alpha;
+pub struct Alpha {
+    beats: u64,
+}
 
-impl alpha_api::projections::Projections for Alpha {
-    type State = u64;
+#[phoxal::runtime(contract = AlphaApi, period_ms = 20)]
+impl Alpha {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
+    }
 
-    fn alpha_status(&self, state: &u64) -> AlphaState {
+    #[handle(probe)]
+    fn probe(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>, _request: Empty) -> phoxal::Result<AlphaState> {
+        Ok(AlphaState {
+            value: self.beats,
+            pose: None,
+            battery: None,
+            scan: None,
+        })
+    }
+
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(alpha_status)]
+    fn alpha_status(&self) -> AlphaState {
         AlphaState {
-            value: *state,
+            value: self.beats,
             pose: None,
             battery: None,
             scan: None,
         }
-    }
-}
-
-#[phoxal::runtime(contract = AlphaApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Alpha {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
-    }
-
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        let mut outputs = Self::Outputs::default();
-        for request in inputs.probe.items() {
-            outputs.probe_reply(request.reply(AlphaState {
-                value: state,
-                pose: None,
-                battery: None,
-                scan: None,
-            }))?;
-        }
-        Ok((state.saturating_add(1), outputs))
     }
 }
 
@@ -115,34 +110,28 @@ pub struct BetaApi {
     beta_status: Latest<BetaState>,
 }
 
-pub struct Beta;
-
-impl beta_api::projections::Projections for Beta {
-    type State = u64;
-
-    fn beta_status(&self, state: &u64) -> BetaState {
-        BetaState {
-            label: format!("beta-{state}"),
-        }
-    }
+pub struct Beta {
+    beats: u64,
 }
 
-#[phoxal::runtime(contract = BetaApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Beta {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = BetaApi, period_ms = 20)]
+impl Beta {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(beta_status)]
+    fn beta_status(&self) -> BetaState {
+        BetaState {
+            label: format!("beta-{}", self.beats),
+        }
     }
 }
 
@@ -153,7 +142,6 @@ const BRAIN_MAIN: &str = r#"//! Composes both binaries of one package through th
 phoxal::api!();
 
 use phoxal::contracts::{Empty, RequestReply};
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 /// The brain's own Rust contract: the probe response is a prepared
 /// participant's payload, carried through its generated type and explicit
@@ -169,24 +157,21 @@ pub struct BrainApi {
     probe: RequestReply<Empty, api::first::AlphaState>,
 }
 
-pub struct Brain;
+pub struct Brain {
+    beats: u64,
+}
 
-#[phoxal::runtime(contract = BrainApi, period_ms = 50, timeout_ms = 200, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = BrainApi, period_ms = 50)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
     }
 }
 
@@ -197,7 +182,7 @@ fn main() -> phoxal::Result<()> {
         api::first::ALPHA_STATUS,
         api::second::BETA_STATUS,
     );
-    phoxal::runtime::run(Brain)
+    phoxal::runtime::run::<Brain>()
 }
 "#;
 
@@ -208,7 +193,6 @@ const GIT_BRAIN_MAIN: &str = r#"//! Composes the Git-prepared provider through i
 phoxal::api!();
 
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message(package = "proof.git.v1")]
 pub struct Heartbeat {
@@ -222,38 +206,32 @@ pub struct BrainApi {
     heartbeat: Latest<Heartbeat>,
 }
 
-pub struct Brain;
-
-impl brain_api::projections::Projections for Brain {
-    type State = u64;
-
-    fn heartbeat(&self, state: &u64) -> Heartbeat {
-        Heartbeat { beats: *state }
-    }
+pub struct Brain {
+    beats: u64,
 }
 
-#[phoxal::runtime(contract = BrainApi, period_ms = 50, timeout_ms = 200, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = BrainApi, period_ms = 50)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(heartbeat)]
+    fn heartbeat(&self) -> Heartbeat {
+        Heartbeat { beats: self.beats }
     }
 }
 
 fn main() -> phoxal::Result<()> {
     let _ = api::provider::ALPHA_STATUS;
-    phoxal::runtime::run(Brain)
+    phoxal::runtime::run::<Brain>()
 }
 "#;
 
