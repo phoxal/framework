@@ -2202,6 +2202,9 @@ async fn generated_local_requirement_resolves_through_the_graph_and_completes() 
     Ok(())
 }
 
+// Real-time soak over a live connection: rounds settle through real
+// delivery, so it runs in the integration lane (`e2e` feature).
+#[cfg(feature = "e2e")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn five_hundred_rounds_of_two_field_calls_drain_the_retained_mailbox() -> crate::Result<()> {
     // A one-shot counter never reaches a retained-storage leak: this drain
@@ -5421,6 +5424,9 @@ async fn cycle_graph() -> crate::Result<(
     Ok((owner, consumer, provider, handled))
 }
 
+// Real-time soak over a live connection: each tick waits for real delivery
+// between polls, so it runs in the integration lane (`e2e` feature).
+#[cfg(feature = "e2e")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_call_late_replies_drain_beyond_mailbox_capacity() -> crate::Result<()> {
     const ROUNDS: u64 = 600;

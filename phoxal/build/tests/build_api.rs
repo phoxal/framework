@@ -1,3 +1,5 @@
+#![cfg(feature = "e2e")]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -642,14 +644,12 @@ fn main() -> phoxal::Result<()> {
 "#;
 
 /// The host-acceptance gate shared by the acquisition paths: they launch
-/// nested Cargo and run only under explicit opt-in.
-fn host_acquisition_enabled() -> bool {
-    if std::env::var_os("PHOXAL_HOST_ACQUISITION").is_some() {
-        true
-    } else {
-        eprintln!("skipping: PHOXAL_HOST_ACQUISITION is not set");
-        false
-    }
+/// nested Cargo and require explicit opt-in through the environment.
+fn require_host_acquisition() {
+    assert!(
+        std::env::var_os("PHOXAL_HOST_ACQUISITION").is_some(),
+        "PHOXAL_HOST_ACQUISITION=1 acknowledges the nested Cargo builds"
+    );
 }
 
 /// Builds the `cargo-phoxal` prerequisite, so a stale prebuilt tool can
@@ -685,18 +685,13 @@ fn build_cargo_phoxal() -> Result<PathBuf, Box<dyn std::error::Error>> {
 ///
 /// Host acceptance path: the test builds its own `cargo-phoxal`
 /// prerequisite, launches nested Cargo installs (network on a cold
-/// cache), and — mirroring `tests/contracts/standard-plus-custom` — is
-/// ignored by default and additionally gated on an environment variable,
-/// so the deterministic suite neither depends on a stale prebuilt tool
-/// nor runs nested compilers. Run the compiled test binary directly (not
-/// under `cargo test`) with `PHOXAL_HOST_ACQUISITION=1`.
+/// cache), and runs only in the integration lane (`e2e` feature) under
+/// `PHOXAL_HOST_ACQUISITION=1`, so the deterministic suite neither
+/// depends on a stale prebuilt tool nor runs nested compilers.
 #[test]
-#[ignore = "host acceptance: builds cargo-phoxal and launches nested Cargo; run the compiled test binary directly with PHOXAL_HOST_ACQUISITION=1"]
 fn local_git_repository_acquisition_prepares_real_products()
 -> Result<(), Box<dyn std::error::Error>> {
-    if !host_acquisition_enabled() {
-        return Ok(());
-    }
+    require_host_acquisition();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
 
@@ -898,15 +893,12 @@ fn main() -> phoxal::Result<()> {
 ///
 /// Host acceptance path: like the Git acquisition test above it builds
 /// its own `cargo-phoxal`, commits fixture repositories, launches nested
-/// Cargo (network on a cold temporary `CARGO_HOME`), and runs only under
-/// `PHOXAL_HOST_ACQUISITION=1` from the compiled test binary.
+/// Cargo (network on a cold temporary `CARGO_HOME`), and runs only in
+/// the integration lane (`e2e` feature) under `PHOXAL_HOST_ACQUISITION=1`.
 #[test]
-#[ignore = "host acceptance: builds cargo-phoxal, assembles a temporary local registry, and launches nested Cargo; run the compiled test binary directly with PHOXAL_HOST_ACQUISITION=1"]
 fn local_registry_acquisition_with_sdk_patch_prepares_real_products()
 -> Result<(), Box<dyn std::error::Error>> {
-    if !host_acquisition_enabled() {
-        return Ok(());
-    }
+    require_host_acquisition();
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     // `CARGO_MANIFEST_DIR` here is `…/framework/phoxal/build`, so the SDK

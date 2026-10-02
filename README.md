@@ -113,6 +113,22 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 ```
 
+## Test lanes
+
+Tests live in two lanes.
+The deterministic lane covers unit and logic tests and runs on every pull request (`ci`): it needs no nested Cargo, no real waiting, and no supervisor process.
+The integration lane covers the suites that drive the real toolchain end to end — cargo-phoxal prepare/build/publish cycles, trybuild compile surfaces, warm-edit and host acquisition, and the supervisor-process composition legs.
+Those suites are gated behind each package's `e2e` feature; without it their test binaries compile empty, which keeps ordinary `cargo test` and pull-request CI fast.
+The `integration` workflow runs the lane with the features enabled on merge to main and on demand, building the supervisor binary and the composition bundles the lane consumes and caching the nested build trees (`target/suites`, `target/tests`) between runs:
+
+```sh
+cargo test --workspace --no-fail-fast --exclude phoxal-test-robot \
+  --features phoxal/e2e,cargo-phoxal/e2e,phoxal-build/e2e,phoxal-contract-robot-fixture/e2e,standard-plus-custom/e2e
+```
+
+The supervisor-process legs additionally expect `PHOXAL_EVAL_BUNDLE` and `PHOXAL_SUBSTITUTION_BUNDLE` to point at bundles built with `cargo-phoxal build --output` from `tests/contracts/robot` (the substitution bundle uses `robot.substitution.yaml`), and the nested-build tests expect `PHOXAL_HOST_ACQUISITION=1` and `PHOXAL_WARM_EDIT_REGRESSION=1`.
+The `integration` workflow sets all of them; `tests/robot`'s native MuJoCo qualification stays a local pre-push gate.
+
 ## License
 
 AGPL-3.0-only. See [LICENSE](LICENSE) and [COMMERCIAL.md](COMMERCIAL.md).

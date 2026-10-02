@@ -1,0 +1,81 @@
+name: integration
+
+# Framework integration lane: the end-to-end suites that drive the real
+# toolchain — cargo-phoxal prepare/build/publish cycles against nested
+# Cargo, trybuild compile surfaces, the warm-edit regression, host
+# acquisition, and the supervisor-process composition legs. These suites
+# compile full nested dependency trees (target/suites, target/tests), so
+# they run on merge to main and on demand instead of on every PR; the
+# `ci` workflow keeps the fast deterministic lane for pull requests.
+#
+# The nested trees are cached and keyed on the lockfile, so a warm run
+# costs a few minutes; a cold run rebuilds once.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Nested and trybuild builds carry no debugging value in CI.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  PHOXAL_HOST_ACQUISITION: "1"
+  PHOXAL_WARM_EDIT_REGRESSION: "1"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the nested build trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/suites
+            target/tests
+          key: integration-trees-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: integration-trees-${{ runner.os }}-
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - name: Build cargo-phoxal
+        run: cargo build -p cargo-phoxal --locked
+      - name: Prepare the fixture compositions
+        run: |
+          set -euo pipefail
+          for fixture in tests/robot tests/contracts/robot tests/contracts/client tests/runtime-authoring/consumer; do
+            (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
+          done
+      - name: Build the supervisor binary (two-step suite contract)
+        run: cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
+      - name: Build the composition bundles
+        run: |
+          set -euo pipefail
+          tool="$GITHUB_WORKSPACE/target/debug/cargo-phoxal"
+          cd tests/contracts/robot
+          "$tool" build --output "$GITHUB_WORKSPACE/target/e2e-bundles/eval"
+          cp robot.yaml "$RUNNER_TEMP/robot.yaml"
+          cp robot.substitution.yaml robot.yaml
+          "$tool" build --output "$GITHUB_WORKSPACE/target/e2e-bundles/substitution"
+          cp "$RUNNER_TEMP/robot.yaml" robot.yaml
+          "$tool" prepare
+      - name: clippy over the integration targets
+        run: >-
+          cargo clippy --workspace --all-targets --locked
+          --features phoxal/e2e,cargo-phoxal/e2e,phoxal-build/e2e,phoxal-contract-robot-fixture/e2e,standard-plus-custom/e2e
+          -- -D warnings
+      - name: Run the integration suite
+        run: >-
+          cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
+          --features phoxal/e2e,cargo-phoxal/e2e,phoxal-build/e2e,phoxal-contract-robot-fixture/e2e,standard-plus-custom/e2e
+        env:
+          PHOXAL_EVAL_BUNDLE: ${{ github.workspace }}/target/e2e-bundles/eval
+          PHOXAL_SUBSTITUTION_BUNDLE: ${{ github.workspace }}/target/e2e-bundles/substitution
+      - name: Run the supervisor acceptance suite
+        run: cargo test -p phoxal-supervisor-runtime-fixture --locked --no-fail-fast

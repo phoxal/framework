@@ -1,4 +1,5 @@
 //! Cargo-level assertions for the public consumer dependency profiles.
+#![cfg(feature = "e2e")]
 
 use std::path::Path;
 use std::process::Command;

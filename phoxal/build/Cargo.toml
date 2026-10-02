@@ -17,6 +17,10 @@ homepage.workspace = true
 repository.workspace = true
 include = ["src/**", "proto/**", "Cargo.toml", "README.md"]
 
+[features]
+# Integration lane: tests that drive the real toolchain.
+e2e = []
+
 [dependencies]
 heck = { workspace = true }
 prost = { workspace = true }

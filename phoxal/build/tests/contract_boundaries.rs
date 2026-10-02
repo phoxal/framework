@@ -1,3 +1,5 @@
+#![cfg(feature = "e2e")]
+
 use std::process::Command;
 
 fn dependency_tree(fixture: &str) -> String {

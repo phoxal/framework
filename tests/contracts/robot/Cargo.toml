@@ -11,6 +11,10 @@ description = "Composed robot fixture for the manifest service evaluation."
 name = "contract-robot-brain"
 path = "src/main.rs"
 
+[features]
+# Integration lane: the supervisor-process composition legs.
+e2e = []
+
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["runtime"] }
 phoxal-supervisor = { path = "../../../supervisor" }

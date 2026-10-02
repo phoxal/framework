@@ -2,6 +2,7 @@
 //!
 //! Spawns the compiled binary against a passive component fixture and
 //! asserts on the structured dry-run report.
+#![cfg(feature = "e2e")]
 
 mod support;
 

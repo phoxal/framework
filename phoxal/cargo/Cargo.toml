@@ -16,6 +16,10 @@ repository.workspace = true
 name = "cargo-phoxal"
 path = "src/main.rs"
 
+[features]
+# Integration lane: tests that drive the real toolchain.
+e2e = []
+
 [dependencies]
 # Public CLI surface.
 clap = { workspace = true }

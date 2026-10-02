@@ -4,6 +4,7 @@
 //! capability a role does not have, a handle from the wrong API, a request or
 //! response type that does not match the endpoint. The expected diagnostics
 //! are part of the guarantee - an author has to be told which rule they hit.
+#![cfg(feature = "e2e")]
 
 #[test]
 fn trybuild_ui() {

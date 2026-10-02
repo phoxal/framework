@@ -3207,6 +3207,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn root_package_workspace_publication_is_packaged_as_one_member()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3233,6 +3234,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn staged_sources_exclude_desktop_metadata_files() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -3286,6 +3288,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn publication_uses_the_explicit_library_command_role() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -3381,6 +3384,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn passive_dry_run_packages_only_declared_content_and_keeps_authored_tree_unchanged()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3413,6 +3417,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn real_service_dry_run_preserves_the_rust_contract_binary()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3435,6 +3440,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn workspace_member_publication_captures_inherited_manifest_context()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3468,6 +3474,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn nested_tool_publication_captures_its_parent_package_dependency()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3498,6 +3505,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn workspace_publication_relocates_nested_external_paths_and_runs_cargo()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3608,6 +3616,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "e2e")]
     #[test]
     fn publication_captures_nested_external_workspace_inheritance()
     -> Result<(), Box<dyn std::error::Error>> {

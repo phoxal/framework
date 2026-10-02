@@ -8,6 +8,10 @@ publish = false
 name = "standard-plus-custom"
 path = "src/main.rs"
 
+[features]
+# Integration lane: the warm-edit regression spawns Cargo on a scratch package.
+e2e = []
+
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }
 

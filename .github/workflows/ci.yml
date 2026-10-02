@@ -1,7 +1,14 @@
 name: ci
 
-# Framework CI: formatting, strict clippy over every target, and the
-# deterministic workspace tests with locked dependency resolution.
+# Framework pull-request CI: formatting, strict clippy over every target,
+# and the deterministic unit tests with locked dependency resolution.
+#
+# The end-to-end suites that drive the real toolchain (prepare/build/
+# publish cycles, trybuild compile surfaces, warm-edit, host acquisition,
+# and the supervisor-process composition legs) are gated behind each
+# package's `e2e` feature and run in the `integration` workflow on main
+# instead of on every PR; without the feature their test binaries compile
+# empty, so this lane stays fast.
 #
 # Compiling any Phoxal composition requires its prepared contracts, so
 # the build job first builds cargo-phoxal and prepares the workspace

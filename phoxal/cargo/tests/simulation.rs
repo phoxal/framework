@@ -4,6 +4,7 @@
 //! any environment where the cargo-phoxal binary itself is available.
 //! Installation and executing a simulation test need a managed simulator and
 //! stay as host acceptance, exercised outside CI.
+#![cfg(feature = "e2e")]
 
 mod support;
 

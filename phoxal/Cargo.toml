@@ -39,6 +39,9 @@ session = ["dep:tokio", "dep:tokio-util", "dep:tracing", "dep:zenoh"]
 # Local prepared-product generation, selected only in build-dependencies.
 build = ["dep:phoxal-build"]
 
+# Integration lane: tests that drive the real toolchain or wait on real time.
+e2e = []
+
 [dependencies]
 phoxal-macros = { workspace = true }
 anyhow = { workspace = true, optional = true }

@@ -4,12 +4,13 @@
 //! producer + this brain) under the real supervisor executable and drives
 //! the generated operations through a public session.
 //!
-//! The bundle is passed with `PHOXAL_EVAL_BUNDLE` (built by
-//! `cargo-phoxal build --output ...` outside this test; nesting cargo inside
-//! cargo deadlocks on shared locks).  Without the variable the test exits
-//! successfully so ordinary workspace runs stay green.  Every await is
-//! bounded.
-
+//! Integration lane only (`e2e` feature): the bundle is passed with
+//! `PHOXAL_EVAL_BUNDLE` and the substitution run with
+//! `PHOXAL_SUBSTITUTION_BUNDLE`, both built by
+//! `cargo-phoxal build --output ...` outside this test (nesting cargo
+//! inside cargo deadlocks on shared locks).  The supervisor binary must be
+//! built first.  Every await is bounded.
+#![cfg(feature = "e2e")]
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "acceptance test")]
 
 #[path = "../src/contract.rs"]
@@ -127,15 +128,11 @@ fn supervisor_executable() -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "set PHOXAL_EVAL_BUNDLE to a compiled composition bundle; build it outside cargo to avoid nested-cargo deadlocks"]
 async fn manifest_composition_exchanges_operations_and_observations_across_processes() {
-    let Some(bundle) = std::env::var_os("PHOXAL_EVAL_BUNDLE").map(PathBuf::from) else {
-        eprintln!(
-            "skipping: PHOXAL_EVAL_BUNDLE is not set; build one with \
-             `cargo-phoxal build --output <dir>` from tests/contracts/robot"
-        );
-        return;
-    };
+    let bundle = PathBuf::from(
+        std::env::var_os("PHOXAL_EVAL_BUNDLE")
+            .expect("PHOXAL_EVAL_BUNDLE must point at a bundle built with `cargo-phoxal build --output <dir>` from tests/contracts/robot"),
+    );
     let root = bundle.canonicalize().expect("bundle root canonicalizes");
     let socket = root.join(".phoxal/run/supervisor.sock");
     let endpoint = format!("unixsock-stream/{}", socket.display());
@@ -343,12 +340,11 @@ async fn wait_until_ready(
 /// executable (digest-equal to run A's) must report provider B's values when
 /// composition selects encoder-b's `encoder` output for the same endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "set PHOXAL_SUBSTITUTION_BUNDLE to a compiled substitution bundle (consumer.encoder <- encoder-b.encoder)"]
 async fn provider_substitution_reports_provider_b_values() {
-    let Some(bundle) = std::env::var_os("PHOXAL_SUBSTITUTION_BUNDLE").map(PathBuf::from) else {
-        eprintln!("skipping: PHOXAL_SUBSTITUTION_BUNDLE is not set");
-        return;
-    };
+    let bundle = PathBuf::from(
+        std::env::var_os("PHOXAL_SUBSTITUTION_BUNDLE")
+            .expect("PHOXAL_SUBSTITUTION_BUNDLE must point at a substitution bundle (consumer.encoder <- encoder-b.encoder)"),
+    );
     let root = bundle.canonicalize().expect("bundle root canonicalizes");
     let endpoint = format!(
         "unixsock-stream/{}",

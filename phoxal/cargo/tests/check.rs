@@ -5,6 +5,7 @@
 //! on its exit code and captured output. The integration tests treat the
 //! binary as an opaque subprocess the same way a downstream user would;
 //! they do not import anything from `cargo_phoxal` or `phoxal`.
+#![cfg(feature = "e2e")]
 
 mod support;
 
