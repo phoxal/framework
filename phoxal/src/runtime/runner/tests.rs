@@ -1038,6 +1038,90 @@ fn future_commands_validate_before_retention_and_reject_replays() {
     assert!(error.to_string().contains("duplicate command id"));
 }
 
+// ---------------------------------------------------------------------------
+// Generated-call sender flow control and the command merge key: the
+// deterministic rules behind the real exchanges below.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_outstanding_call_reservation_counts_live_and_staged_per_endpoint() {
+    fn pending(endpoint: &str) -> super::exchange::GeneratedCorrelation {
+        super::exchange::GeneratedCorrelation {
+            ticket: 0,
+            expected_source: String::new(),
+            endpoint: endpoint.to_owned(),
+            caller: String::new(),
+            caller_rank: 0,
+            max_response_bytes: 0,
+            deadline: None,
+        }
+    }
+    let live: super::exchange::GeneratedCorrelationMap = Arc::new(Mutex::new(BTreeMap::from([
+        (1_u64, pending("ask")),
+        (2, pending("ask")),
+        (3, pending("verify")),
+    ])));
+    let staged = vec![(4_u64, pending("ask"))];
+    assert_eq!(
+        super::output::outstanding_generated_calls(&live, &staged, "ask"),
+        3,
+        "live and staged reservations for the endpoint both count"
+    );
+    assert_eq!(
+        super::output::outstanding_generated_calls(&live, &staged, "verify"),
+        1,
+        "other endpoints never count toward this reservation"
+    );
+    // A matched reply consumes its correlation (the classification tests
+    // above): the retired reservation releases and capacity returns.
+    live.lock().unwrap().remove(&1);
+    assert_eq!(
+        super::output::outstanding_generated_calls(&live, &staged, "ask"),
+        2,
+        "a retired call releases its reservation"
+    );
+}
+
+#[test]
+fn command_order_merges_by_boundary_controlled_rank_then_external_ingress() {
+    // Arrival order is reversed from the authoritative merge key at every
+    // level: external ingress, the higher controlled rank, and the later
+    // boundary all arrive first here.
+    use crate::runtime::input::CommandId;
+    let mut orders = [
+        crate::runtime::input::CommandOrder::external(0, 3, CommandId::new(101)),
+        crate::runtime::input::CommandOrder::new(0, 3, CommandId::new(99)),
+        crate::runtime::input::CommandOrder::external(17, 4, CommandId::new(102)),
+        crate::runtime::input::CommandOrder::new(0, 2, CommandId::new(100)),
+    ];
+    orders.sort();
+    let merged: Vec<(u64, Option<u64>, u64)> = orders
+        .iter()
+        .map(|order| {
+            (
+                order.caller_rank(),
+                order.ingress_sequence(),
+                order.sequence().sequence(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        merged,
+        vec![
+            (2, None, 100),
+            (3, None, 99),
+            (0, Some(3), 101),
+            (0, Some(4), 102)
+        ],
+        "controlled callers precede external ingress at one boundary, rank breaks ties, and later boundaries sort last"
+    );
+}
+
+/// A small typed transport round trip over the real bus: replies follow
+/// the authoritative merge key rather than arrival order, carry the
+/// caller's correlation metadata, and a request for a later boundary
+/// becomes visible exactly at that boundary. Replay rejection is proven
+/// deterministically by `future_commands_validate_before_retention_and_reject_replays`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn generated_prost_runtime_transport_round_trip_preserves_command_order() {
     use zenoh::Wait;
@@ -1137,12 +1221,13 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
             .wait()
             .expect("external request publishes");
     };
-    // Publish the higher-ranked caller first.  The frozen input cut must
-    // still use the authoritative boundary/rank merge key, not Zenoh
-    // arrival order.
-    publish_request(TransportRequest { value: 50 }, "caller-b", 100, 0, 2);
+    // Publish in reverse of the authoritative merge key: the lower-ranked
+    // controlled caller, then external ingress, then the higher-ranked
+    // controlled caller.  The frozen input cut must still order replies by
+    // the boundary/rank merge key, not Zenoh arrival order.
     publish_request(TransportRequest { value: 41 }, "caller-a", 99, 0, 3);
     publish_external_request(TransportRequest { value: 60 }, 101, 0, 3);
+    publish_request(TransportRequest { value: 50 }, "caller-b", 100, 0, 2);
 
     let mut runner = RuntimeRunner::new(
         TransportRuntime,
@@ -1186,14 +1271,14 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
     // A request for a later eligible boundary remains retained without
     // entering the earlier frozen cuts, then becomes visible exactly at
     // its boundary.
-    publish_external_request(TransportRequest { value: 70 }, 102, 17, 4);
-    for index in 1..=17 {
+    publish_external_request(TransportRequest { value: 70 }, 102, 3, 4);
+    for index in 1..=3 {
         let now = ExecutionTime::from_nanos(index * 10_000_000);
         assert!(matches!(
             runner.poll(now),
             Ok(PollOutcome::Accepted { invocation_index }) if invocation_index == index
         ));
-        if index < 17 {
+        if index < 3 {
             assert!(
                 replies
                     .try_recv()
@@ -1209,19 +1294,8 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
     let future_wire = crate::runtime::transport::WireSample::from_zenoh(future_reply)
         .expect("future reply has typed metadata");
     assert_eq!(future_wire.metadata().command_id, Some(102));
-    assert_eq!(future_wire.metadata().eligible_boundary, Some(17));
+    assert_eq!(future_wire.metadata().eligible_boundary, Some(3));
     assert_eq!(future_wire.metadata().ingress_sequence, Some(4));
-
-    // A late replay from the already admitted command must fail before a
-    // second service step and must not produce a duplicate reply.
-    publish_request(TransportRequest { value: 999 }, "caller-a", 99, 0, 3);
-    assert!(runner.poll(ExecutionTime::from_nanos(10_000_000)).is_err());
-    assert_eq!(runner.status(), RuntimeStatus::Failed);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), replies.recv_async())
-            .await
-            .is_err()
-    );
 
     owner.close().await;
 }
@@ -2831,6 +2905,7 @@ async fn generated_operation_runs_one_worker_and_only_the_latest_replacement() -
 }
 
 static UNRESPONSIVE_OPERATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static UNRESPONSIVE_OPERATION_RELEASE: AtomicBool = AtomicBool::new(false);
 
 struct UnresponsiveOperationRuntime;
 
@@ -2870,7 +2945,16 @@ impl UnresponsiveOperationRuntime {
     #[crate::runtime::outputs::operation(operation, timeout_ms = 1000, cancel_grace_ms = 5)]
     fn run(input: u32) -> crate::Result<u32> {
         UNRESPONSIVE_OPERATION_ACTIVE.store(true, Ordering::Release);
-        std::thread::sleep(Duration::from_millis(50));
+        // Hold the operation until the test releases it: stop must
+        // escalate past the five-millisecond grace without joining this
+        // owner, and the test releases the owner for explicit cleanup.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !UNRESPONSIVE_OPERATION_RELEASE.load(Ordering::Acquire) {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         UNRESPONSIVE_OPERATION_ACTIVE.store(false, Ordering::Release);
         Ok(input)
     }
@@ -2880,6 +2964,7 @@ impl UnresponsiveOperationRuntime {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runner_stop_escalates_when_operation_outlives_its_retirement_grace() -> crate::Result<()> {
     UNRESPONSIVE_OPERATION_ACTIVE.store(false, Ordering::Release);
+    UNRESPONSIVE_OPERATION_RELEASE.store(false, Ordering::Release);
     let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
         crate::runtime::connection::ConnectionConfig::for_participant(
             crate::identity::ExecutionId::mint(),
@@ -2940,8 +3025,17 @@ async fn runner_stop_escalates_when_operation_outlives_its_retirement_grace() ->
         UNRESPONSIVE_OPERATION_ACTIVE.load(Ordering::Acquire),
         "stop must not join an owner after its retirement grace"
     );
+    // Explicit cleanup: release the held owner and wait for it to exit.
+    UNRESPONSIVE_OPERATION_RELEASE.store(true, Ordering::Release);
     owner.close().await;
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while UNRESPONSIVE_OPERATION_ACTIVE.load(Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the released operation owner must exit"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
     Ok(())
 }
 
