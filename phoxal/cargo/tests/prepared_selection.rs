@@ -26,7 +26,6 @@ use phoxal::contracts::component::battery::BatterySample;
 use phoxal::contracts::component::lidar::LaserScan;
 use phoxal::contracts::geometry::Pose;
 use phoxal::contracts::{Empty, Latest, RequestReply};
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message(package = "proof.multi.v1")]
 pub struct AlphaState {
@@ -96,7 +95,6 @@ fn main() {}
 
 const BETA_BIN: &str = r#"//! Beta binary: a differently named endpoint with a different payload.
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message(package = "proof.multi.v1")]
 pub struct BetaState {

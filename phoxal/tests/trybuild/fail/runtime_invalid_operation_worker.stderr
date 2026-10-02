@@ -4,8 +4,8 @@ error[E0277]: the trait bound `Result<u16, phoxal::macro_support::anyhow::Error>
 40 |     fn worker(input: u8) -> phoxal::Result<u16> {
    |                             ^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
-help: the trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not implemented for `Result<u16, phoxal::macro_support::anyhow::Error>`
-      but trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u16>>` is implemented for it
+help: the trait `OperationWorkerFor<Operation<u64, u32>>` is not implemented for `Result<u16, phoxal::macro_support::anyhow::Error>`
+      but trait `OperationWorkerFor<Operation<u64, u16>>` is implemented for it
   --> src/runtime/input.rs
    |
    | / impl<Key: 'static, Response: 'static, Error: 'static> OperationWorkerFor<Operation<Key, Response>>
