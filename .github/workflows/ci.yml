@@ -19,6 +19,10 @@ name: ci
 #
 # - tests/supervisor-runtime needs its supervisor binary built first
 #   (two-step suite contract) and runs in its own job below.
+#
+# The always-open release-plz version PR (authored by the release App)
+# contains only commits already merged to main and already checked here,
+# so it is excluded instead of re-running the whole suite on every update.
 
 on:
   pull_request:
@@ -30,6 +34,7 @@ concurrency:
 
 jobs:
   fmt:
+    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +46,7 @@ jobs:
 
   build-and-test:
     name: clippy and tests
+    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +70,7 @@ jobs:
 
   supervisor-acceptance:
     name: supervisor acceptance
+    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

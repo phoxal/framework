@@ -101,8 +101,8 @@ It is not a public example, a supported robot template, or a substitute for focu
 Every published library, contract, executable, and simulator package owns a semantic version in its Cargo manifest.
 During the current experimental reset, coherent framework trains use the monotonic `0.0.0-dev.N` sequence and exact internal requirements.
 The source commit is not embedded in the package version.
-When a release train is intentionally started, release-plz plans changes in a reviewable pull request, and unrelated packages remain unchanged after this reset train.
-Release planning is manually dispatched because the static reviewed registry has no publication API or release state that release-plz can observe.
+Every merge to main updates a reviewable release-plz version pull request, and its diff is the current list of packages the next release train would publish; unrelated packages remain unchanged after this reset train.
+Starting the train remains a deliberate maintainer step because the static reviewed registry has no publication API or release state that release-plz can observe; the train merges the exact reviewed version pull request head and publishes every version it contains.
 The framework does not publish rewritten packages to crates.io.
 The current build-script API proof uses a temporary standard sparse registry and exact package archives.
 Public publication and release qualification are separate work after the package model settles.
