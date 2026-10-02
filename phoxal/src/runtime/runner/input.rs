@@ -684,6 +684,140 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
     }
 }
 
+/// The decision the generated-reply receive loop makes for one arriving
+/// reply, separated from transport I/O so its rules are directly testable.
+#[derive(Debug)]
+pub(super) enum GeneratedReplyDecision {
+    /// Another caller's reply on the shared execution subscription.
+    ForeignCaller,
+    /// The reply's call is retired, unknown, or fenced by execution or
+    /// timeline identity; `controlled` records whether the delivery
+    /// acknowledgement contract still requires a negative ack.
+    Retired { controlled: bool },
+    /// The reply matched a live admitted call and consumed its
+    /// correlation; its completion is ready to be exposed.
+    Completed {
+        ticket: u128,
+        caller: String,
+        endpoint: String,
+        controlled: bool,
+        result: Result<Vec<u8>, crate::runtime::RequestError>,
+    },
+}
+
+/// Classify one generated-call reply against the caller's admission
+/// state: caller ownership, execution/timeline fencing, correlation
+/// consumption, reply identity, and the wire-control outcome. A matched
+/// reply consumes its correlation; a fenced reply leaves the correlation
+/// in place for the live execution that may still claim it.
+pub(super) fn classify_generated_reply(
+    wire: &WireSample,
+    instance: &str,
+    current_execution: &str,
+    active_timeline: Option<&str>,
+    correlations: &GeneratedCorrelationMap,
+) -> crate::Result<GeneratedReplyDecision> {
+    let metadata = wire.metadata();
+    let command_id = metadata.command_id.ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(
+            "generated reply is missing command id".to_owned()
+        ))
+    })?;
+    // The subscription observes every reply on the execution; only the
+    // replies this runtime itself requested correlate here.  Independent
+    // command-id counters must never let another caller's reply match a
+    // pending ticket.
+    if !metadata
+        .caller
+        .as_deref()
+        .is_some_and(|caller| caller.starts_with(&format!("{instance}.")))
+    {
+        return Ok(GeneratedReplyDecision::ForeignCaller);
+    }
+    let controlled = metadata.execution_id.is_some()
+        || metadata.timeline_id.is_some()
+        || metadata.boundary.is_some()
+        || metadata.item.is_some();
+    let fenced = controlled
+        && (metadata.execution_id.as_deref() != Some(current_execution)
+            || metadata.timeline_id.as_deref() != active_timeline);
+    let correlation = if fenced {
+        None
+    } else {
+        correlations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&command_id)
+    };
+    let Some(correlation) = correlation else {
+        return Ok(GeneratedReplyDecision::Retired { controlled });
+    };
+
+    let source = metadata.publisher().unwrap_or_default();
+    let expected_suffix = format!("/ports/{}/reply", correlation.endpoint);
+    if source != correlation.expected_source
+        || metadata.caller.as_deref() != Some(correlation.caller.as_str())
+        || metadata.caller_rank != Some(correlation.caller_rank)
+        || !wire.key().ends_with(&expected_suffix)
+    {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!(
+                "generated reply identity does not match its admitted call: \
+                 source {source:?} (expected {:?}), caller {:?} (expected {:?}), \
+                 rank {:?} (expected {:?}), key {:?} (expected suffix {expected_suffix:?})",
+                correlation.expected_source,
+                metadata.caller,
+                correlation.caller,
+                metadata.caller_rank,
+                correlation.caller_rank,
+                wire.key(),
+            )
+        )));
+    }
+    let result = match metadata.wire_control()? {
+        transport::WireControl::Data => {
+            if wire.payload().len() as u64 > correlation.max_response_bytes {
+                Err(crate::runtime::RequestError::Oversized)
+            } else {
+                Ok(wire.payload().to_vec())
+            }
+        }
+        transport::WireControl::Rejected => {
+            Err(crate::runtime::RequestError::RejectedBeforeAdmission(
+                metadata
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "generated call was rejected before admission".to_owned()),
+            ))
+        }
+        transport::WireControl::Failed => Err(crate::runtime::RequestError::OutcomeUnknown(
+            metadata
+                .reason
+                .clone()
+                .unwrap_or_else(|| "generated call provider failed".to_owned()),
+        )),
+        transport::WireControl::Oversized => Err(crate::runtime::RequestError::Oversized),
+        control => {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("generated call reply used incompatible {control:?} control"),
+            }));
+        }
+    };
+    let super::exchange::GeneratedCorrelation {
+        ticket,
+        caller,
+        endpoint,
+        ..
+    } = correlation;
+    Ok(GeneratedReplyDecision::Completed {
+        ticket,
+        caller,
+        endpoint,
+        controlled,
+        result,
+    })
+}
+
 async fn generated_reply_receive_loop(
     subscriber: RuntimeSubscription,
     bus: crate::runtime::connection::Connection,
@@ -702,134 +836,70 @@ async fn generated_reply_receive_loop(
             })?,
         };
         let wire = WireSample::from_zenoh(sample)?;
-        let metadata = wire.metadata();
-        let command_id = metadata.command_id.ok_or_else(|| {
-            anyhow::anyhow!(TransportError::CommandCorrelation(
-                "generated reply is missing command id".to_owned()
-            ))
-        })?;
-        // The subscription observes every reply on the execution; only the
-        // replies this runtime itself requested correlate here.  Independent
-        // command-id counters must never let another caller's reply match a
-        // pending ticket.
-        if !metadata
-            .caller
-            .as_deref()
-            .is_some_and(|caller| caller.starts_with(&format!("{instance}.")))
-        {
-            continue;
-        }
-        let controlled = metadata.execution_id.is_some()
-            || metadata.timeline_id.is_some()
-            || metadata.boundary.is_some()
-            || metadata.item.is_some();
         let active_timeline = timeline
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
         let current_execution = bus.execution().to_string();
-        let fenced = controlled
-            && (metadata.execution_id.as_deref() != Some(current_execution.as_str())
-                || metadata.timeline_id.as_deref() != active_timeline.as_deref());
-
-        let correlation = if fenced {
-            None
-        } else {
-            correlations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&command_id)
-        };
-        let Some(correlation) = correlation else {
-            if controlled {
-                let target = metadata
-                    .caller
-                    .clone()
-                    .unwrap_or_else(|| "unknown.generated_call".to_owned());
-                let port = wire
-                    .key()
-                    .rsplit('/')
-                    .nth(1)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                let queue =
-                    DeliveryQueue::new(1, u64::MAX, crate::runtime::input::InputKind::Completions);
-                if let Ok(identity) = queue.identity(&wire, &target, &port, "reply") {
-                    publish_delivery_ack(
-                        &bus,
-                        &identity,
-                        "delivery-ack",
-                        false,
-                        Some("generated reply belongs to a retired or unknown call".to_owned()),
-                    )
-                    .await?;
+        match classify_generated_reply(
+            &wire,
+            &instance,
+            &current_execution,
+            active_timeline.as_deref(),
+            &correlations,
+        )? {
+            GeneratedReplyDecision::ForeignCaller => {}
+            GeneratedReplyDecision::Retired { controlled } => {
+                if controlled {
+                    let target = wire
+                        .metadata()
+                        .caller
+                        .clone()
+                        .unwrap_or_else(|| "unknown.generated_call".to_owned());
+                    let port = wire
+                        .key()
+                        .rsplit('/')
+                        .nth(1)
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    let queue = DeliveryQueue::new(
+                        1,
+                        u64::MAX,
+                        crate::runtime::input::InputKind::Completions,
+                    );
+                    if let Ok(identity) = queue.identity(&wire, &target, &port, "reply") {
+                        publish_delivery_ack(
+                            &bus,
+                            &identity,
+                            "delivery-ack",
+                            false,
+                            Some("generated reply belongs to a retired or unknown call".to_owned()),
+                        )
+                        .await?;
+                    }
                 }
             }
-            continue;
-        };
-
-        let source = metadata.publisher().unwrap_or_default();
-        let expected_suffix = format!("/ports/{}/reply", correlation.endpoint);
-        if source != correlation.expected_source
-            || metadata.caller.as_deref() != Some(correlation.caller.as_str())
-            || metadata.caller_rank != Some(correlation.caller_rank)
-            || !wire.key().ends_with(&expected_suffix)
-        {
-            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                format!(
-                    "generated reply identity does not match its admitted call: \
-                     source {source:?} (expected {:?}), caller {:?} (expected {:?}), \
-                     rank {:?} (expected {:?}), key {:?} (expected suffix {expected_suffix:?})",
-                    correlation.expected_source,
-                    metadata.caller,
-                    correlation.caller,
-                    metadata.caller_rank,
-                    correlation.caller_rank,
-                    wire.key(),
-                )
-            )));
-        }
-        let result = match metadata.wire_control()? {
-            transport::WireControl::Data => {
-                if wire.payload().len() as u64 > correlation.max_response_bytes {
-                    Err(crate::runtime::RequestError::Oversized)
-                } else {
-                    Ok(wire.payload().to_vec())
-                }
-            }
-            transport::WireControl::Rejected => {
-                Err(crate::runtime::RequestError::RejectedBeforeAdmission(
-                    metadata.reason.clone().unwrap_or_else(|| {
-                        "generated call was rejected before admission".to_owned()
-                    }),
-                ))
-            }
-            transport::WireControl::Failed => Err(crate::runtime::RequestError::OutcomeUnknown(
-                metadata
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "generated call provider failed".to_owned()),
-            )),
-            transport::WireControl::Oversized => Err(crate::runtime::RequestError::Oversized),
-            control => {
-                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
-                    detail: format!("generated call reply used incompatible {control:?} control"),
-                }));
-            }
-        };
-        completions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(crate::runtime::input::TransportCallCompletion {
-                ticket: correlation.ticket,
+            GeneratedReplyDecision::Completed {
+                ticket,
+                caller,
+                endpoint,
+                controlled,
                 result,
-            });
-        if controlled {
-            let queue =
-                DeliveryQueue::new(1, u64::MAX, crate::runtime::input::InputKind::Completions);
-            let identity =
-                queue.identity(&wire, &correlation.caller, &correlation.endpoint, "reply")?;
-            publish_delivery_ack(&bus, &identity, "delivery-ack", true, None).await?;
+            } => {
+                completions
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(crate::runtime::input::TransportCallCompletion { ticket, result });
+                if controlled {
+                    let queue = DeliveryQueue::new(
+                        1,
+                        u64::MAX,
+                        crate::runtime::input::InputKind::Completions,
+                    );
+                    let identity = queue.identity(&wire, &caller, &endpoint, "reply")?;
+                    publish_delivery_ack(&bus, &identity, "delivery-ack", true, None).await?;
+                }
+            }
         }
     }
 }
@@ -908,6 +978,61 @@ pub(super) struct CollectedInput {
 }
 
 impl<R> ExecutionInputAdapter<R> {
+    /// Reserve one completion's retained-mailbox charges — an item slot
+    /// and its encoded response bytes — before the completion is exposed.
+    /// A duplicate ticket replaces its own copy and releases the old
+    /// bytes first; exceeding either bound fails the cut instead of
+    /// dropping a completion silently.
+    pub(super) fn admit_retained_completion(
+        &mut self,
+        completion: crate::runtime::input::TransportCallCompletion,
+    ) -> crate::Result<()> {
+        if !self.retained_completions.contains_key(&completion.ticket)
+            && self.retained_completions.len() >= super::exchange::MAX_RETAINED_COMPLETIONS
+        {
+            return Err(anyhow::anyhow!(
+                crate::runtime::transport::TransportError::BatchTooLarge {
+                    port: "generated-completions".to_owned(),
+                    what: "retained completion count",
+                    actual: (self.retained_completions.len() + 1) as u64,
+                    maximum: super::exchange::MAX_RETAINED_COMPLETIONS as u64,
+                }
+            ));
+        }
+        if let Some(previous) = self.retained_completions.get(&completion.ticket) {
+            self.retained_completions_bytes = self
+                .retained_completions_bytes
+                .saturating_sub(retained_bytes(previous));
+        }
+        let bytes = retained_bytes(&completion);
+        if self.retained_completions_bytes.saturating_add(bytes)
+            > super::exchange::MAX_RETAINED_COMPLETION_BYTES
+        {
+            return Err(anyhow::anyhow!(
+                crate::runtime::transport::TransportError::BatchTooLarge {
+                    port: "generated-completions".to_owned(),
+                    what: "retained completion encoded bytes",
+                    actual: (self.retained_completions_bytes + bytes) as u64,
+                    maximum: super::exchange::MAX_RETAINED_COMPLETION_BYTES as u64,
+                }
+            ));
+        }
+        self.retained_completions_bytes += bytes;
+        self.retained_completions
+            .insert(completion.ticket, completion);
+        Ok(())
+    }
+
+    /// Release the retained-mailbox charges of completions their
+    /// exclusive owner consumed across the cut; surviving tickets keep
+    /// their item and byte reservations.
+    pub(super) fn retain_surviving_completions(&mut self, surviving: &BTreeSet<u128>) {
+        self.retained_completions
+            .retain(|ticket, _| surviving.contains(ticket));
+        self.retained_completions_bytes =
+            self.retained_completions.values().map(retained_bytes).sum();
+    }
+
     pub(super) fn unbound() -> Self {
         Self {
             bus: None,
@@ -1625,43 +1750,7 @@ where
                 std::mem::take(&mut *queue)
             };
             for completion in completions {
-                // Reserve both bounded resources before the completion is
-                // exposed: an item slot and its encoded response bytes. A
-                // duplicate ticket replaces its own copy and releases the
-                // old bytes first.
-                if !self.retained_completions.contains_key(&completion.ticket)
-                    && self.retained_completions.len() >= super::exchange::MAX_RETAINED_COMPLETIONS
-                {
-                    return Err(anyhow::anyhow!(
-                        crate::runtime::transport::TransportError::BatchTooLarge {
-                            port: "generated-completions".to_owned(),
-                            what: "retained completion count",
-                            actual: (self.retained_completions.len() + 1) as u64,
-                            maximum: super::exchange::MAX_RETAINED_COMPLETIONS as u64,
-                        }
-                    ));
-                }
-                if let Some(previous) = self.retained_completions.get(&completion.ticket) {
-                    self.retained_completions_bytes = self
-                        .retained_completions_bytes
-                        .saturating_sub(retained_bytes(previous));
-                }
-                let bytes = retained_bytes(&completion);
-                if self.retained_completions_bytes.saturating_add(bytes)
-                    > super::exchange::MAX_RETAINED_COMPLETION_BYTES
-                {
-                    return Err(anyhow::anyhow!(
-                        crate::runtime::transport::TransportError::BatchTooLarge {
-                            port: "generated-completions".to_owned(),
-                            what: "retained completion encoded bytes",
-                            actual: (self.retained_completions_bytes + bytes) as u64,
-                            maximum: super::exchange::MAX_RETAINED_COMPLETION_BYTES as u64,
-                        }
-                    ));
-                }
-                self.retained_completions_bytes += bytes;
-                self.retained_completions
-                    .insert(completion.ticket, completion);
+                self.admit_retained_completion(completion)?;
             }
             let completions: Vec<_> = self.retained_completions.values().cloned().collect();
             <R::Inputs as crate::runtime::input::TransportInputSink>::set_call_completions(
@@ -2084,10 +2173,7 @@ where
                 )
                 .into_iter()
                 .collect();
-            self.retained_completions
-                .retain(|ticket, _| surviving.contains(ticket));
-            self.retained_completions_bytes =
-                self.retained_completions.values().map(retained_bytes).sum();
+            self.retain_surviving_completions(&surviving);
         }
         for field in <R::Inputs as crate::runtime::input::InputSet>::FIELDS
             .iter()

@@ -2203,12 +2203,13 @@ async fn generated_local_requirement_resolves_through_the_graph_and_completes() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn five_hundred_rounds_of_two_field_calls_drain_the_retained_mailbox() -> crate::Result<()> {
-    // A one-shot counter never reaches a retained-storage leak: this drain
-    // cycles both call fields through the real exchange and retained
-    // mailbox 512 times, so a consumed result that failed to release its
-    // item or byte charge exhausts the mailbox visibly.
-    const ROUNDS: usize = 512;
+async fn a_two_field_exchange_drains_every_round_exactly_once() -> crate::Result<()> {
+    // Both call fields cycle through the real exchange: every staged
+    // round is served exactly once and the drain never stalls. The
+    // retained-mailbox accounting this exercises — item and byte charges
+    // released by consumed completions — is proven directly and
+    // deterministically by the retained-completion tests below.
+    const ROUNDS: usize = 8;
     let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
         crate::runtime::connection::ConnectionConfig::for_participant(
             crate::identity::ExecutionId::mint(),
@@ -2291,9 +2292,16 @@ async fn five_hundred_rounds_of_two_field_calls_drain_the_retained_mailbox() -> 
         );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-
-    // Every consumed result released its retained item and byte charge:
-    // the mailbox is empty and the drain never exhausted a bound.
+    assert_eq!(
+        ask_handled.load(std::sync::atomic::Ordering::Relaxed),
+        ROUNDS,
+        "every ask round was served exactly once"
+    );
+    assert_eq!(
+        verify_handled.load(std::sync::atomic::Ordering::Relaxed),
+        ROUNDS,
+        "every verify round was served exactly once"
+    );
     consumer.stop()?;
     for provider in providers {
         let mut provider = provider;
@@ -5204,8 +5212,484 @@ async fn brain_export_feeds_a_provider_input_through_the_graph() -> crate::Resul
 }
 
 // ---------------------------------------------------------------------------
-// Cancellation followed by late results, drained at scale: retired calls'
-// replies must be dropped with their charges released, never retained.
+// Generated-reply admission rules, tested directly against the production
+// classification: caller ownership, execution/timeline fencing,
+// correlation consumption, reply identity, and wire-control outcomes.
+// ---------------------------------------------------------------------------
+
+use super::exchange::{GeneratedCorrelation, GeneratedCorrelationMap};
+
+fn cycle_reply_wire(
+    source: &str,
+    caller: &str,
+    caller_rank: u64,
+    command_id: u64,
+    delivery: Option<(&str, &str)>,
+) -> WireSample {
+    let mut metadata = transport::RuntimeWireMetadata::command(
+        source,
+        ExecutionTime::default(),
+        command_id,
+        1,
+        caller_rank,
+    )
+    .with_caller(caller);
+    if let Some((execution, timeline)) = delivery {
+        metadata = metadata.with_delivery_identity(execution, timeline, 1, 0);
+    }
+    WireSample::from_parts(vec![1, 2, 3], metadata, "cycle/ports/ask/reply")
+}
+
+fn cycle_admission(command_id: u64) -> GeneratedCorrelationMap {
+    Arc::new(Mutex::new(BTreeMap::from([(
+        command_id,
+        GeneratedCorrelation {
+            ticket: 42,
+            expected_source: "countdown".to_owned(),
+            endpoint: "ask".to_owned(),
+            caller: "cycle.ask".to_owned(),
+            caller_rank: 3,
+            max_response_bytes: 8,
+            deadline: None,
+        },
+    )])))
+}
+
+#[test]
+fn a_reply_matching_its_admitted_call_consumes_the_correlation_and_completes() {
+    let correlations = cycle_admission(7);
+    let wire = cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-1", "tl-1")));
+    match super::input::classify_generated_reply(
+        &wire,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("a matching reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed {
+            ticket,
+            result,
+            controlled,
+            ..
+        } => {
+            assert_eq!(ticket, 42);
+            assert_eq!(
+                result.expect("a data reply carries its payload"),
+                vec![1, 2, 3]
+            );
+            assert!(controlled, "a controlled reply acknowledges delivery");
+        }
+        other => panic!("expected a completed call, got {other:?}"),
+    }
+    assert!(
+        correlations.lock().unwrap().is_empty(),
+        "the matched reply consumed its correlation"
+    );
+}
+
+#[test]
+fn a_reply_for_a_retired_call_is_refused_and_consumes_nothing() {
+    // Command 8 was cancelled before this reply arrived: no live ticket
+    // matches it, and the live call's admission is untouched.
+    let correlations = cycle_admission(7);
+    let wire = cycle_reply_wire("countdown", "cycle.ask", 3, 8, Some(("exec-1", "tl-1")));
+    match super::input::classify_generated_reply(
+        &wire,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("an unknown reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(
+                controlled,
+                "a controlled retired reply is negatively acknowledged"
+            );
+        }
+        other => panic!("expected a refused reply, got {other:?}"),
+    }
+    assert_eq!(
+        correlations.lock().unwrap().len(),
+        1,
+        "the live call's correlation is untouched"
+    );
+
+    // An uncontrolled reply for an unknown call is dropped without an
+    // acknowledgement: no delivery contract applies to it.
+    let uncontrolled = cycle_reply_wire("countdown", "cycle.ask", 3, 8, None);
+    match super::input::classify_generated_reply(
+        &uncontrolled,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("an uncontrolled unknown reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(!controlled, "an uncontrolled reply is never acknowledged");
+        }
+        other => panic!("expected a silently dropped reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_reply_fenced_by_a_stale_execution_or_timeline_never_matches_a_live_ticket() {
+    let correlations = cycle_admission(7);
+    let stale_execution =
+        cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-old", "tl-1")));
+    match super::input::classify_generated_reply(
+        &stale_execution,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("a fenced reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(controlled, "a fenced reply is negatively acknowledged");
+        }
+        other => panic!("expected a fenced reply, got {other:?}"),
+    }
+    let stale_timeline =
+        cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-1", "tl-old")));
+    match super::input::classify_generated_reply(
+        &stale_timeline,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("a fenced reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(controlled);
+        }
+        other => panic!("expected a fenced reply, got {other:?}"),
+    }
+    assert!(
+        correlations.lock().unwrap().contains_key(&7),
+        "a fenced reply leaves the correlation for the live execution to claim"
+    );
+}
+
+#[test]
+fn a_duplicate_reply_is_refused_after_the_first_consumed_the_correlation() {
+    let correlations = cycle_admission(7);
+    let wire = cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-1", "tl-1")));
+    assert!(matches!(
+        super::input::classify_generated_reply(
+            &wire,
+            "cycle",
+            "exec-1",
+            Some("tl-1"),
+            &correlations
+        )
+        .expect("the first reply classifies"),
+        super::input::GeneratedReplyDecision::Completed { .. }
+    ));
+    match super::input::classify_generated_reply(
+        &wire,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("the duplicate classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(controlled, "the duplicate is negatively acknowledged");
+        }
+        other => panic!("expected the duplicate to be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn another_caller_s_reply_is_ignored_without_touching_admission() {
+    let correlations = cycle_admission(7);
+    let wire = cycle_reply_wire("countdown", "other.ask", 3, 7, Some(("exec-1", "tl-1")));
+    match super::input::classify_generated_reply(
+        &wire,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect("a foreign reply classifies")
+    {
+        super::input::GeneratedReplyDecision::ForeignCaller => {}
+        other => panic!("expected a foreign caller, got {other:?}"),
+    }
+    assert!(
+        correlations.lock().unwrap().contains_key(&7),
+        "a foreign reply never touches this caller's admission"
+    );
+}
+
+#[test]
+fn a_reply_with_a_mismatched_identity_is_rejected_as_corrupt() {
+    // A mismatched identity corrupts the exchange: the reply is rejected
+    // as an error, and it still consumed the correlation it claimed.
+    let correlations = cycle_admission(7);
+    let wrong_source = cycle_reply_wire("elsewhere", "cycle.ask", 3, 7, Some(("exec-1", "tl-1")));
+    let error = super::input::classify_generated_reply(
+        &wrong_source,
+        "cycle",
+        "exec-1",
+        Some("tl-1"),
+        &correlations,
+    )
+    .expect_err("a mismatched source is corrupt");
+    assert!(
+        error.to_string().contains("identity does not match"),
+        "the rejection explains the mismatch: {error}"
+    );
+
+    let correlations = cycle_admission(7);
+    let wrong_rank = cycle_reply_wire("countdown", "cycle.ask", 9, 7, Some(("exec-1", "tl-1")));
+    assert!(
+        super::input::classify_generated_reply(
+            &wrong_rank,
+            "cycle",
+            "exec-1",
+            Some("tl-1"),
+            &correlations
+        )
+        .is_err(),
+        "a mismatched caller rank is corrupt"
+    );
+}
+
+#[test]
+fn refused_and_failed_wire_controls_map_to_their_request_errors() {
+    let correlations = cycle_admission(7);
+    let mut metadata =
+        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
+            .with_caller("cycle.ask")
+            .with_reason("queue full");
+    metadata.control = transport::WireControl::Rejected as u32;
+    let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
+    match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
+        .expect("a refused reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed { result, .. } => match result {
+            Err(crate::runtime::RequestError::RejectedBeforeAdmission(detail)) => {
+                assert_eq!(detail, "queue full");
+            }
+            other => panic!("expected a pre-admission rejection, got {other:?}"),
+        },
+        other => panic!("expected a completed classification, got {other:?}"),
+    }
+
+    let correlations = cycle_admission(7);
+    let mut metadata =
+        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
+            .with_caller("cycle.ask");
+    metadata.control = transport::WireControl::Failed as u32;
+    let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
+    match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
+        .expect("a failed reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed { result, .. } => match result {
+            Err(crate::runtime::RequestError::OutcomeUnknown(_)) => {}
+            other => panic!("expected an unknown outcome, got {other:?}"),
+        },
+        other => panic!("expected a completed classification, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_oversized_reply_body_maps_to_the_oversized_error() {
+    // The admitted call caps responses at eight encoded bytes.
+    let correlations = cycle_admission(7);
+    let metadata =
+        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
+            .with_caller("cycle.ask");
+    let wire = WireSample::from_parts(vec![0; 9], metadata, "cycle/ports/ask/reply");
+    match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
+        .expect("an oversized reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed { result, .. } => match result {
+            Err(crate::runtime::RequestError::Oversized) => {}
+            other => panic!("expected the oversized error, got {other:?}"),
+        },
+        other => panic!("expected a completed classification, got {other:?}"),
+    }
+
+    let correlations = cycle_admission(7);
+    let mut metadata =
+        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
+            .with_caller("cycle.ask");
+    metadata.control = transport::WireControl::Oversized as u32;
+    let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
+    match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
+        .expect("an oversized control classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed { result, .. } => match result {
+            Err(crate::runtime::RequestError::Oversized) => {}
+            other => panic!("expected the oversized error, got {other:?}"),
+        },
+        other => panic!("expected a completed classification, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retained completion mailbox accounting: item and byte charges are
+// reserved on admission and released when the owning cut consumes them.
+// ---------------------------------------------------------------------------
+
+fn completion_of(ticket: u128, bytes: usize) -> crate::runtime::input::TransportCallCompletion {
+    crate::runtime::input::TransportCallCompletion {
+        ticket,
+        result: Ok(vec![0_u8; bytes]),
+    }
+}
+
+#[test]
+fn retained_completions_reserve_item_and_byte_charges_until_consumed() {
+    let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    adapter
+        .admit_retained_completion(completion_of(1, 4))
+        .expect("the first completion is admitted");
+    adapter
+        .admit_retained_completion(completion_of(2, 6))
+        .expect("the second completion is admitted");
+    assert_eq!(adapter.retained_completions.len(), 2);
+    assert_eq!(adapter.retained_completions_bytes, 10);
+    adapter.retain_surviving_completions(&BTreeSet::from([2]));
+    assert_eq!(adapter.retained_completions.len(), 1);
+    assert_eq!(
+        adapter.retained_completions_bytes, 6,
+        "the consumed completion released both its item and byte charge"
+    );
+}
+
+#[test]
+fn the_retained_mailbox_bounds_its_item_count_and_encoded_bytes() {
+    let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    for ticket in 0..super::exchange::MAX_RETAINED_COMPLETIONS as u128 {
+        adapter
+            .admit_retained_completion(completion_of(ticket, 1))
+            .expect("admission up to the item bound");
+    }
+    let error = adapter
+        .admit_retained_completion(completion_of(u128::MAX, 1))
+        .expect_err("one completion beyond the item bound fails");
+    assert!(
+        error.to_string().contains("retained completion count"),
+        "the rejection names the item bound: {error}"
+    );
+
+    let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    adapter
+        .admit_retained_completion(completion_of(1, 100 * 1024))
+        .expect("the first large completion is admitted");
+    adapter
+        .admit_retained_completion(completion_of(2, 100 * 1024))
+        .expect("the second large completion is admitted");
+    let error = adapter
+        .admit_retained_completion(completion_of(3, 100 * 1024))
+        .expect_err("the third large completion exceeds the byte bound");
+    assert!(
+        error
+            .to_string()
+            .contains("retained completion encoded bytes"),
+        "the rejection names the byte bound: {error}"
+    );
+}
+
+#[test]
+fn a_duplicate_ticket_replaces_its_completion_and_releases_the_old_bytes() {
+    let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    adapter
+        .admit_retained_completion(completion_of(9, 10))
+        .expect("the first completion is admitted");
+    adapter
+        .admit_retained_completion(completion_of(9, 4))
+        .expect("the duplicate replaces its own copy");
+    assert_eq!(adapter.retained_completions.len(), 1);
+    assert_eq!(
+        adapter.retained_completions_bytes, 4,
+        "the replaced copy released its old byte charge"
+    );
+}
+
+#[test]
+fn consumed_completions_free_their_slots_for_reuse_beyond_the_bound() {
+    // The deterministic bounded-storage regression: cycle eight windows
+    // of sixty-four completions — far beyond the 256-item bound — with
+    // every consumed completion releasing its charges. A broken release
+    // exhausts the mailbox within the first windows instead of hiding
+    // under the bound.
+    const WINDOW: usize = 64;
+    let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    let mut ticket = 0_u128;
+    for _round in 0..8 {
+        for _ in 0..WINDOW {
+            adapter
+                .admit_retained_completion(completion_of(ticket, 8))
+                .expect("admission stays within the bound while consumption keeps pace");
+            ticket = ticket.saturating_add(1);
+        }
+        adapter.retain_surviving_completions(&BTreeSet::new());
+        assert_eq!(adapter.retained_completions.len(), 0);
+        assert_eq!(adapter.retained_completions_bytes, 0);
+    }
+}
+
+#[test]
+fn a_reply_of_a_retired_execution_cannot_complete_the_new_generation_s_call() {
+    // The reset fence at the classification boundary: generation two
+    // reused command id 7 for its own ticket, and the retired
+    // generation's late reply for the same command id can never match
+    // it. Clearing the retired generation's state is `InputSource`
+    // reset behavior, exercised by the runner-level reset test below.
+    let correlations = cycle_admission(7);
+    let stale = cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-1", "tl-1")));
+    match super::input::classify_generated_reply(
+        &stale,
+        "cycle",
+        "exec-2",
+        Some("tl-2"),
+        &correlations,
+    )
+    .expect("the stale reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Retired { controlled } => {
+            assert!(controlled, "the stale reply is negatively acknowledged");
+        }
+        other => panic!("expected the stale reply to be refused, got {other:?}"),
+    }
+    assert!(
+        correlations.lock().unwrap().contains_key(&7),
+        "the new generation's ticket survived the stale reply"
+    );
+    let fresh = cycle_reply_wire("countdown", "cycle.ask", 3, 7, Some(("exec-2", "tl-2")));
+    match super::input::classify_generated_reply(
+        &fresh,
+        "cycle",
+        "exec-2",
+        Some("tl-2"),
+        &correlations,
+    )
+    .expect("the fresh reply classifies")
+    {
+        super::input::GeneratedReplyDecision::Completed { ticket, .. } => {
+            assert_eq!(ticket, 42, "the new generation's call completes");
+        }
+        other => panic!("expected the fresh reply to complete, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation followed by late results across a real exchange: retired
+// calls' replies must be dropped with their charges released, never
+// retained. The rules themselves are proven deterministically above.
 // ---------------------------------------------------------------------------
 
 #[phoxal::messages(package = "phoxal.runtime.cycle.v1")]
@@ -5290,11 +5774,11 @@ impl CycleBrain {
     }
 }
 
-/// Six hundred alternating stage/cancel rounds produce **three hundred**
-/// accepted-then-cancelled calls in one execution — more late replies than
-/// the retained mailbox's 256-item bound — so a broken release faults
-/// visibly instead of hiding under the bound. This is runner-level
-/// ownership evidence only; process reset is proven separately below.
+/// One assembled two-runner cycle graph: a brain whose behavior tree
+/// alternates staging and cancelling a call, and a counting provider
+/// that serves every accepted submission. Used by the real-exchange
+/// cancellation and reset tests below; the admission and accounting
+/// rules they exercise are proven deterministically above.
 #[allow(
     clippy::type_complexity,
     reason = "one assembled two-runner cycle graph"
@@ -5422,9 +5906,16 @@ async fn cycle_graph() -> crate::Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_call_late_replies_drain_beyond_mailbox_capacity() -> crate::Result<()> {
-    const ROUNDS: u64 = 600;
-    const EXPECTED_ACCEPTED: usize = 300;
+async fn cancelled_calls_drain_their_late_replies_across_the_exchange() -> crate::Result<()> {
+    // Alternating stage/cancel rounds: every staged call is cancelled one
+    // tick later, so each accepted submission's reply arrives for a
+    // retired ticket and must be refused without a completion. The
+    // refusal rules are the deterministic classification tests above;
+    // this exchange proves the adapters wire them across the real
+    // transport: exactly the accepted rounds were served, and the drain
+    // never stalled or exhausted a bound.
+    const ROUNDS: u64 = 12;
+    const EXPECTED_ACCEPTED: usize = 6;
     let (owner, mut consumer, mut provider, handled) = cycle_graph().await?;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -5442,13 +5933,22 @@ async fn cancelled_call_late_replies_drain_beyond_mailbox_capacity() -> crate::R
         );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    // Every accepted submission was served exactly once, and their three
-    // hundred late replies — more than the mailbox's 256-item bound — were
-    // each dropped with their charges released: nothing exhausted.
+    // The final accepted round's reply may still be in flight; drain on
+    // the served counter, which is the provider's acknowledgement.
+    while handled.load(std::sync::atomic::Ordering::Relaxed) < EXPECTED_ACCEPTED {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the last accepted round was never served"
+        );
+        provider.poll(ExecutionTime::from_nanos(tick * 10_000_000))?;
+        consumer.poll(ExecutionTime::from_nanos(tick * 10_000_000 + 5_000_000))?;
+        tick = tick.saturating_add(1);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
     assert_eq!(
         handled.load(std::sync::atomic::Ordering::Relaxed),
         EXPECTED_ACCEPTED,
-        "exactly the accepted stage-round submissions were served"
+        "exactly the accepted stage-round submissions were served, each once"
     );
     consumer.stop()?;
     provider.stop()?;
@@ -5461,9 +5961,17 @@ async fn cancelled_call_late_replies_drain_beyond_mailbox_capacity() -> crate::R
 /// cancellation cycles continue on both sides of the boundary. This is
 /// `RuntimeRunner::reset` evidence, not a supervisor/process reset.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runner_reset_fences_retired_calls_across_the_boundary() -> crate::Result<()> {
-    const ROUNDS: u64 = 64;
-    let (owner, mut consumer, mut provider, _handled) = cycle_graph().await?;
+async fn a_reset_mid_exchange_fences_retired_calls_and_keeps_draining() -> crate::Result<()> {
+    // Runner-level reset in one process: the fresh execution draws a fresh
+    // epoch, fences every retired ticket of the old one, and stage/cancel
+    // cycling continues on both sides of the boundary. This is
+    // `RuntimeRunner::reset` evidence over the real transport, not a
+    // supervisor/process reset; the fence itself — cleared tickets,
+    // refused late replies — is proven deterministically above.
+    const ROUNDS: u64 = 12;
+    const EXPECTED_ACCEPTED: usize = 6;
+    let (owner, mut consumer, mut provider, handled) = cycle_graph().await?;
+    let accepted_before_reset = Arc::clone(&handled);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut tick = 0_u64;
@@ -5485,6 +5993,25 @@ async fn runner_reset_fences_retired_calls_across_the_boundary() -> crate::Resul
         );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
+    while handled.load(std::sync::atomic::Ordering::Relaxed) < EXPECTED_ACCEPTED {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the last accepted round was never served across the boundary"
+        );
+        provider.poll(ExecutionTime::from_nanos(tick * 10_000_000))?;
+        consumer.poll(ExecutionTime::from_nanos(tick * 10_000_000 + 5_000_000))?;
+        tick = tick.saturating_add(1);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        accepted_before_reset.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+        "calls were accepted before the boundary"
+    );
+    assert_eq!(
+        handled.load(std::sync::atomic::Ordering::Relaxed),
+        EXPECTED_ACCEPTED,
+        "exactly the accepted rounds were served across the reset boundary"
+    );
     consumer.stop()?;
     provider.stop()?;
     owner.close().await;
