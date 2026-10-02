@@ -1437,15 +1437,22 @@ mod tests {
 mod manifest_tests {
     use super::*;
 
+    // The robot document passes in memory through `generate`'s override
+    // seam; only the generated output needs a directory. Loading a real
+    // file reaches the same validation through every scaffolded project
+    // in the build_api integration suite.
+
     #[test]
     fn robot_document_schema_must_be_a_supported_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let robot = directory.path().join("robot.yaml");
-        fs::write(&robot, "schema: phoxal/robot/v9\nrobot: { id: rover }\n")?;
         let out = directory.path().join("out");
-        let error = generate(directory.path(), &out, None)
-            .expect_err("an unsupported robot schema must fail");
+        let error = generate(
+            directory.path(),
+            &out,
+            Some(b"schema: phoxal/robot/v9\nrobot: { id: rover }\n"),
+        )
+        .expect_err("an unsupported robot schema must fail");
         assert!(
             error.to_string().contains("phoxal/robot/v9"),
             "the rejection names the authored schema"
@@ -1457,12 +1464,12 @@ mod manifest_tests {
     fn a_minimal_robot_generates_a_valid_empty_api_surface()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        fs::write(
-            directory.path().join("robot.yaml"),
-            "schema: phoxal/robot/v0\nrobot: { id: rover }\n",
-        )?;
         let out = directory.path().join("out");
-        generate(directory.path(), &out, None)?;
+        generate(
+            directory.path(),
+            &out,
+            Some(b"schema: phoxal/robot/v0\nrobot: { id: rover }\n"),
+        )?;
         let api = fs::read_to_string(out.join("phoxal_api.rs"))?;
         assert!(
             api.contains("::phoxal::generated::API_GENERATOR_MARKER"),
