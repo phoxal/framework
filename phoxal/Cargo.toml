@@ -107,18 +107,11 @@ workspace = true
 # public surface. The ones below name a host family or the explicit harness and
 # therefore declare the profile that publishes it; `cargo test -p phoxal
 # --all-features` is what runs the whole set.
-[[test]]
-name = "consumer_policy"
-path = "tests/consumer_policy.rs"
 
+# Deterministic public-API tests, one executable with modules inside.
 [[test]]
-name = "config_derive"
-path = "tests/config_derive.rs"
-required-features = ["runtime"]
-
-[[test]]
-name = "runtime_authoring"
-path = "tests/runtime_authoring.rs"
+name = "unit"
+path = "tests/unit/main.rs"
 required-features = ["runtime"]
 
 # Delivery-observing diagnostics tests live in their own process: ordinary
@@ -130,12 +123,9 @@ name = "runtime_behavior_observers"
 path = "tests/runtime_behavior_observers.rs"
 required-features = ["runtime"]
 
+# Compiler contracts: macro compile-fail cases and the consumer feature
+# profiles' compilation checks.
 [[test]]
-name = "runtime_semantics"
-path = "tests/runtime_semantics.rs"
-required-features = ["runtime"]
-
-[[test]]
-name = "trybuild"
-path = "tests/trybuild.rs"
+name = "compile"
+path = "tests/compile/main.rs"
 required-features = ["runtime"]

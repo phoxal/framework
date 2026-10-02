@@ -1,16 +1,18 @@
 name: ci
 
-# Framework CI: formatting, strict clippy over every target, and the
-# deterministic workspace tests with locked dependency resolution, beside
-# an integration acceptance job for the suites whose prerequisites the
-# ordinary workspace run does not establish.
+# Framework CI: formatting, a prepare-free unit lane, strict clippy over
+# every target with the deterministic workspace tests, and the
+# prerequisite-establishing acceptance lanes.
 #
-# Compiling any Phoxal composition requires its prepared contracts, so
-# the build job first builds cargo-phoxal and prepares the workspace
-# fixture compositions (tests/robot, tests/contracts/robot,
+# The unit lane selects packages and targets explicitly and needs no
+# preparation. Compiling any Phoxal composition requires its prepared
+# contracts, so the build job first builds cargo-phoxal and prepares the
+# workspace fixture compositions (tests/robot, tests/contracts/robot,
 # tests/contracts/client, tests/runtime-authoring/consumer — whose
-# robot.yaml supplies the countdown contracts it consumes). The
-# excluded-by-tests packages:
+# robot.yaml supplies the countdown contracts it consumes — and
+# services/world, whose transport test compiles only against its own
+# prepared products). The workspace run also executes the documentation
+# tests. The excluded-by-tests packages:
 #
 # - tests/robot's native MuJoCo scenario needs a simulator installation;
 #   it is compiled here and runs as the recorded native acceptance
@@ -56,6 +58,34 @@ jobs:
           cache: false
       - run: cargo fmt --all -- --check
 
+  # The unit lane needs no fixture preparation and no composition
+  # compilation: it selects exactly the packages and targets whose tests
+  # are deterministic and self-contained. The library selection includes
+  # every production package except phoxal-service-world, whose transport
+  # test requires its own prepared products and runs in the lane below.
+  unit:
+    name: unit tests
+    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Run the library unit suites
+        run: >-
+          cargo test --locked --no-fail-fast --lib
+          -p phoxal -p phoxal-macros -p phoxal-build -p phoxal-supervisor
+          -p phoxal-service-kinematics -p phoxal-service-motion
+          -p phoxal-service-navigation -p phoxal-service-safety
+          -p phoxal-component-bno085 -p phoxal-component-ddsm115
+          -p phoxal-component-oak_d_lite -p phoxal-component-vl53l1x
+          -p phoxal-component-zed_f9p
+      - name: Run the cargo-phoxal CLI unit suites
+        run: cargo test --locked --no-fail-fast -p cargo-phoxal --bins
+      - name: Run the external-crate unit suites
+        run: >-
+          cargo test --locked --no-fail-fast -p phoxal
+          --test unit --test runtime_behavior_observers
+
   build-and-test:
     name: clippy and tests
     if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
@@ -82,7 +112,7 @@ jobs:
       - name: Prepare the fixture compositions
         run: |
           set -euo pipefail
-          for fixture in tests/robot tests/contracts/robot tests/contracts/client tests/runtime-authoring/consumer; do
+          for fixture in tests/robot tests/contracts/robot tests/contracts/client tests/runtime-authoring/consumer services/world; do
             (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

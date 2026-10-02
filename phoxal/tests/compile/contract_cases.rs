@@ -12,7 +12,7 @@
 #[test]
 fn trybuild_ui() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/trybuild/fail/*.rs");
+    t.compile_fail("tests/compile/fail/*.rs");
 }
 
 // Scenario authoring surface: positive and negative compile coverage for
@@ -22,6 +22,6 @@ fn trybuild_ui() {
 #[test]
 fn trybuild_scenario_ui() {
     let t = trybuild::TestCases::new();
-    t.pass("tests/trybuild/scenario_pass/*.rs");
-    t.compile_fail("tests/trybuild/scenario_fail/*.rs");
+    t.pass("tests/compile/scenario_pass/*.rs");
+    t.compile_fail("tests/compile/scenario_fail/*.rs");
 }

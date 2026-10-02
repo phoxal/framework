@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `phoxal::contracts::Call<Request, Response>: ObservationOperation` is not satisfied
-  --> tests/trybuild/scenario_fail/contract_record_call.rs:24:9
+  --> tests/compile/scenario_fail/contract_record_call.rs:24:9
    |
 23 |     let _ = plan.record(
    |                  ------ required by a bound introduced by this call

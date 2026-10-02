@@ -113,6 +113,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 ```
 
+## Test lanes
+
+CI runs four lanes.
+The **unit** lane selects packages and targets explicitly and needs no preparation: the library and binary unit suites of the SDK, tool, supervisor, services, and components, plus the SDK's external-crate `unit` suite (`tests/unit`, one executable with modules) and the process-isolated `runtime_behavior_observers`.
+The **clippy and tests** lane prepares the fixture compositions once, lints every target, and runs the deterministic workspace tests — including the `compile` suite (`tests/compile`: macro compile-fail cases and the consumer feature profiles' compilation checks), the documentation tests, and the tool's nested-Cargo CLI suites.
+The **supervisor acceptance** lane builds the supervisor binary first (two-step suite contract).
+The **integration acceptance** lane establishes heavier prerequisites and runs what needs them: both composition bundles for the supervisor-process legs of `tests/contracts/robot` (the substitution run from `robot.substitution.yaml`), the warm-edit regression's cold scratch build, and `tests/host-acquisition`'s real Git and local-registry acquisition.
+Selecting a suite establishes its prerequisites; no test is silently skipped.
+
 ## License
 
 AGPL-3.0-only. See [LICENSE](LICENSE) and [COMMERCIAL.md](COMMERCIAL.md).
