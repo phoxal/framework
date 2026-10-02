@@ -66,7 +66,17 @@ jobs:
             (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked --no-fail-fast --exclude phoxal-test-robot
+      # The supervisor acceptance suite runs in its own job below after the
+      # supervisor binary exists (two-step suite contract), so the workspace
+      # command excludes that fixture as well as the MuJoCo robot.
+      - name: Build the test binaries
+        run: >-
+          cargo test --workspace --locked --no-run
+          --exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture
+      - name: Run the tests
+        run: >-
+          cargo test --workspace --locked --no-fail-fast
+          --exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture
 
   supervisor-acceptance:
     name: supervisor acceptance
