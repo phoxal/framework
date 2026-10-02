@@ -1,6 +1,6 @@
 [package]
 name = "phoxal"
-version = "0.0.0-dev.7"
+version = "0.0.0-dev.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
