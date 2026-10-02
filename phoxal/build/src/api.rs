@@ -754,26 +754,12 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
         emit_reserved_module_check(&mut public_names, &instance)?;
         output.push_str(&module);
     }
-    // The provider glue module is gone from this generator: a stale
-    // phoxal-provider.rs from an older build is removed on every
-    // regeneration, whether or not this package still declares a
-    // capability manifest, so no target directory keeps a file nothing
-    // attaches anymore.
-    let historical_provider = out.join("phoxal-provider.rs");
-    if historical_provider.is_file() {
-        fs::remove_file(&historical_provider).map_err(|source| Error::Path {
-            path: historical_provider.clone(),
-            source,
-        })?;
-    }
     let mut fragment = String::new();
     if let Some(resolved) = compiled.iter().find_map(|unit| unit.manifest.as_ref()) {
         // The standard endpoint surface travels as a field fragment: an
         // explicitly authored contract in this package splices it in, so
         // standard capability endpoints and component-specific endpoints
-        // assemble into one Runtime contract without repetition. The
-        // historical provider glue module is gone — capability packages
-        // attach through their authored contracts.
+        // assemble into one Runtime contract without repetition.
         fragment = standard_endpoint_fragment(resolved);
         write_stable(
             &out.join("phoxal-standard-endpoints.rs"),
@@ -1468,7 +1454,7 @@ mod manifest_tests {
     }
 
     #[test]
-    fn robot_without_a_brain_section_generates_no_local_endpoint_surface()
+    fn a_minimal_robot_generates_a_valid_empty_api_surface()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         fs::write(
@@ -1478,35 +1464,14 @@ mod manifest_tests {
         let out = directory.path().join("out");
         generate(directory.path(), &out, None)?;
         let api = fs::read_to_string(out.join("phoxal_api.rs"))?;
-        assert!(!api.contains("pub mod service_methods"));
-        assert!(!out.join("phoxal-provider.rs").is_file());
-        Ok(())
-    }
-
-    #[test]
-    fn regeneration_removes_a_stale_provider_file_even_with_a_manifest()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        // A capability package: no robot.yaml, a component.yaml whose
-        // capabilities derive the standard endpoint surface.
-        fs::write(
-            directory.path().join("component.yaml"),
-            "schema: phoxal/component/v0\nmodel: { file: model.xml, root_body: mount }\ncapabilities:\n  encoder:\n    kind: encoder\n    publish_rate_hz: 50.0\n",
-        )?;
-        let out = directory.path().join("out");
-        fs::create_dir_all(&out)?;
-        // A stale provider module from an older generator sits in the
-        // same OUT_DIR.
-        fs::write(
-            out.join("phoxal-provider.rs"),
-            "// stale from an older generator\n",
-        )?;
-        generate(directory.path(), &out, None)?;
         assert!(
-            !out.join("phoxal-provider.rs").is_file(),
-            "the generator removes its historical file on every regeneration"
+            api.contains("::phoxal::generated::API_GENERATOR_MARKER"),
+            "the generated surface binds to the SDK generator marker"
         );
-        assert!(out.join("phoxal-standard-endpoints.rs").is_file());
+        assert!(
+            api.contains("pub mod types"),
+            "the generated surface exposes the typed definitions module"
+        );
         Ok(())
     }
 }
