@@ -28,6 +28,7 @@ members = [
     "tests/contracts/schema-proof",
     "tests/contracts/standard-plus-custom",
     "tests/hardware/driver",
+    "tests/host-acquisition",
     "tests/runtime-authoring/consumer",
     "tests/runtime-authoring/countdown",
     "tests/runtime-authoring/multistage",

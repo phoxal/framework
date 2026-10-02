@@ -1,7 +1,9 @@
 name: ci
 
 # Framework CI: formatting, strict clippy over every target, and the
-# deterministic workspace tests with locked dependency resolution.
+# deterministic workspace tests with locked dependency resolution, beside
+# an integration acceptance job for the suites whose prerequisites the
+# ordinary workspace run does not establish.
 #
 # Compiling any Phoxal composition requires its prepared contracts, so
 # the build job first builds cargo-phoxal and prepares the workspace
@@ -19,6 +21,16 @@ name: ci
 #
 # - tests/supervisor-runtime needs its supervisor binary built first
 #   (two-step suite contract) and runs in its own job below.
+#
+# - tests/contracts/robot's composition legs need prebuilt composition
+#   bundles, tests/contracts/standard-plus-custom's warm-edit regression
+#   builds its own cold scratch tree, and tests/host-acquisition launches
+#   nested Cargo with network: selecting the integration acceptance job
+#   establishes those prerequisites and runs the three packages there.
+#
+# The nested build trees under target/suites and target/tests are not
+# covered by the Rust cache, so both test jobs cache them explicitly,
+# keyed on the lockfile.
 #
 # The always-open release-plz version PR (authored by the release App)
 # contains only commits already merged to main and already checked here,
@@ -54,6 +66,14 @@ jobs:
         run: |
           bash .github/scripts/test-release-groups.sh
           bash .github/scripts/test-select-release-pr.sh
+      - name: Restore the nested build trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/suites
+            target/tests
+          key: nested-trees-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: nested-trees-${{ runner.os }}-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
@@ -66,17 +86,26 @@ jobs:
             (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The supervisor acceptance suite runs in its own job below after the
-      # supervisor binary exists (two-step suite contract), so the workspace
-      # command excludes that fixture as well as the MuJoCo robot.
+      # The supervisor acceptance, composition, warm-edit, and host
+      # acquisition suites establish their prerequisites in their own
+      # jobs, so the workspace command excludes those fixtures as well as
+      # the MuJoCo robot.
       - name: Build the test binaries
         run: >-
           cargo test --workspace --locked --no-run
-          --exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture
+          --exclude phoxal-test-robot
+          --exclude phoxal-supervisor-runtime-fixture
+          --exclude phoxal-contract-robot-fixture
+          --exclude standard-plus-custom
+          --exclude phoxal-host-acquisition-fixture
       - name: Run the tests
         run: >-
           cargo test --workspace --locked --no-fail-fast
-          --exclude phoxal-test-robot --exclude phoxal-supervisor-runtime-fixture
+          --exclude phoxal-test-robot
+          --exclude phoxal-supervisor-runtime-fixture
+          --exclude phoxal-contract-robot-fixture
+          --exclude standard-plus-custom
+          --exclude phoxal-host-acquisition-fixture
 
   supervisor-acceptance:
     name: supervisor acceptance
@@ -89,3 +118,44 @@ jobs:
         run: cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
       - name: Run the supervisor acceptance suite
         run: cargo test -p phoxal-supervisor-runtime-fixture --locked --no-fail-fast
+
+  integration-acceptance:
+    name: integration acceptance
+    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the nested build trees
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/suites
+            target/tests
+          key: nested-trees-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: nested-trees-${{ runner.os }}-
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build cargo-phoxal and the supervisor binary
+        run: |
+          cargo build -p cargo-phoxal --locked
+          cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
+      - name: Build the composition bundles
+        run: |
+          set -euo pipefail
+          tool="$GITHUB_WORKSPACE/target/debug/cargo-phoxal"
+          cd tests/contracts/robot
+          "$tool" build --output "$GITHUB_WORKSPACE/target/integration-bundles/eval"
+          cp robot.yaml "$RUNNER_TEMP/robot.yaml"
+          cp robot.substitution.yaml robot.yaml
+          "$tool" build --output "$GITHUB_WORKSPACE/target/integration-bundles/substitution"
+          cp "$RUNNER_TEMP/robot.yaml" robot.yaml
+          "$tool" prepare
+      - name: Run the composition legs
+        run: cargo test -p phoxal-contract-robot-fixture --locked --no-fail-fast
+        env:
+          PHOXAL_EVAL_BUNDLE: ${{ github.workspace }}/target/integration-bundles/eval
+          PHOXAL_SUBSTITUTION_BUNDLE: ${{ github.workspace }}/target/integration-bundles/substitution
+      - name: Run the warm-edit regression
+        run: cargo test -p standard-plus-custom --locked --no-fail-fast
+      - name: Run the host-acquisition paths
+        run: cargo test -p phoxal-host-acquisition-fixture --locked --no-fail-fast

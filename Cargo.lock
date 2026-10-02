@@ -2419,6 +2419,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-host-acquisition-fixture"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "phoxal-macros"
 version = "0.0.0-dev.8"
 dependencies = [

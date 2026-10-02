@@ -9,11 +9,9 @@
 //! binary, edits `component.yaml`, rebuilds warm, and compares against a
 //! fresh cold build of the edited document.
 //!
-//! The test spawns Cargo on a scratch package with its own target
-//! directory. To avoid nested-cargo lock deadlocks it is ignored by
-//! default and additionally gated on an environment variable: run the
-//! compiled test binary directly (not under `cargo test`) with
-//! `PHOXAL_WARM_EDIT_REGRESSION=1`.
+//! The scratch package builds its own cold dependency tree, so this
+//! compile-integration suite runs in the integration acceptance job,
+//! which selects this package outside the ordinary workspace run.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -162,12 +160,7 @@ fn output_surface(scratch: &Path) -> String {
 }
 
 #[test]
-#[ignore = "spawns Cargo on a scratch package; run the compiled test binary directly with PHOXAL_WARM_EDIT_REGRESSION=1"]
 fn capability_removal_reaches_warm_rebuilds_like_fresh_builds() {
-    if std::env::var_os("PHOXAL_WARM_EDIT_REGRESSION").is_none() {
-        eprintln!("skipping: PHOXAL_WARM_EDIT_REGRESSION is not set");
-        return;
-    }
     let root = std::env::temp_dir().join(format!("phoxal-warm-edit-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create scratch root");

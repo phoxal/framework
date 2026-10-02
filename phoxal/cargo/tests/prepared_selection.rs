@@ -491,24 +491,22 @@ fn prepared_dir_for(local: &std::path::Path, suffix: &str) -> PathBuf {
 }
 
 /// Runs the compiled `cargo-phoxal` binary with an isolated Phoxal home.
-/// One stable, suite-owned dependency-build tree under the workspace's
-/// ignored `target/` directory: the fixtures' dependency trees are
-/// identical (the workspace phoxal path dependency plus the same
-/// crates.io resolution), so the first fixture in the first run pays the
-/// cold build and every later fixture and later run reuses it. No
+/// One stable dependency-build tree under the workspace's ignored
+/// `target/` directory, shared with `prepare_cycles`' suite: every nested
+/// fixture resolves the same workspace phoxal path dependency plus the
+/// same crates.io resolution, so the first fixture in a cold run pays the
+/// build once and every later fixture, suite, and run reuses it. No
 /// per-process directories are created, so repeated runs cannot
 /// accumulate retained trees; `cargo clean` reclaims the space; and
 /// cargo's target-dir file lock keeps concurrent fixture builds correct.
 /// Fixture sources still rebuild on their own edits, and the cold path
-/// itself stays proven by a clean checkout's first run.
+/// itself stays proven by a clean checkout's first run. Nested builds
+/// carry no debugging value, so they run without incremental compilation
+/// and with line-tables-only debug info to keep the tree small.
 fn shared_target_dir() -> std::path::PathBuf {
-    let suite = std::path::Path::new(file!())
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "suite".to_owned());
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/suites")
-        .join(suite)
+        .join("composition")
 }
 
 fn invoke(cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
@@ -516,6 +514,8 @@ fn invoke(cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
         .current_dir(cwd)
         .env("PHOXAL_HOME", cwd.join(".phoxal-home"))
         .env("CARGO_TARGET_DIR", shared_target_dir())
+        .env("CARGO_INCREMENTAL", "0")
+        .env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only")
         .args(args)
         .output()
         .unwrap_or_else(|error| panic!("spawn cargo-phoxal: {error}"))
