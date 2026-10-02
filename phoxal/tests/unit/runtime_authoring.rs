@@ -91,7 +91,7 @@ struct Job {
     deadline_ns: u64,
 }
 
-struct Countdown {
+pub(crate) struct Countdown {
     active: Option<Job>,
     last: Option<(u64, countdown::Outcome)>,
 }
@@ -320,7 +320,7 @@ mod monitor {
     }
 }
 
-struct Monitor {
+pub(crate) struct Monitor {
     consumed: u64,
     last_fresh_level: Option<u64>,
     last_valid_grant: Option<u64>,
@@ -432,7 +432,7 @@ mod ticker {
     }
 }
 
-struct Ticker {
+pub(crate) struct Ticker {
     count: u64,
 }
 
@@ -462,7 +462,7 @@ impl Ticker {
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize, phoxal::Config)]
-struct GateSettings {
+pub(crate) struct GateSettings {
     #[serde(default = "default_threshold")]
     threshold: u64,
 }
@@ -488,7 +488,7 @@ mod gate {
     }
 }
 
-struct Gate {
+pub(crate) struct Gate {
     threshold: u64,
 }
 
@@ -524,7 +524,7 @@ mod gate_config {
     }
 }
 
-struct NestedGate {
+pub(crate) struct NestedGate {
     threshold: u64,
 }
 
@@ -545,7 +545,7 @@ impl NestedGate {
     }
 }
 
-struct SelfGate {
+pub(crate) struct SelfGate {
     threshold: u64,
 }
 
@@ -566,14 +566,14 @@ impl SelfGate {
     }
 }
 
-struct RootedGate {
+pub(crate) struct RootedGate {
     threshold: u64,
 }
 
 #[phoxal::runtime(contract = gate::GateApi, period_ms = 20)]
 impl RootedGate {
     #[init]
-    fn new(config: crate::gate_config::Settings) -> Result<Self> {
+    fn new(config: self::gate_config::Settings) -> Result<Self> {
         Ok(Self {
             threshold: config.threshold,
         })
@@ -617,7 +617,7 @@ mod valve {
     }
 }
 
-struct Valve {
+pub(crate) struct Valve {
     authorized_rate: Option<u64>,
 }
 
@@ -697,7 +697,7 @@ mod split {
     }
 }
 
-struct Split;
+pub(crate) struct Split;
 
 #[phoxal::runtime(contract = split::SplitApi, period_ms = 20)]
 impl Split {
@@ -764,7 +764,7 @@ mod replyer {
     }
 }
 
-struct Replyer {
+pub(crate) struct Replyer {
     journal: String,
 }
 
@@ -818,12 +818,12 @@ mod swells {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, phoxal::Config)]
-struct SwellsConfig {
+pub(crate) struct SwellsConfig {
     #[serde(default)]
     payload: String,
 }
 
-struct Swells {
+pub(crate) struct Swells {
     payload: String,
 }
 
@@ -880,7 +880,7 @@ mod flaky {
     }
 }
 
-struct Flaky {
+pub(crate) struct Flaky {
     explode_next: bool,
 }
 
@@ -935,19 +935,19 @@ mod tests {
     use super::flaky;
     use super::gate_config;
     use super::monitor;
+    use super::phoxal_runtime_countdown;
+    use super::phoxal_runtime_echo;
+    use super::phoxal_runtime_flaky;
+    use super::phoxal_runtime_gate;
+    use super::phoxal_runtime_monitor;
+    use super::phoxal_runtime_nested_gate;
+    use super::phoxal_runtime_rooted_gate;
+    use super::phoxal_runtime_self_gate;
+    use super::phoxal_runtime_ticker;
+    use super::phoxal_runtime_valve;
     use super::replyer;
     use super::split;
     use super::ticker;
-    use crate::phoxal_runtime_countdown;
-    use crate::phoxal_runtime_echo;
-    use crate::phoxal_runtime_flaky;
-    use crate::phoxal_runtime_gate;
-    use crate::phoxal_runtime_monitor;
-    use crate::phoxal_runtime_nested_gate;
-    use crate::phoxal_runtime_rooted_gate;
-    use crate::phoxal_runtime_self_gate;
-    use crate::phoxal_runtime_ticker;
-    use crate::phoxal_runtime_valve;
     use phoxal::runtime::input::{
         Capacity, Command, CommandId, CommandOrder, Commands, InputSet, InputSnapshot, Latest,
         Samples, Setpoint,
@@ -2257,7 +2257,7 @@ mod tests {
         let rooted = initialize(
             &phoxal_runtime_rooted_gate::Adapter::new(),
             at(0),
-            crate::gate_config::Settings { threshold: 9 },
+            super::gate_config::Settings { threshold: 9 },
         )?;
         assert_eq!(rooted.threshold, 9);
 
@@ -2582,14 +2582,14 @@ mod tests {
         phoxal_runtime_flaky::Adapter::retain_artifact_metadata();
     }
 
-    use crate::Pilot;
-    use crate::modes;
-    use crate::pilot::AskResponse;
+    use super::Pilot;
+    use super::modes;
+    use super::pilot::AskResponse;
     use phoxal::contracts::ProstPayload as _;
     use phoxal::runtime::behavior::TreeStatus;
     use phoxal::runtime::input::{TransportCallCompletion, TransportInputSink};
 
-    type PilotOwner = RuntimeOwner<crate::phoxal_runtime_pilot::Adapter>;
+    type PilotOwner = RuntimeOwner<super::phoxal_runtime_pilot::Adapter>;
     const PILOT_PERIOD: ExecutionDuration = ExecutionDuration::from_millis(10);
 
     fn pilot_context(millis: u64, index: u64) -> StepContext {
@@ -2608,14 +2608,14 @@ mod tests {
         }
     }
 
-    fn pilot_empty() -> crate::pilot::pilot_api::Inputs {
-        <crate::pilot::pilot_api::Inputs as InputSnapshot>::empty()
+    fn pilot_empty() -> super::pilot::pilot_api::Inputs {
+        <super::pilot::pilot_api::Inputs as InputSnapshot>::empty()
     }
 
     fn pilot_completion(
         value: u64,
         ticket: u128,
-    ) -> phoxal::Result<crate::pilot::pilot_api::Inputs> {
+    ) -> phoxal::Result<super::pilot::pilot_api::Inputs> {
         let mut inputs = pilot_empty();
         inputs.set_call_completions(vec![TransportCallCompletion {
             ticket,
@@ -2624,12 +2624,12 @@ mod tests {
         Ok(inputs)
     }
 
-    fn pilot_events(job_id: u64) -> crate::pilot::pilot_api::Inputs {
+    fn pilot_events(job_id: u64) -> super::pilot::pilot_api::Inputs {
         let mut inputs = pilot_empty();
         if let Err(error) = inputs.set_samples(
             "events",
             vec![phoxal::runtime::input::TransportSample {
-                value: Box::new(crate::pilot::ProbeEvent { job_id }),
+                value: Box::new(super::pilot::ProbeEvent { job_id }),
                 stamp: phoxal::runtime::ObservationStamp::new(
                     "probe-source",
                     ExecutionTime::from_nanos(0),
@@ -2646,8 +2646,8 @@ mod tests {
     fn pilot_command(
         field: &'static str,
         order: u64,
-        request: Box<crate::pilot::BeginRequest>,
-    ) -> crate::pilot::pilot_api::Inputs {
+        request: Box<super::pilot::BeginRequest>,
+    ) -> super::pilot::pilot_api::Inputs {
         let mut inputs = pilot_empty();
         if let Err(error) = inputs.set_commands(
             field,
@@ -2667,7 +2667,7 @@ mod tests {
         inputs
     }
 
-    fn pilot_uncertain(ticket: u128) -> crate::pilot::pilot_api::Inputs {
+    fn pilot_uncertain(ticket: u128) -> super::pilot::pilot_api::Inputs {
         let mut inputs = pilot_empty();
         if let Err(error) = inputs.set_call_completions(vec![TransportCallCompletion {
             ticket,
@@ -2680,7 +2680,7 @@ mod tests {
         inputs
     }
 
-    type PilotAdapter = crate::phoxal_runtime_pilot::Adapter;
+    type PilotAdapter = super::phoxal_runtime_pilot::Adapter;
 
     fn pilot_start(mode: u64) -> phoxal::Result<(PilotAdapter, Pilot)> {
         // One adapter value across every invocation: it owns the pending
@@ -2708,7 +2708,7 @@ mod tests {
         pilot: Pilot,
         millis: u64,
         index: u64,
-        inputs: &crate::pilot::pilot_api::Inputs,
+        inputs: &super::pilot::pilot_api::Inputs,
     ) -> phoxal::Result<Pilot> {
         let (pilot, _outputs) = invoke(adapter, &pilot_context(millis, index), pilot, inputs)?;
         Ok(pilot)
@@ -2762,7 +2762,7 @@ mod tests {
         let stop = pilot_command(
             "stop",
             1,
-            Box::new(crate::pilot::BeginRequest {
+            Box::new(super::pilot::BeginRequest {
                 job: 1,
                 duration_ms: 20,
             }),
@@ -3013,7 +3013,7 @@ mod tests {
     /// no handler and no leaf, while the fresh era's own calls complete.
     #[test]
     fn owner_reset_fences_prior_ownership() -> phoxal::Result<()> {
-        let adapter = crate::phoxal_runtime_pilot::Adapter::new();
+        let adapter = super::phoxal_runtime_pilot::Adapter::new();
         let mut owner = PilotOwner::new(adapter, ExecutionTime::default(), modes::CONCURRENT)?;
         // Invocation 0 stages one direct call (operation 1) and one
         // tree-owned call (operation 0) under the old era.
@@ -3051,10 +3051,10 @@ mod tests {
             .expect("the report publishes every accepted invocation");
         assert_eq!(report.primary_replies, 0, "an old-era direct result fired");
         assert!(
-            matches!(report.mission_phase, crate::pilot::MissionPhase::Running),
+            matches!(report.mission_phase, super::pilot::MissionPhase::Running),
             "an old-era result advanced the fresh tree"
         );
-        crate::Result::Ok(())
+        super::Result::Ok(())
     }
 
     /// The owner-level smoke: the pilot initializes through the runtime
@@ -3062,7 +3062,7 @@ mod tests {
     /// composes with the standard owner path.
     #[test]
     fn pilot_runs_through_the_runtime_owner() -> phoxal::Result<()> {
-        let adapter = crate::phoxal_runtime_pilot::Adapter::new();
+        let adapter = super::phoxal_runtime_pilot::Adapter::new();
         let owner = PilotOwner::new(adapter, ExecutionTime::default(), modes::DELAY);
         assert!(owner.is_ok());
         Ok(())
@@ -3271,10 +3271,11 @@ mod tests {
         /// and runs its action-local halt hook exactly once.
         #[test]
         fn custom_action_runs_and_halts_once() -> phoxal::Result<()> {
-            let _guard = crate::ACTION_HALT_LOCK
+            let _guard = crate::runtime_authoring::ACTION_HALT_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            crate::ACTION_HALT.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::runtime_authoring::ACTION_HALT
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             let (adapter, mut pilot) = pilot_start(modes::ACTION)?;
             pilot = pilot_step(&adapter, pilot, 0, 0, &pilot_empty())?;
             assert_eq!(pilot.mission.status(), TreeStatus::Running);
@@ -3283,7 +3284,7 @@ mod tests {
             pilot = pilot_step(&adapter, pilot, 20, 2, &pilot_empty())?;
             assert_eq!(pilot.mission.status(), TreeStatus::Succeeded);
             assert!(
-                crate::ACTION_HALT.load(std::sync::atomic::Ordering::Relaxed),
+                crate::runtime_authoring::ACTION_HALT.load(std::sync::atomic::Ordering::Relaxed),
                 "the halt hook ran when the action ended"
             );
             Ok(())
@@ -3369,7 +3370,7 @@ mod tests {
             let begin = pilot_command(
                 "begin",
                 1,
-                Box::new(crate::pilot::BeginRequest {
+                Box::new(crate::runtime_authoring::pilot::BeginRequest {
                     job: 11,
                     duration_ms: 20,
                 }),
@@ -3395,7 +3396,7 @@ mod tests {
             let second = pilot_command(
                 "begin",
                 2,
-                Box::new(crate::pilot::BeginRequest {
+                Box::new(crate::runtime_authoring::pilot::BeginRequest {
                     job: 12,
                     duration_ms: 20,
                 }),
@@ -3424,7 +3425,7 @@ mod tests {
             let third = pilot_command(
                 "begin",
                 3,
-                Box::new(crate::pilot::BeginRequest {
+                Box::new(crate::runtime_authoring::pilot::BeginRequest {
                     job: 13,
                     duration_ms: 20,
                 }),
@@ -3444,7 +3445,7 @@ mod tests {
             let stop = pilot_command(
                 "stop",
                 4,
-                Box::new(crate::pilot::BeginRequest {
+                Box::new(crate::runtime_authoring::pilot::BeginRequest {
                     job: 13,
                     duration_ms: 20,
                 }),
@@ -3468,7 +3469,7 @@ mod tests {
             let idle_stop = pilot_command(
                 "stop",
                 5,
-                Box::new(crate::pilot::BeginRequest {
+                Box::new(crate::runtime_authoring::pilot::BeginRequest {
                     job: 13,
                     duration_ms: 20,
                 }),
@@ -3485,10 +3486,11 @@ mod tests {
         /// the tree terminal.
         #[test]
         fn cancelling_a_custom_action_runs_its_halt() -> phoxal::Result<()> {
-            let _guard = crate::ACTION_HALT_LOCK
+            let _guard = crate::runtime_authoring::ACTION_HALT_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            crate::ACTION_HALT.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::runtime_authoring::ACTION_HALT
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             let (adapter, mut pilot) = pilot_start(modes::ACTION_CANCEL)?;
             pilot = pilot_step(&adapter, pilot, 0, 0, &pilot_empty())?;
             assert_eq!(pilot.mission.status(), TreeStatus::Running);
@@ -3496,7 +3498,7 @@ mod tests {
             pilot = pilot_step(&adapter, pilot, 10, 1, &pilot_empty())?;
             assert_eq!(pilot.mission.status(), TreeStatus::Cancelled);
             assert!(
-                crate::ACTION_HALT.load(std::sync::atomic::Ordering::Relaxed),
+                crate::runtime_authoring::ACTION_HALT.load(std::sync::atomic::Ordering::Relaxed),
                 "the halt hook ran when the branch was retired"
             );
             pilot = pilot_step(&adapter, pilot, 20, 2, &pilot_empty())?;
@@ -3582,10 +3584,10 @@ mod pilot {
     #[phoxal::endpoints]
     pub struct PilotApi {
         #[phoxal::call]
-        primary: crate::PilotAsk,
+        primary: super::PilotAsk,
 
         #[phoxal::call]
-        secondary: crate::PilotAsk,
+        secondary: super::PilotAsk,
 
         #[phoxal::input(max_items = 4, max_bytes = 256)]
         events: Queue<ProbeEvent>,
@@ -3680,7 +3682,7 @@ mod review_regressions {
         step: &'a StepContext,
         inputs: &'a PilotInputs,
         outputs: &'a mut pilot_api::Outputs,
-    ) -> Context<'a, crate::Pilot> {
+    ) -> Context<'a, super::Pilot> {
         Context::new(step, inputs, outputs)
     }
 
@@ -3691,7 +3693,7 @@ mod review_regressions {
     fn repeat_immediate_success_runs_every_attempt() -> phoxal::Result<()> {
         let runs = std::sync::Arc::new(AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&runs);
-        let mut tree = repeat::<crate::Pilot, _>(3, move |_| {
+        let mut tree = repeat::<super::Pilot, _>(3, move |_| {
             let counted = std::sync::Arc::clone(&counted);
             Ok(action(move |_ctx| {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -3720,7 +3722,7 @@ mod review_regressions {
     /// factory, and a refusal from an attempt ends the repeat.
     #[test]
     fn repeat_zero_count_and_refusal_semantics() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(0, |_| {
+        let mut tree = repeat::<super::Pilot, _>(0, |_| {
             Err(phoxal::anyhow!(
                 "the factory must not run for zero attempts"
             ))
@@ -3733,7 +3735,7 @@ mod review_regressions {
         tree.tick(&mut ctx)?;
         assert_eq!(tree.status(), TreeStatus::Succeeded);
 
-        let mut tree = repeat::<crate::Pilot, _>(2, |_| Ok(condition(|_| false))).build()?;
+        let mut tree = repeat::<super::Pilot, _>(2, |_| Ok(condition(|_| false))).build()?;
         let mut ctx = bare_context(&step, &inputs, &mut outputs);
         tree.tick(&mut ctx)?;
         assert_eq!(
@@ -3749,7 +3751,7 @@ mod review_regressions {
     /// `build` would apply.
     #[test]
     fn composing_a_sequence_preserves_its_deadline() -> phoxal::Result<()> {
-        let mut tree = super::Sequence::<crate::Pilot>::new()
+        let mut tree = super::Sequence::<super::Pilot>::new()
             .delay(std::time::Duration::from_secs(1))
             .within(std::time::Duration::ZERO)
             .into_node()
@@ -3768,7 +3770,7 @@ mod review_regressions {
     /// insertion site's ancestor depth.
     #[test]
     fn dynamic_repeat_enforces_aggregate_depth_before_activation() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(1, |_| {
+        let mut tree = repeat::<super::Pilot, _>(1, |_| {
             let mut node = condition(|_| true);
             for _ in 0..phoxal::runtime::behavior::MAX_DEPTH + 1 {
                 node = guard(|_| true, node);
@@ -3794,7 +3796,7 @@ mod review_regressions {
     fn terminal_failure_releases_observed_capture() -> phoxal::Result<()> {
         let captures = CaptureRegistry::default();
         let (observe_node, _handle) =
-            observe::<crate::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"));
+            observe::<super::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"));
         let mut tree = sequence([observe_node, condition(|_| false)]).build()?;
         let step = context(0, 0);
         let inputs = inputs();
@@ -3816,7 +3818,7 @@ mod review_regressions {
     /// classification instead of relying on cause strings alone.
     #[test]
     fn terminal_kind_is_retained_for_diagnostics() -> phoxal::Result<()> {
-        let mut tree = sequence([condition(|_: &Context<'_, crate::Pilot>| false)]).build()?;
+        let mut tree = sequence([condition(|_: &Context<'_, super::Pilot>| false)]).build()?;
         let step = context(0, 0);
         let inputs = inputs();
         let mut outputs = pilot_api::Outputs::default();
@@ -3834,7 +3836,7 @@ mod review_regressions {
     fn capture_overflow_is_visible_before_a_matching_retained_event() -> phoxal::Result<()> {
         let captures = CaptureRegistry::default();
         let (observe_node, handle) =
-            observe::<crate::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"));
+            observe::<super::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"));
         let mut tree =
             sequence([observe_node, wait_event(handle, |_: &AskResponse| true)]).build()?;
         let step = context(0, 0);
@@ -3868,8 +3870,8 @@ mod review_regressions {
         let runs = std::sync::Arc::new(AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&runs);
         let guarded = guard(
-            |ctx: &Context<'_, crate::Pilot>| ctx.invocation_index() == 0,
-            super::Sequence::<crate::Pilot>::new()
+            |ctx: &Context<'_, super::Pilot>| ctx.invocation_index() == 0,
+            super::Sequence::<super::Pilot>::new()
                 .call(pilot_api::calls::primary(AskRequest { value: 1 }))
                 .expect_response(|_: &AskResponse| true)
                 .into_node(),
@@ -3903,8 +3905,8 @@ mod review_regressions {
     #[test]
     fn guard_halt_after_a_completed_call_stays_fallback_eligible() -> phoxal::Result<()> {
         let guarded = guard(
-            |ctx: &Context<'_, crate::Pilot>| ctx.invocation_index() < 2,
-            super::Sequence::<crate::Pilot>::new()
+            |ctx: &Context<'_, super::Pilot>| ctx.invocation_index() < 2,
+            super::Sequence::<super::Pilot>::new()
                 .call(pilot_api::calls::primary(AskRequest { value: 1 }))
                 .expect_response(|_: &AskResponse| false)
                 .into_node(),
@@ -4055,7 +4057,7 @@ mod modes {
     pub const CAPTURE_BEFORE_REPLY: u64 = 16;
 }
 
-struct Pilot {
+pub(crate) struct Pilot {
     mission: Tree<Pilot>,
     tick_mission: bool,
     cancel_from: Option<u64>,
@@ -4080,9 +4082,9 @@ impl Pilot {
         let _ = ctx;
         phoxal::runtime::behavior::sequence([
             Sequence::<Self>::new()
-                .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                    value: job,
-                }))
+                .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                    pilot::AskRequest { value: job },
+                ))
                 .expect_response(move |response: &pilot::AskResponse| response.value == job)
                 .into_node(),
             phoxal::runtime::behavior::delay(std::time::Duration::from_millis(20)),
@@ -4106,9 +4108,9 @@ impl Pilot {
                 // The predicate fails on the delivered response: an
                 // expected domain refusal, eligible for the next branch.
                 Sequence::<Self>::new()
-                    .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                        value: 1,
-                    }))
+                    .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                        pilot::AskRequest { value: 1 },
+                    ))
                     .expect_response(|_: &pilot::AskResponse| false)
                     .into_node(),
                 condition(|_| false),
@@ -4117,9 +4119,9 @@ impl Pilot {
             .build(),
             modes::SELECTOR_UNCERTAIN => selector([
                 Sequence::<Self>::new()
-                    .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                        value: 1,
-                    }))
+                    .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                        pilot::AskRequest { value: 1 },
+                    ))
                     .expect_response(|_: &pilot::AskResponse| true)
                     .into_node(),
                 // The next branch would succeed immediately; the selector
@@ -4130,9 +4132,9 @@ impl Pilot {
             modes::GUARD_HALT => guard(
                 |ctx| ctx.invocation_index() < 1,
                 Sequence::<Self>::new()
-                    .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                        value: 1,
-                    }))
+                    .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                        pilot::AskRequest { value: 1 },
+                    ))
                     .expect_response(|response: &pilot::AskResponse| response.value == 1)
                     .into_node(),
             )
@@ -4148,9 +4150,9 @@ impl Pilot {
             ])
             .build(),
             modes::CONTINUATION => Sequence::<Self>::new()
-                .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                    value: 5,
-                }))
+                .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                    pilot::AskRequest { value: 5 },
+                ))
                 .then(|response: pilot::AskResponse| {
                     // The continuation owns the decoded response: the
                     // built child consumes it by value.
@@ -4160,9 +4162,11 @@ impl Pilot {
                 .build(),
             modes::REPEAT => repeat::<Self, _>(3, |attempt| {
                 Ok(Sequence::<Self>::new()
-                    .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                        value: u64::from(attempt),
-                    }))
+                    .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                        pilot::AskRequest {
+                            value: u64::from(attempt),
+                        },
+                    ))
                     .expect_response(move |reply: &pilot::AskResponse| {
                         reply.value == u64::from(attempt)
                     })
@@ -4170,14 +4174,15 @@ impl Pilot {
             })
             .build(),
             modes::CAPTURE_AFTER_REPLY | modes::CAPTURE_BEFORE_REPLY => {
-                let (capture, events) =
-                    phoxal::runtime::behavior::observe(&crate::pilot::pilot_api::inputs::EVENTS);
+                let (capture, events) = phoxal::runtime::behavior::observe(
+                    &crate::runtime_authoring::pilot::pilot_api::inputs::EVENTS,
+                );
                 phoxal::runtime::behavior::sequence([
                     capture,
                     Sequence::<Self>::new()
-                        .call(crate::pilot::pilot_api::calls::primary(pilot::AskRequest {
-                            value: 1,
-                        }))
+                        .call(crate::runtime_authoring::pilot::pilot_api::calls::primary(
+                            pilot::AskRequest { value: 1 },
+                        ))
                         .expect_response(|response: &pilot::AskResponse| response.value == 1)
                         .into_node(),
                     phoxal::runtime::behavior::wait_event(events, |event: &pilot::ProbeEvent| {
@@ -4194,21 +4199,26 @@ impl Pilot {
                         phoxal::runtime::behavior::ActionOutcome::Running
                     })
                 })
-                .with_halt(|_| crate::ACTION_HALT.store(true, std::sync::atomic::Ordering::Relaxed))
+                .with_halt(|_| {
+                    crate::runtime_authoring::ACTION_HALT
+                        .store(true, std::sync::atomic::Ordering::Relaxed)
+                })
                 .into_node()
                 .build()
             }
             _ => Sequence::<Self>::new()
-                .call(crate::pilot::pilot_api::calls::secondary(
-                    pilot::AskRequest { value: 1 },
-                ))
+                .call(
+                    crate::runtime_authoring::pilot::pilot_api::calls::secondary(
+                        pilot::AskRequest { value: 1 },
+                    ),
+                )
                 .expect_response(|response: &pilot::AskResponse| response.value == 1)
                 .build(),
         }
     }
 }
 
-#[phoxal::runtime(contract = crate::pilot::PilotApi, period_ms = 10)]
+#[phoxal::runtime(contract = crate::runtime_authoring::pilot::PilotApi, period_ms = 10)]
 impl Pilot {
     #[init]
     fn new(mode: u64) -> Result<Self> {
@@ -4427,7 +4437,7 @@ mod review7_regressions {
     }
 
     fn tick_once(
-        tree: &mut Tree<crate::Pilot>,
+        tree: &mut Tree<super::Pilot>,
         captures: Option<&CaptureRegistry>,
         millis: u64,
         index: u64,
@@ -4435,7 +4445,7 @@ mod review7_regressions {
     ) -> phoxal::Result<()> {
         let step = context(millis, index);
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, inputs, &mut outputs);
+        let mut ctx = Context::<super::Pilot>::new(&step, inputs, &mut outputs);
         if let Some(captures) = captures {
             ctx = ctx.with_captures(captures);
         }
@@ -4443,10 +4453,10 @@ mod review7_regressions {
     }
 
     fn capture_of() -> (
-        phoxal::runtime::behavior::Node<crate::Pilot>,
+        phoxal::runtime::behavior::Node<super::Pilot>,
         CaptureHandle<AskResponse>,
     ) {
-        observe::<crate::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"))
+        observe::<super::Pilot, _>(&InputDescriptor::<AskResponse>::new("events"))
     }
 
     /// A terminal all releases the capture its successful child
@@ -4485,9 +4495,9 @@ mod review7_regressions {
         let (observe_node, _handle) = capture_of();
         let inner = sequence([
             observe_node,
-            condition(|_: &Context<'_, crate::Pilot>| false),
+            condition(|_: &Context<'_, super::Pilot>| false),
         ]);
-        let mut tree = guard(|_: &Context<'_, crate::Pilot>| true, inner).build()?;
+        let mut tree = guard(|_: &Context<'_, super::Pilot>| true, inner).build()?;
         tick_once(&mut tree, Some(&captures), 0, 0, &empty())?;
         assert_eq!(tree.status(), TreeStatus::Refused);
         assert!(!captures.has_active("events"));
@@ -4503,7 +4513,7 @@ mod review7_regressions {
         let (observe_node, _handle) = capture_of();
         let failed = sequence([
             observe_node,
-            condition(|_: &Context<'_, crate::Pilot>| false),
+            condition(|_: &Context<'_, super::Pilot>| false),
         ]);
         let fallback = phoxal::runtime::behavior::wait_until(|_| false);
         let mut tree = selector([failed, fallback]).build()?;
@@ -4573,7 +4583,7 @@ mod review7_regressions {
     fn repeat_attempts_separate_on_invocation_identity() -> phoxal::Result<()> {
         let runs = std::sync::Arc::new(AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&runs);
-        let mut tree = repeat::<crate::Pilot, _>(3, move |_| {
+        let mut tree = repeat::<super::Pilot, _>(3, move |_| {
             let counted = std::sync::Arc::clone(&counted);
             Ok(phoxal::runtime::behavior::action(move |_| {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -4587,7 +4597,7 @@ mod review7_regressions {
         // Two ticks through the SAME context: one attempt.
         let step = context(0, 0);
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs);
         tree.tick(&mut ctx)?;
         tree.tick(&mut ctx)?;
         assert_eq!(
@@ -4806,7 +4816,7 @@ mod review7_regressions {
 /// allocations hold separate charges that never double-credit.
 mod review8_regressions {
     use super::pilot::pilot_api;
-    use crate::review7_regressions::rounds_vocab;
+    use super::review7_regressions::rounds_vocab;
     use phoxal::contracts::ProstPayload;
     use phoxal::runtime::behavior::ActionOutcome;
     use phoxal::runtime::behavior::{
@@ -4846,11 +4856,11 @@ mod review8_regressions {
         }
     }
 
-    fn tick_pilot(tree: &mut Tree<crate::Pilot>, millis: u64, index: u64) -> phoxal::Result<()> {
+    fn tick_pilot(tree: &mut Tree<super::Pilot>, millis: u64, index: u64) -> phoxal::Result<()> {
         let step = context(millis, index);
         let inputs = empty();
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs);
         tree.tick(&mut ctx)
     }
 
@@ -4860,13 +4870,13 @@ mod review8_regressions {
     /// capacity never leaks, so all 1,100 attempts complete.
     #[test]
     fn repeated_guard_fallback_reclaims_exact_admitted_size() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(1_100, |_| {
+        let mut tree = repeat::<super::Pilot, _>(1_100, |_| {
             Ok(selector([
                 guard(
-                    |_: &Context<'_, crate::Pilot>| false,
-                    condition(|_: &Context<'_, crate::Pilot>| true),
+                    |_: &Context<'_, super::Pilot>| false,
+                    condition(|_: &Context<'_, super::Pilot>| true),
                 ),
-                condition(|_: &Context<'_, crate::Pilot>| true),
+                condition(|_: &Context<'_, super::Pilot>| true),
             ]))
         })
         .build()?;
@@ -4888,12 +4898,12 @@ mod review8_regressions {
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&runs);
         let initial = guard(
-            |ctx: &Context<'_, crate::Pilot>| ctx.invocation_index() == 0,
+            |ctx: &Context<'_, super::Pilot>| ctx.invocation_index() == 0,
             repeat(1, |_| {
                 Ok(repeat(1, |_| {
                     let mut nodes = Vec::new();
                     for _ in 0..100 {
-                        nodes.push(condition(|_: &Context<'_, crate::Pilot>| true));
+                        nodes.push(condition(|_: &Context<'_, super::Pilot>| true));
                     }
                     nodes.push(wait_until(|_| false));
                     Ok(sequence(nodes))
@@ -4934,8 +4944,8 @@ mod review8_regressions {
     /// expiring within scopes conserve capacity across 1,100 rounds.
     #[test]
     fn repeated_expiring_within_scopes_conserve_capacity() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(1_100, |_| {
-            Ok(Sequence::<crate::Pilot>::new()
+        let mut tree = repeat::<super::Pilot, _>(1_100, |_| {
+            Ok(Sequence::<super::Pilot>::new()
                 .delay(std::time::Duration::from_millis(0))
                 .within(std::time::Duration::from_secs(1))
                 .into_node())
@@ -4953,10 +4963,10 @@ mod review8_regressions {
     /// under a selector fallback complete without a capacity fault.
     #[test]
     fn repeated_refusing_scopes_conserve_capacity() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(1_100, |_| {
+        let mut tree = repeat::<super::Pilot, _>(1_100, |_| {
             Ok(selector([
-                guard(|_: &Context<'_, crate::Pilot>| false, wait_until(|_| false)),
-                condition(|_: &Context<'_, crate::Pilot>| true),
+                guard(|_: &Context<'_, super::Pilot>| false, wait_until(|_| false)),
+                condition(|_: &Context<'_, super::Pilot>| true),
             ]))
         })
         .build()?;
@@ -4972,10 +4982,10 @@ mod review8_regressions {
     /// so 600 rounds of a winning race over nested repeats complete.
     #[test]
     fn race_winners_and_losers_with_nested_repeats_conserve() -> phoxal::Result<()> {
-        let mut tree = repeat::<crate::Pilot, _>(600, |_| {
+        let mut tree = repeat::<super::Pilot, _>(600, |_| {
             Ok(race([
                 repeat(1, |_| {
-                    Ok(sequence([condition(|_: &Context<'_, crate::Pilot>| true)]))
+                    Ok(sequence([condition(|_: &Context<'_, super::Pilot>| true)]))
                 }),
                 wait_until(|_| false),
             ]))
@@ -5087,8 +5097,8 @@ mod review9_regressions {
     };
 
     type PilotInputs = pilot_api::Inputs;
-    type RoundsInputs = crate::review7_regressions::rounds_vocab::rounds_api::Inputs;
-    type RoundsOutputs = crate::review7_regressions::rounds_vocab::rounds_api::Outputs;
+    type RoundsInputs = super::review7_regressions::rounds_vocab::rounds_api::Inputs;
+    type RoundsOutputs = super::review7_regressions::rounds_vocab::rounds_api::Outputs;
 
     fn empty() -> PilotInputs {
         <PilotInputs as InputSnapshot>::empty()
@@ -5113,11 +5123,11 @@ mod review9_regressions {
         }
     }
 
-    fn tick_once(tree: &mut Tree<crate::Pilot>, millis: u64, index: u64) -> phoxal::Result<String> {
+    fn tick_once(tree: &mut Tree<super::Pilot>, millis: u64, index: u64) -> phoxal::Result<String> {
         let step = context(millis, index);
         let inputs = empty();
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs);
         tree.tick(&mut ctx)?;
         Ok(tree.active_path())
     }
@@ -5151,7 +5161,7 @@ mod review9_regressions {
         // Selector branch index distinguishes same-kind branches.
         let mut tree = selector([
             guard(
-                |ctx: &Context<'_, crate::Pilot>| ctx.invocation_index() == 0,
+                |ctx: &Context<'_, super::Pilot>| ctx.invocation_index() == 0,
                 delay(std::time::Duration::from_millis(100)),
             ),
             wait_until(|_| false),
@@ -5165,7 +5175,7 @@ mod review9_regressions {
         // Repeat attempts carry their attempt identity: the live child
         // keeps the running path, and the next attempt's path differs.
         let mut tree =
-            repeat::<crate::Pilot, _>(2, |_| Ok(delay(std::time::Duration::from_millis(20))))
+            repeat::<super::Pilot, _>(2, |_| Ok(delay(std::time::Duration::from_millis(20))))
                 .build()?;
         let attempt_zero = tick_once(&mut tree, 0, 0)?;
         assert_eq!(attempt_zero, "repeat[0].delay");
@@ -5226,7 +5236,7 @@ mod review9_regressions {
         }
     }
 
-    #[phoxal::runtime(contract = crate::review7_regressions::rounds_vocab::RoundsApi, period_ms = 10)]
+    #[phoxal::runtime(contract = super::review7_regressions::rounds_vocab::RoundsApi, period_ms = 10)]
     impl DiaryBrain {
         #[init]
         fn new(_config: ()) -> phoxal::Result<Self> {
@@ -5404,7 +5414,7 @@ mod review9_regressions {
         // A tree that keeps running for many invocations: a wait gated on
         // the invocation index, then a delay.
         let mut tree = sequence([
-            wait_until(|ctx: &Context<'_, crate::Pilot>| ctx.invocation_index() >= 70),
+            wait_until(|ctx: &Context<'_, super::Pilot>| ctx.invocation_index() >= 70),
             delay(std::time::Duration::from_millis(0)),
         ])
         .build()?;
@@ -5449,12 +5459,12 @@ mod review9_regressions {
     fn two_trees_in_one_candidate_keep_both_records() -> phoxal::Result<()> {
         let _guard = DIARY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let diary = BehaviorDiary::default();
-        let mut first = wait_until(|_: &Context<'_, crate::Pilot>| false).build()?;
-        let mut second = wait_until(|_: &Context<'_, crate::Pilot>| false).build()?;
+        let mut first = wait_until(|_: &Context<'_, super::Pilot>| false).build()?;
+        let mut second = wait_until(|_: &Context<'_, super::Pilot>| false).build()?;
         let step = context(0, 0);
         let inputs = empty();
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
         first.tick(&mut ctx)?;
         second.tick(&mut ctx)?;
         diary.promote_staged();
@@ -5494,16 +5504,16 @@ mod review9_regressions {
         // Cancellation on its own invocation, after an accepted running
         // tick on a previous invocation.
         let diary = BehaviorDiary::default();
-        let mut tree = wait_until(|_: &Context<'_, crate::Pilot>| false).build()?;
+        let mut tree = wait_until(|_: &Context<'_, super::Pilot>| false).build()?;
         let inputs = empty();
         let step = context(0, 0);
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
         tree.tick(&mut ctx)?;
         diary.promote_staged();
         let step = context(10, 1);
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
         tree.cancel(&mut ctx)?;
         tree.tick(&mut ctx)?;
         diary.promote_staged();
@@ -5519,10 +5529,10 @@ mod review9_regressions {
         // Cancellation in the SAME invocation as a running tick
         // supersedes that snapshot: exactly one terminal record.
         let diary = BehaviorDiary::default();
-        let mut tree = wait_until(|_: &Context<'_, crate::Pilot>| false).build()?;
+        let mut tree = wait_until(|_: &Context<'_, super::Pilot>| false).build()?;
         let step = context(0, 0);
         let mut outputs = pilot_api::Outputs::default();
-        let mut ctx = Context::<crate::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
+        let mut ctx = Context::<super::Pilot>::new(&step, &inputs, &mut outputs).with_diary(&diary);
         tree.tick(&mut ctx)?;
         tree.cancel(&mut ctx)?;
         diary.promote_staged();

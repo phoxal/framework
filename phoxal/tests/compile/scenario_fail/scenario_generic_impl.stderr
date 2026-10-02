@@ -1,11 +1,11 @@
 error: #[phoxal::scenario] requires a non-generic synchronous safe Rust function
- --> tests/trybuild/scenario_fail/scenario_generic_impl.rs:8:1
+ --> tests/compile/scenario_fail/scenario_generic_impl.rs:8:1
   |
 8 | fn generic_scenario<T>(sim: &mut Simulation) -> phoxal::Result<()> {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused import: `phoxal::scenario::Simulation`
- --> tests/trybuild/scenario_fail/scenario_generic_impl.rs:5:5
+ --> tests/compile/scenario_fail/scenario_generic_impl.rs:5:5
   |
 5 | use phoxal::scenario::Simulation;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

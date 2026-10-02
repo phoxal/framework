@@ -1,11 +1,11 @@
 error: the scenario argument must be mutable: `&mut Simulation`
- --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:8:28
+ --> tests/compile/scenario_fail/scenario_inherent_impl.rs:8:28
   |
 8 | fn immutable_fixture(_sim: &Simulation) -> phoxal::Result<()> {
   |                            ^^^^^^^^^^^
 
 warning: unused import: `phoxal::scenario::Simulation`
- --> tests/trybuild/scenario_fail/scenario_inherent_impl.rs:5:5
+ --> tests/compile/scenario_fail/scenario_inherent_impl.rs:5:5
   |
 5 | use phoxal::scenario::Simulation;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

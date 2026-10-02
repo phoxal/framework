@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `phoxal::contracts::Observation<Status>: GeneratedSend` is not satisfied
-  --> tests/trybuild/fail/contract_send_observation.rs:27:36
+  --> tests/compile/fail/contract_send_observation.rs:27:36
    |
 27 |     let _ = outputs.send(&context, STATUS.bind("service"));
    |                     ----           ^^^^^^^^^^^^^^^^^^^^^^ the trait `GeneratedSend` is not implemented for `phoxal::contracts::Observation<Status>`
