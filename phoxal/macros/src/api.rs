@@ -8,12 +8,26 @@
 //! remain the only effect boundary.
 
 use heck::{ToShoutySnakeCase, ToUpperCamelCase};
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::Parser;
 use syn::{Fields, Ident, ItemStruct, LitInt, LitStr, Path, Type};
 
 use crate::message::anchored;
+
+/// Default admitted item count for queued endpoint forms.
+const DEFAULT_MAX_ITEMS: u64 = 16;
+
+/// Default whole-batch encoded byte bound for endpoint forms.
+const DEFAULT_MAX_BYTES: u64 = 16_384;
+
+fn default_max_items() -> LitInt {
+    LitInt::new(&DEFAULT_MAX_ITEMS.to_string(), Span::call_site())
+}
+
+fn default_max_bytes() -> LitInt {
+    LitInt::new(&DEFAULT_MAX_BYTES.to_string(), Span::call_site())
+}
 
 /// One declared endpoint.
 enum Endpoint {
@@ -39,15 +53,62 @@ enum Endpoint {
     },
     Request {
         name: Ident,
-        contract: LitStr,
-        request: Path,
-        response: Path,
-        request_identity: Option<LitStr>,
-        response_identity: Option<LitStr>,
+        source: RequestSource,
+        request: PayloadRef,
+        response: PayloadRef,
         max_items: LitInt,
         max_bytes: LitInt,
         call: bool,
     },
+}
+
+/// Where one operation endpoint's payloads and identity come from.
+enum RequestSource {
+    /// Authored `RequestReply<Request, Response>` fields with a declared or
+    /// package-derived contract identity.
+    Authored {
+        contract: LitStr,
+        request_identity: Option<LitStr>,
+        response_identity: Option<LitStr>,
+    },
+    /// A typed operation descriptor: the field names a type implementing
+    /// [`phoxal::contracts::Operation`], which carries the identity and both
+    /// payload types.
+    Descriptor { descriptor: Path },
+}
+
+/// One payload type reference: a message path, or an associated payload of
+/// an operation descriptor.
+enum PayloadRef {
+    Message(Path),
+    Descriptor { descriptor: Path, response: bool },
+}
+
+impl PayloadRef {
+    /// The payload type at one `super::` depth inside the generated module.
+    fn at(&self, depth: usize) -> Type {
+        match self {
+            PayloadRef::Message(path) => {
+                let anchored = anchored(path, depth);
+                syn::parse_quote!(#anchored)
+            }
+            PayloadRef::Descriptor {
+                descriptor,
+                response,
+            } => {
+                let anchored = anchored(descriptor, depth);
+                if *response {
+                    syn::parse_quote!(
+                        <#anchored as ::phoxal::contracts::Operation>::Response
+                    )
+                } else {
+                    syn::parse_quote!(
+                        <#anchored as ::phoxal::contracts::Operation>::Request
+                    )
+                }
+            }
+        }
+    }
 }
 
 /// Attribute values collected from one endpoint field.
@@ -88,6 +149,10 @@ fn parse_options(attrs: &[syn::Attribute], role: &str) -> syn::Result<FieldOptio
                 attr,
                 "an endpoint field declares exactly one role",
             ));
+        }
+        // A bare `#[phoxal::output]` selects the role with every default.
+        if matches!(attr.meta, syn::Meta::Path(_)) {
+            continue;
         }
         attr.parse_nested_meta(|meta| {
             let integer = |meta: &syn::meta::ParseNestedMeta<'_>| -> syn::Result<LitInt> {
@@ -255,12 +320,35 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
     let mut output_methods = Vec::new();
     let mut constants = Vec::new();
     let mut aliases = Vec::new();
-    let mut projection_traits = Vec::new();
+    let mut projection_table_fields = Vec::new();
+    let mut projection_table_defaults = Vec::new();
+    let mut projection_table_setters = Vec::new();
     let mut encode_statements = Vec::new();
     let mut binding_fields = Vec::new();
     let mut port_checks = Vec::new();
     let mut call_handles = Vec::new();
     let mut retention = Vec::new();
+    let mut view_methods = Vec::new();
+    let mut call_field_names: Vec<syn::Ident> = Vec::new();
+    let mut dispatch_table_fields = Vec::new();
+    let mut dispatch_table_defaults = Vec::new();
+    let mut dispatch_table_setters = Vec::new();
+    let mut dispatch_admissions = Vec::new();
+    let mut dispatch_arms = Vec::new();
+    let mut event_dispatch = Vec::new();
+    let mut input_descriptors: Vec<(proc_macro2::Ident, syn::Path)> = Vec::new();
+    let mut view_idents: Vec<Ident> = Vec::new();
+    let mut operation_position = 0_usize;
+    let mut harness_fields = Vec::new();
+    let mut harness_methods = Vec::new();
+    let mut harness_build = Vec::new();
+    let mut harness_capture = Vec::new();
+    let mut harness_validation = Vec::new();
+    let mut harness_take_reply = Vec::new();
+    let mut harness_staged_check = Vec::new();
+    let mut first_call_field: Option<Ident> = None;
+    let mut harness_clear = Vec::new();
+    let mut harness_method_names: Vec<Ident> = Vec::new();
 
     for endpoint in &endpoints {
         match endpoint {
@@ -292,6 +380,76 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                             #[::phoxal::runtime::input(#max_age max_bytes = #max_bytes)]
                             pub #name: ::phoxal::runtime::input::Latest<#anchored_message>,
                         });
+                        let max_age_argument = max_age_ms.as_ref().map_or_else(
+                            || quote!(::std::option::Option::None),
+                            |value| quote!(::std::option::Option::Some(#value)),
+                        );
+                        view_methods.push(quote! {
+                            /// Reads this latest observation against its declared age bound.
+                            ///
+                            /// The returned read borrows the frozen input cut,
+                            /// not this view: `ctx.#name().fresh()` may be bound
+                            /// across other uses of the context in one handler.
+                            pub fn #name(&self) -> ::phoxal::runtime::Observation<'a, #anchored_message> {
+                                ::phoxal::runtime::Observation::new(
+                                    &self.inputs.#name,
+                                    self.step.now(),
+                                    #max_age_argument,
+                                )
+                            }
+                        });
+                        let staged = format_ident!("{}_staged_latest", name);
+                        let endpoint_str = name.to_string();
+                        let inject = format_ident!("inject_{}", name);
+                        harness_method_names.push(inject.clone());
+                        harness_fields.push(quote! {
+                            pub(crate) #staged: ::std::option::Option<
+                                ::phoxal::runtime::Sample<#anchored_message>,
+                            >,
+                        });
+                        harness_methods.push(quote! {
+                            /// Injects one stamped latest observation for this
+                            /// input. The injected value (with its original
+                            /// stamp and source) enters the NEXT frozen cut
+                            /// and every later cut until replaced: Latest
+                            /// retention, never a capacity-one queue. A
+                            /// second injection before the next cut replaces
+                            /// the pending value whole.
+                            pub fn #inject(
+                                &mut self,
+                                sample: ::phoxal::runtime::Sample<#anchored_message>,
+                            ) -> ::std::result::Result<(), ::phoxal::runtime::HarnessError> {
+                                let bytes = <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                    encode_payload(sample.payload()).map_err(|_| {
+                                        ::phoxal::runtime::HarnessError::PendingUnencodable {
+                                            endpoint: #endpoint_str,
+                                        }
+                                    })?;
+                                if bytes.len() as u64 > #max_bytes {
+                                    return ::std::result::Result::Err(
+                                        ::phoxal::runtime::HarnessError::PendingFull {
+                                            endpoint: #endpoint_str,
+                                        },
+                                    );
+                                }
+                                self.#staged = ::std::option::Option::Some(sample);
+                                ::std::result::Result::Ok(())
+                            }
+                        });
+                        harness_build.push(quote! {
+                            // Latest retention: the accepted observation is
+                            // re-applied to every frozen cut until replaced,
+                            // preserving its original stamp and source.
+                            if let ::std::option::Option::Some(sample) = &view.#staged {
+                                inputs.#name = ::phoxal::runtime::input::Latest::new(
+                                    ::std::clone::Clone::clone(sample.payload()),
+                                    ::std::clone::Clone::clone(sample.stamp()),
+                                );
+                            }
+                        });
+                        harness_clear.push(quote! {
+                            view.#staged = ::std::option::Option::None;
+                        });
                     }
                     (false, Some(lease)) => {
                         let max_age = max_age_ms
@@ -300,6 +458,16 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         input_fields.push(quote! {
                             #[::phoxal::runtime::input(port = #constant.setpoint_port(), #max_age max_bytes = #max_bytes)]
                             pub #name: ::phoxal::runtime::input::Setpoint<#anchored_message>,
+                        });
+                        view_methods.push(quote! {
+                            /// Reads this leased intent against its lease validity.
+                            ///
+                            /// The returned read borrows the frozen input cut,
+                            /// not this view: `ctx.#name().valid()` may be bound
+                            /// across other uses of the context in one handler.
+                            pub fn #name(&self) -> ::phoxal::runtime::Leased<'a, #anchored_message> {
+                                ::phoxal::runtime::Leased::new(&self.inputs.#name, self.step.now())
+                            }
                         });
                         let wire = wire_name(message);
                         constants.push(quote! {
@@ -322,6 +490,148 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         input_fields.push(quote! {
                             #[::phoxal::runtime::input(max_items = #max_items, max_bytes = #max_bytes)]
                             pub #name: ::phoxal::runtime::input::Samples<#anchored_message>,
+                        });
+                        view_methods.push(quote! {
+                            /// Reads this queued batch of stamped samples as one
+                            /// frozen cut; batch-level collection keeps its own
+                            /// cross-sample capture-time semantics.
+                            ///
+                            /// The returned read borrows the frozen input cut,
+                            /// not this view.
+                            pub fn #name(
+                                &self,
+                            ) -> &'a ::phoxal::runtime::input::Samples<#anchored_message> {
+                                &self.inputs.#name
+                            }
+                        });
+                        let staged = format_ident!("{}_staged", name);
+                        let staged_bytes = format_ident!("{}_staged_bytes", name);
+                        let endpoint_str = name.to_string();
+                        input_descriptors.push((name.clone(), message.clone()));
+                        let enqueue = format_ident!("enqueue_{}", name);
+                        let source_name = format!("harness.{endpoint_str}");
+                        harness_fields.push(quote! {
+                            pub(crate) #staged: ::std::vec::Vec<#anchored_message>,
+                            pub(crate) #staged_bytes: usize,
+                        });
+                        harness_method_names.push(enqueue.clone());
+                        harness_methods.push(quote! {
+                            /// Stages one queued item for this input; it is admitted at the
+                            /// next executed release, bounded by the endpoint's declared
+                            /// item and byte bounds.
+                            pub fn #enqueue(
+                                &mut self,
+                                item: #anchored_message,
+                            ) -> ::std::result::Result<(), ::phoxal::runtime::HarnessError> {
+                                let bytes = <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                    encode_payload(&item).map_err(|_| {
+                                        ::phoxal::runtime::HarnessError::PendingUnencodable {
+                                            endpoint: #endpoint_str,
+                                        }
+                                    })?.len();
+                                if self.#staged.len() as u64 >= #max_items
+                                    || self.#staged_bytes + bytes > #max_bytes as usize
+                                {
+                                    return ::std::result::Result::Err(
+                                        ::phoxal::runtime::HarnessError::PendingFull {
+                                            endpoint: #endpoint_str,
+                                        },
+                                    );
+                                }
+                                self.#staged_bytes += bytes;
+                                self.#staged.push(item);
+                                ::std::result::Result::Ok(())
+                            }
+                        });
+                        harness_clear.push(quote! {
+                            view.#staged.clear();
+                            view.#staged_bytes = 0;
+                        });
+                        harness_build.push(quote! {
+                            view.#staged_bytes = 0;
+                            inputs.#name = ::phoxal::runtime::input::Samples::new(
+                                view.#staged
+                                    .drain(..)
+                                    .map(|item| {
+                                        ::phoxal::runtime::Sample::new(
+                                            item,
+                                            ::phoxal::runtime::ObservationStamp::new(
+                                                #source_name,
+                                                now,
+                                                ::std::option::Option::None,
+                                            ),
+                                        )
+                                    })
+                                    .collect(),
+                            );
+                        });
+                        dispatch_table_defaults.push(quote! { #name: ::std::option::Option::None });
+                        dispatch_table_fields.push(quote! {
+                            /// The attached runtime's per-item handler for
+                            /// queued input `#name`; unregistered means the
+                            /// runtime reads the whole frozen batch from
+                            /// its step instead.
+                            pub #name: ::std::option::Option<
+                                ::std::boxed::Box<
+                                    dyn ::std::ops::Fn(
+                                            &mut R,
+                                            &mut ::phoxal::runtime::Context<'_, R>,
+                                            #anchored_message,
+                                        ) -> ::phoxal::Result<()>
+                                        + ::std::marker::Send,
+                                >,
+                            >,
+                        });
+                        dispatch_table_setters.push(quote! {
+                            /// Registers the attached runtime's per-item
+                            /// handler for queued input `#name`.
+                            pub fn #name<F>(&mut self, handler: F)
+                            where
+                                F: ::std::ops::Fn(
+                                        &mut R,
+                                        &mut ::phoxal::runtime::Context<'_, R>,
+                                        #anchored_message,
+                                    ) -> ::phoxal::Result<()>
+                                    + ::std::marker::Send
+                                    + 'static,
+                            {
+                                self.#name =
+                                    ::std::option::Option::Some(::std::boxed::Box::new(handler));
+                            }
+                        });
+                        event_dispatch.push(quote! {
+                            // Copy this admitted batch into every active
+                            // typed capture of the field BEFORE ordinary
+                            // handlers drain it: a handler and an explicit
+                            // capture may both observe the same event.
+                            if resources.captures.has_active(#endpoint_str) {
+                                for sample in inputs.#name.items() {
+                                    if let ::std::result::Result::Ok(bytes) =
+                                        <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                            encode_payload(sample.payload())
+                                    {
+                                        resources.captures.copy_admitted(
+                                            #endpoint_str,
+                                            step.invocation_index(),
+                                            bytes.as_slice(),
+                                        );
+                                    }
+                                }
+                            }
+                            if let ::std::option::Option::Some(handler) = table.#name.as_ref() {
+                                for sample in inputs.#name.items() {
+                                    let mut context =
+                                        resources.context::<R>(step, inputs, outputs)
+                                            .with_dispatch_source(::std::option::Option::Some(
+                                                sample.stamp().source(),
+                                            ));
+                                    handler(
+                                        state,
+                                        &mut context,
+                                        ::std::clone::Clone::clone(sample.payload()),
+                                    )?;
+                                }
+                            }
                         });
                     }
                 }
@@ -389,6 +699,74 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                             ::std::result::Result::Ok(())
                         }
                     });
+                    let emit = format_ident!("emit_{}", name);
+                    view_methods.push(quote! {
+                        /// Stages one event for this output's accepted batch.
+                        pub fn #emit(&mut self, value: #anchored_message) -> ::phoxal::Result<()> {
+                            self.outputs.#name.push(value);
+                            ::std::result::Result::Ok(())
+                        }
+                    });
+                    view_idents.push(emit);
+                    let retained = format_ident!("{}_retained", name);
+                    let bytes_field = format_ident!("{}_bytes", name);
+                    harness_fields.push(quote! {
+                        pub(crate) #retained: ::std::vec::Vec<#anchored_message>,
+                        pub(crate) #bytes_field: usize,
+                    });
+                    harness_method_names.push(name.clone());
+                    harness_methods.push(quote! {
+                        /// Drains the accepted events retained for this output.
+                        /// Undrained retention is bounded by the endpoint's
+                        /// declared item and byte bounds.
+                        pub fn #name(&mut self) -> ::std::vec::Vec<#anchored_message> {
+                            self.#bytes_field = 0;
+                            ::std::mem::take(&mut self.#retained)
+                        }
+                    });
+                    harness_clear.push(quote! {
+                        view.#retained.clear();
+                        view.#bytes_field = 0;
+                    });
+                    harness_validation.push(quote! {
+                        let mut added_bytes = 0_usize;
+                        for item in &outputs.#name {
+                            added_bytes += <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(item)?.len();
+                        }
+                        if view.#retained.len() as u64 + outputs.#name.len() as u64
+                            > #max_items
+                            || view.#bytes_field as u64 + added_bytes as u64 > #max_bytes
+                        {
+                            return ::std::result::Result::Err(::phoxal::anyhow!(
+                                ::phoxal::runtime::HarnessError::RetainedFull
+                            ));
+                        }
+                    });
+                    harness_capture.push(quote! {
+                        // Retention reserves the whole accepted batch before
+                        // committing any of it: a batch that would exceed the
+                        // endpoint's declared bounds contributes nothing, so a
+                        // retention failure can never partially capture an
+                        // accepted batch.
+                        let mut added_bytes = 0_usize;
+                        for item in &outputs.#name {
+                            added_bytes += <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(item)?.len();
+                        }
+                        if view.#retained.len() as u64 + outputs.#name.len() as u64
+                            > #max_items
+                            || view.#bytes_field as u64 + added_bytes as u64 > #max_bytes
+                        {
+                            return ::std::result::Result::Err(::phoxal::anyhow!(
+                                ::phoxal::runtime::HarnessError::RetainedFull
+                            ));
+                        }
+                        for item in &outputs.#name {
+                            view.#retained.push(::std::clone::Clone::clone(item));
+                        }
+                        view.#bytes_field += added_bytes;
+                    });
                 } else if *projection {
                     constants.push(quote! {
                         pub const #constant: ::phoxal::contracts::ObservationMethod<#anchored_message> =
@@ -403,11 +781,27 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                                 &[],
                             );
                     });
-                    projection_traits.push(projection_trait_entry(
-                        name,
-                        &anchored(message, 2),
-                        lease_ms.is_some(),
-                    ));
+                    if lease_ms.is_none() {
+                        let endpoint_str = name.to_string();
+                        harness_method_names.push(name.clone());
+                        harness_methods.push(quote! {
+                            /// The latest accepted publication for this retained state
+                            /// output, including its bootstrap publication. The value
+                            /// is decoded lazily from the accepted encoded record.
+                            pub fn #name(&self) -> ::std::option::Option<#anchored_message> {
+                                self.state_records
+                                    .get(#endpoint_str)
+                                    .and_then(|bytes| {
+                                        ::phoxal::runtime::transport::decode_prost(bytes).ok()
+                                    })
+                            }
+                        });
+                    }
+                    let (table_field, table_setter) =
+                        projection_table_entries(name, &anchored(message, 1), lease_ms.is_some());
+                    projection_table_fields.push(table_field);
+                    projection_table_setters.push(table_setter);
+                    projection_table_defaults.push(quote! { #name: ::std::option::Option::None });
                     encode_statements.push(encode_statement(
                         name, &constant, lease_ms, max_bytes, *on_change,
                     ));
@@ -445,63 +839,161 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                             ::std::result::Result::Ok(())
                         }
                     });
+                    let publish = format_ident!("publish_{}", name);
+                    view_methods.push(quote! {
+                        /// Stages the retained observation for this step.
+                        pub fn #publish(&mut self, value: #anchored_message) -> ::phoxal::Result<()> {
+                            self.outputs.#name(value)
+                        }
+                    });
+                    view_idents.push(publish);
+                    let endpoint_str = name.to_string();
+                    harness_method_names.push(name.clone());
+                    harness_methods.push(quote! {
+                        /// The latest accepted publication for this retained
+                        /// latest output, decoded from its accepted encoded
+                        /// record. An invocation that publishes no replacement
+                        /// leaves the previously accepted value; a `Latest`
+                        /// marker alone authorizes no initial publication.
+                        pub fn #name(&self) -> ::std::option::Option<#anchored_message> {
+                            self.state_records
+                                .get(#endpoint_str)
+                                .and_then(|bytes| {
+                                    ::phoxal::runtime::transport::decode_prost(bytes).ok()
+                                })
+                        }
+                    });
+                    // Validate the staged replacement's encoding before the
+                    // owner accepts the candidate: a rejected candidate
+                    // exposes no new latest output.
+                    harness_validation.push(quote! {
+                        if let ::std::option::Option::Some(value) = &outputs.#name {
+                            let bytes = <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(value)?;
+                            if bytes.len() as u64 > #max_bytes {
+                                return ::std::result::Result::Err(::phoxal::anyhow!(
+                                    ::phoxal::runtime::HarnessError::RetainedFull
+                                ));
+                            }
+                        }
+                    });
+                    // Capture the accepted replacement; absence retains the
+                    // previous accepted record.
+                    harness_capture.push(quote! {
+                        if let ::std::option::Option::Some(value) = &outputs.#name {
+                            let bytes = <#anchored_message as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(value)?;
+                            view.state_records.insert(#endpoint_str, bytes);
+                        }
+                    });
                 }
             }
             Endpoint::Request {
                 name,
-                contract,
+                source,
                 request,
                 response,
-                request_identity,
-                response_identity,
                 max_items,
                 max_bytes,
                 call,
             } => {
-                let anchored_request = anchored(request, 1);
-                let anchored_response = anchored(response, 1);
+                let anchored_request = request.at(1);
+                let anchored_response = response.at(1);
                 let constant = format_ident!("{}", name.to_string().to_shouty_snake_case());
-                // An explicit identity marks a foreign payload whose
-                // definition ships with the prepared provider closure.
-                if request_identity.is_none() && !is_empty(request) {
-                    retention.push(quote!(
-                        <#anchored_request as ::phoxal::schema::MessageSchema>::retain_schema()
-                    ));
-                }
-                if response_identity.is_none() && !is_empty(response) {
-                    retention.push(quote!(
-                        <#anchored_response as ::phoxal::schema::MessageSchema>::retain_schema()
-                    ));
-                }
-                let request_wire = identity_or_wire(request_identity, request);
-                let response_wire = identity_or_wire(response_identity, response);
-                constants.push(quote! {
-                    pub const #constant: ::phoxal::contracts::CallMethod<#anchored_request, #anchored_response> =
-                        ::phoxal::contracts::CallMethod::new(
-                            #contract,
-                            stringify!(#name),
-                            stringify!(#name),
-                            #request_wire,
-                            #response_wire,
-                            ::std::option::Option::None,
-                            &[],
-                        );
-                });
+                let constant_definition = match source {
+                    RequestSource::Descriptor { descriptor } => {
+                        let anchored_descriptor = anchored(descriptor, 1);
+                        retention.push(quote!(
+                            <#anchored_request as ::phoxal::schema::MessageSchema>::retain_schema()
+                        ));
+                        retention.push(quote!(
+                            <#anchored_response as ::phoxal::schema::MessageSchema>::retain_schema()
+                        ));
+                        quote! {
+                            pub const #constant: ::phoxal::contracts::CallMethod<#anchored_request, #anchored_response> =
+                                <#anchored_descriptor as ::phoxal::contracts::Operation>::METHOD;
+
+                            const _: () = <#anchored_descriptor as ::phoxal::contracts::Operation>::CALL_SHAPE;
+                        }
+                    }
+                    RequestSource::Authored {
+                        contract,
+                        request_identity,
+                        response_identity,
+                    } => {
+                        // An explicit identity marks a foreign payload whose
+                        // definition ships with the prepared provider closure.
+                        let (PayloadRef::Message(request_path), PayloadRef::Message(response_path)) =
+                            (request, response)
+                        else {
+                            unreachable!("authored requests carry message paths")
+                        };
+                        if request_identity.is_none() && !is_empty(request_path) {
+                            retention.push(quote!(
+                                <#anchored_request as ::phoxal::schema::MessageSchema>::retain_schema()
+                            ));
+                        }
+                        if response_identity.is_none() && !is_empty(response_path) {
+                            retention.push(quote!(
+                                <#anchored_response as ::phoxal::schema::MessageSchema>::retain_schema()
+                            ));
+                        }
+                        let request_wire = identity_or_wire(request_identity, request_path);
+                        let response_wire = identity_or_wire(response_identity, response_path);
+                        quote! {
+                            pub const #constant: ::phoxal::contracts::CallMethod<#anchored_request, #anchored_response> =
+                                ::phoxal::contracts::CallMethod::new(
+                                    #contract,
+                                    stringify!(#name),
+                                    stringify!(#name),
+                                    #request_wire,
+                                    #response_wire,
+                                    ::std::option::Option::None,
+                                    &[],
+                                );
+                        }
+                    }
+                };
+                constants.push(constant_definition);
                 if *call {
                     input_fields.push(quote! {
                         #[::phoxal::runtime::input(port = #constant.commands_port(), max_items = #max_items, max_bytes = #max_bytes)]
                         pub #name: ::phoxal::runtime::input::Completions,
                     });
+                    if first_call_field.is_none() {
+                        first_call_field = Some(name.clone());
+                    }
+                    call_field_names.push(name.clone());
                     // The handles live in the nested `calls` module, one
                     // level deeper than the rest of the generated surface.
-                    let handle_request = anchored(request, 2);
-                    let handle_response = anchored(response, 2);
+                    let handle_request = request.at(2);
+                    let handle_response = response.at(2);
+                    let field_str = name.to_string();
                     call_handles.push(quote! {
-                        /// Stages one call on this composition-bound requirement; its typed
-                        /// completion arrives in a later input cut.
+                        /// Stages one call on this composition-bound requirement,
+                        /// carrying the field's own identity through routing; its
+                        /// typed completion arrives in a later input cut.
                         #[must_use]
                         pub fn #name(request: #handle_request) -> ::phoxal::contracts::Call<#handle_request, #handle_response> {
-                            super::#constant.bind("", request)
+                            super::#constant.bind(#field_str, request)
+                        }
+                    });
+                    let field_str = name.to_string();
+                    view_methods.push(quote! {
+                        /// Stages one call on this composition-bound requirement; its
+                        /// typed completion arrives in a later input cut, owned by
+                        /// this field's direct completion handler.
+                        pub fn #name(
+                            &mut self,
+                            request: #anchored_request,
+                        ) -> ::phoxal::Result<
+                            ::phoxal::runtime::CallTicket<#anchored_response>,
+                        > {
+                            self.outputs.send_direct(
+                                self.step,
+                                calls::#name(request),
+                                #field_str,
+                            )
                         }
                     });
                 } else {
@@ -515,11 +1007,197 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         #[::phoxal::runtime::outputs::reply(#name, max_items = #max_items, max_bytes = #max_bytes)]
                         pub #replies: ::std::vec::Vec<::phoxal::runtime::Reply<#anchored_response>>,
                     });
+                    let staged = format_ident!("{}_staged", name);
+                    let staged_bytes = format_ident!("{}_staged_bytes", name);
+                    let replies_store = format_ident!("{}_harness_replies", name);
+                    let replies_bytes = format_ident!("{}_harness_reply_bytes", name);
+                    let endpoint_str = name.to_string();
+                    let enqueue = format_ident!("enqueue_{}", name);
+                    harness_fields.push(quote! {
+                        pub(crate) #staged: ::std::vec::Vec<
+                            ::phoxal::runtime::input::Command<#anchored_request, #anchored_response>,
+                        >,
+                        pub(crate) #staged_bytes: usize,
+                        pub(crate) #replies_store: ::std::vec::Vec<(
+                            ::phoxal::runtime::input::CommandId,
+                            ::std::vec::Vec<u8>,
+                        )>,
+                        pub(crate) #replies_bytes: usize,
+                    });
+                    harness_method_names.push(enqueue.clone());
+                    harness_methods.push(quote! {
+                        /// Stages one request for this operation; it is admitted at the
+                        /// next executed release, bounded by the endpoint's declared item
+                        /// and byte bounds. The returned correlation is consumed by
+                        /// `Harness::reply` once its response has been accepted, and
+                        /// correlations stay unique across resets.
+                        pub fn #enqueue(
+                            &mut self,
+                            request: #anchored_request,
+                        ) -> ::std::result::Result<
+                            ::phoxal::runtime::HarnessCall<#anchored_response>,
+                            ::phoxal::runtime::HarnessError,
+                        > {
+                            let bytes = <#anchored_request as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(&request).map_err(|_| {
+                                    ::phoxal::runtime::HarnessError::PendingUnencodable {
+                                        endpoint: #endpoint_str,
+                                    }
+                                })?.len();
+                            if self.#staged.len() as u64 >= #max_items
+                                || self.#staged_bytes + bytes > #max_bytes as usize
+                            {
+                                return ::std::result::Result::Err(
+                                    ::phoxal::runtime::HarnessError::PendingFull {
+                                        endpoint: #endpoint_str,
+                                    },
+                                );
+                            }
+                            let id = ::phoxal::runtime::input::CommandId::new(self.next_call);
+                            self.next_call += 1;
+                            self.#staged_bytes += bytes;
+                            self.#staged.push(
+                                ::phoxal::runtime::input::Command::with_order(
+                                    ::phoxal::runtime::input::CommandOrder::new(0, 0, id),
+                                    request,
+                                ),
+                            );
+                            ::std::result::Result::Ok(
+                                ::phoxal::runtime::HarnessCall::new(id, self.harness_id),
+                            )
+                        }
+                    });
+                    harness_clear.push(quote! {
+                        view.#staged.clear();
+                        view.#staged_bytes = 0;
+                        view.#replies_store.clear();
+                        view.#replies_bytes = 0;
+                    });
+                    harness_build.push(quote! {
+                        view.#staged_bytes = 0;
+                        inputs.#name = ::phoxal::runtime::input::Commands::new(
+                            ::std::mem::take(&mut view.#staged),
+                        );
+                    });
+                    harness_capture.push(quote! {
+                        for reply in &outputs.#replies {
+                            let bytes = <#anchored_response as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(reply.response())?;
+                            view.#replies_store.push((reply.id(), bytes.clone()));
+                            view.#replies_bytes += bytes.len();
+                        }
+                    });
+                    harness_validation.push(quote! {
+                        let mut added_replies = 0_usize;
+                        let mut added_reply_bytes = 0_usize;
+                        for reply in &outputs.#replies {
+                            added_reply_bytes += <#anchored_response as ::phoxal::contracts::ProstPayload>::
+                                encode_payload(reply.response())?.len();
+                            added_replies += 1;
+                        }
+                        if view.#replies_store.len() + added_replies > #max_items as usize
+                            || view.#replies_bytes + added_reply_bytes > #max_bytes as usize
+                        {
+                            return ::std::result::Result::Err(::phoxal::anyhow!(
+                                ::phoxal::runtime::HarnessError::RetainedFull
+                            ));
+                        }
+                    });
+                    harness_take_reply.push(quote! {
+                        if let Some(position) = view
+                            .#replies_store
+                            .iter()
+                            .position(|(reply_id, _)| *reply_id == id)
+                        {
+                            let (_, bytes) = view.#replies_store.remove(position);
+                            view.#replies_bytes = view.#replies_bytes.saturating_sub(bytes.len());
+                            return ::std::option::Option::Some(bytes);
+                        }
+                    });
+                    harness_staged_check.push(quote! {
+                        if view.#staged.iter().any(|command| {
+                            command.order().sequence() == id
+                        }) {
+                            return true;
+                        }
+                    });
                     output_methods.push(quote! {
                         /// Replies to one accepted request.
                         pub fn #reply_method(&mut self, reply: ::phoxal::runtime::Reply<#anchored_response>) -> ::phoxal::Result<()> {
                             self.#replies.push(reply);
                             ::std::result::Result::Ok(())
+                        }
+                    });
+                    let position = operation_position;
+                    operation_position += 1;
+                    dispatch_table_defaults.push(quote! { #name: ::std::option::Option::None });
+                    dispatch_table_fields.push(quote! {
+                        /// The attached runtime's handler for operation
+                        /// `#name`, registered through the dispatch table.
+                        pub #name: ::std::option::Option<
+                            ::std::boxed::Box<
+                                dyn ::std::ops::Fn(
+                                        &mut R,
+                                        &mut ::phoxal::runtime::Context<'_, R>,
+                                        #anchored_request,
+                                    ) -> ::phoxal::Result<#anchored_response>
+                                    + ::std::marker::Send,
+                            >,
+                        >,
+                    });
+                    dispatch_table_setters.push(quote! {
+                        /// Registers the attached runtime's handler for
+                        /// operation `#name`.
+                        pub fn #name<F>(&mut self, handler: F)
+                        where
+                            F: ::std::ops::Fn(
+                                    &mut R,
+                                    &mut ::phoxal::runtime::Context<'_, R>,
+                                    #anchored_request,
+                                ) -> ::phoxal::Result<#anchored_response>
+                                + ::std::marker::Send
+                                + 'static,
+                        {
+                            self.#name = ::std::option::Option::Some(::std::boxed::Box::new(handler));
+                        }
+                    });
+                    let name_str = name.to_string();
+                    dispatch_admissions.push(quote! {
+                        admitted.extend(
+                            inputs.#name.items().iter().enumerate().map(|(index, command)| {
+                                (command.order(), #position, index)
+                            }),
+                        );
+                        inputs
+                            .#name
+                            .validate_order()
+                            .map_err(|error| ::phoxal::anyhow!(error))?;
+                    });
+                    dispatch_arms.push(quote! {
+                        #position => {
+                            let command = &inputs.#name.items()[index];
+                            let handler = table
+                                .#name
+                                .as_ref()
+                                .unwrap_or_else(|| {
+                                    ::std::panic!(
+                                        "operation `{}` has no registered handler; declare                                          #[handle({})] on the attached runtime",
+                                        #name_str,
+                                        #name_str,
+                                    )
+                                });
+                            let mut context =
+                                resources.context::<R>(step, inputs, outputs)
+                                    .with_dispatch_source(::std::option::Option::Some(
+                                        command.source(),
+                                    ));
+                            let response = handler(
+                                state,
+                                &mut context,
+                                ::std::clone::Clone::clone(command.request()),
+                            )?;
+                            ::std::mem::drop(context);
+                            outputs.#replies.push(command.reply(response));
                         }
                     });
                 }
@@ -539,6 +1217,36 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
             {
                 self.operations.send(context, operation)
             }
+
+            /// Stages one generated call for the named field's direct
+            /// completion handler, recording that field's exclusive
+            /// ownership of the eventual completion.
+            pub(crate) fn send_direct<O>(
+                &mut self,
+                context: &::phoxal::runtime::StepContext,
+                operation: O,
+                field: &'static str,
+            ) -> ::phoxal::Result<::phoxal::runtime::outputs::CallTicket<O::Response>>
+            where
+                O: ::phoxal::runtime::outputs::GeneratedSend,
+            {
+                self.operations.send_direct(context, operation, field)
+            }
+
+            /// Stages one generated call owned by the submitting tree
+            /// generation, qualified by this execution's epoch and
+            /// recorded for promotion with the candidate.
+            pub(crate) fn send_tree<O>(
+                &mut self,
+                context: &::phoxal::runtime::StepContext,
+                generation: u64,
+                operation: O,
+            ) -> ::phoxal::Result<::phoxal::runtime::outputs::CallTicket<O::Response>>
+            where
+                O: ::phoxal::runtime::outputs::GeneratedSend,
+            {
+                self.operations.send_tree(context, generation, operation)
+            }
         }
     } else {
         quote! {
@@ -547,6 +1255,49 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                 &mut self.operations
             }
         }
+    };
+
+    // The ownership handoffs consumed by the runtime adapter after each
+    // accepted candidate: one take clears the candidate's records.
+    let outputs_owner_member = quote! {
+        pub(crate) fn take_direct_owners(
+            &mut self,
+        ) -> ::std::vec::Vec<(u128, &'static str)> {
+            self.operations.take_direct_owners()
+        }
+
+        pub(crate) fn take_tree_owners(&mut self) -> ::std::vec::Vec<(u128, u64)> {
+            self.operations.take_tree_owners()
+        }
+
+        /// Withdraws one not-yet-accepted call submission from this
+        /// candidate output transaction.
+        pub(crate) fn withdraw(&mut self, ticket: u128) -> bool {
+            self.operations.withdraw(ticket)
+        }
+    };
+
+    // The view-level tree-owned staging method, present exactly when the
+    // contract declares generated calls.
+    let view_stage_member = if has_calls {
+        quote! {
+            /// Stages one generated call on this invocation's output
+            /// transaction, owned by the submitting tree generation: the
+            /// caller keeps the returned ticket and consumes the
+            /// completion itself.
+            pub fn stage<O>(
+                &mut self,
+                generation: u64,
+                operation: O,
+            ) -> ::phoxal::Result<::phoxal::runtime::CallTicket<O::Response>>
+            where
+                O: ::phoxal::runtime::outputs::GeneratedSend,
+            {
+                self.outputs.send_tree(self.step, generation, operation)
+            }
+        }
+    } else {
+        quote! {}
     };
 
     let inputs_impl = if freshness.is_empty() {
@@ -559,20 +1310,443 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
         }
     };
 
-    let projections_module = if projection_traits.is_empty() {
+    // Endpoint view methods share one namespace with the SDK context's own
+    // methods; the context resolves its inherent methods first, so a
+    // colliding endpoint name would be silently unreachable.
+    for endpoint in &endpoints {
+        match endpoint {
+            Endpoint::Input { name, .. } => view_idents.push(name.clone()),
+            Endpoint::Request {
+                name, call: true, ..
+            } => view_idents.push(name.clone()),
+            _ => {}
+        }
+    }
+    for ident in &view_idents {
+        let collision = [
+            "new",
+            "now",
+            "period",
+            "elapsed",
+            "missed_releases",
+            "invocation_index",
+        ]
+        .iter()
+        .any(|reserved| ident == reserved);
+        if collision {
+            return Err(syn::Error::new_spanned(
+                ident,
+                format!("endpoint `{ident}` collides with a context method; rename the endpoint"),
+            ));
+        }
+    }
+    for (index, ident) in view_idents.iter().enumerate() {
+        if view_idents[..index].contains(ident) {
+            return Err(syn::Error::new_spanned(
+                ident,
+                format!(
+                    "endpoint `{ident}` and an earlier endpoint generate the same context \
+                     method; rename one of them"
+                ),
+            ));
+        }
+    }
+
+    let dispatch_loop = if dispatch_arms.is_empty() {
         quote!()
     } else {
         quote! {
-            /// State-projection hooks owned by the service implementation.
-            /// The contract owns registration, bounds, and invocation timing;
-            /// each hook owns payload construction from private state.
-            pub mod projections {
-                /// One projection hook per projected output.
-                pub trait Projections {
-                    /// The runtime state these hooks project from.
-                    type State;
-                    #(#projection_traits)*
+            let mut admitted: ::std::vec::Vec<(
+                ::phoxal::runtime::CommandOrder,
+                usize,
+                usize,
+            )> = ::std::vec::Vec::new();
+            #(#dispatch_admissions)*
+            // Requests merge by their admitted command order across every
+            // operation endpoint, with declaration order breaking exact ties;
+            // the attached runtime sees one cross-endpoint accepted trace.
+            admitted.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+            for (_, position, index) in admitted {
+                match position {
+                    #(#dispatch_arms)*
+                    _ => ::std::unreachable!("dispatch positions are generated"),
                 }
+            }
+        }
+    };
+
+    // Generated harness methods must be usable through the harness value:
+    // reject collisions with the SDK's own harness methods and duplicates
+    // among the generated ones before emitting the view.
+    let mut emitted_harness_methods = std::collections::BTreeSet::new();
+    for ident in &harness_method_names {
+        let method = ident.to_string();
+        if matches!(method.as_str(), "reply" | "reset" | "advance_to" | "new") {
+            return Err(syn::Error::new_spanned(
+                ident,
+                format!(
+                    "harness method `{method}` collides with an SDK harness \
+                     method; rename the endpoint"
+                ),
+            ));
+        }
+        if !emitted_harness_methods.insert(method.clone()) {
+            return Err(syn::Error::new_spanned(
+                ident,
+                format!(
+                    "duplicate generated harness method `{method}`; endpoint \
+                     names collide (for example an output named \
+                     `enqueue_{{op}}` beside an operation `{{op}}`); rename \
+                     the endpoint"
+                ),
+            ));
+        }
+    }
+
+    // The harness endpoint view is emitted for every contract: staged
+    // pending inputs, retained accepted effects, and the endpoint-specific
+    // enqueue/drain methods. Free functions move data between the view and
+    // the contract's input/output transactions; the runtime attachment
+    // supplies the state projections through the authored publish methods.
+    let harness_view = quote! {
+        /// The contract's harness endpoint view: staged pending inputs and
+        /// retained accepted effects with the endpoint-specific methods.
+        ///
+        /// Generated plumbing reached through `Harness<R>`; it is never
+        /// constructed by hand.
+        #[derive(Default)]
+        pub struct HarnessView {
+            /// Monotonic call correlation source.
+            pub(crate) next_call: u64,
+            /// The owning harness's identity, stamped into every issued
+            /// call correlation.
+            pub(crate) harness_id: u64,
+            /// Encoded state publications keyed by output field name.
+            pub(crate) state_records: ::std::collections::BTreeMap<
+                &'static str,
+                ::std::vec::Vec<u8>,
+            >,
+            #(#harness_fields)*
+        }
+
+        impl HarnessView {
+            #(#harness_methods)*
+        }
+
+        // The harness entry points are inherent on the contract type, so
+        // the runtime attachment resolves them through the contract rather
+        // than a generated module path.
+        impl #contract_name {
+        /// Freezes the staged inputs into one invocation's input cut,
+        /// stamping queued items at the release instant with harness
+        /// provenance.
+        pub(crate) fn harness_build_inputs(
+            view: &mut HarnessView,
+            now: ::phoxal::runtime::ExecutionTime,
+        ) -> Inputs {
+            let mut inputs = <Inputs as ::phoxal::runtime::input::InputSnapshot>::empty();
+            #(#harness_build)*
+            inputs
+        }
+
+        /// Retains one accepted invocation's transient outputs (replies and
+        /// queued events) within the contract's declared bounds.
+        pub(crate) fn harness_capture_transient(
+            view: &mut HarnessView,
+            outputs: &Outputs,
+        ) -> ::phoxal::Result<()> {
+            #(#harness_capture)*
+            ::std::result::Result::Ok(())
+        }
+
+
+        /// Validates that one candidate's complete retained effect — every
+        /// endpoint's events and correlated replies together with what is
+        /// already retained — fits the declared bounds, without mutating
+        /// anything. Called before the owner accepts the candidate.
+        pub(crate) fn harness_validate_retention(
+            view: &HarnessView,
+            outputs: &Outputs,
+        ) -> ::phoxal::Result<()> {
+            #(#harness_validation)*
+            ::std::result::Result::Ok(())
+        }
+
+        /// Reports whether one call correlation is still staged for a
+        /// future release, so its reply is pending rather than consumed.
+        pub(crate) fn harness_call_is_staged(
+            view: &HarnessView,
+            id: ::phoxal::runtime::input::CommandId,
+        ) -> bool {
+            #(#harness_staged_check)*
+            false
+        }
+
+        /// Takes the encoded reply for one call correlation, if accepted.
+        pub(crate) fn harness_take_reply_bytes(
+            view: &mut HarnessView,
+            id: ::phoxal::runtime::input::CommandId,
+        ) -> ::std::option::Option<::std::vec::Vec<u8>> {
+            #(#harness_take_reply)*
+            ::std::option::Option::None
+        }
+
+        /// The exclusive upper bound of issued call correlations.
+        pub(crate) fn harness_call_upper_bound(view: &HarnessView) -> u64 {
+            view.next_call
+        }
+
+        /// Binds the view to its owning harness identity.
+        pub(crate) fn harness_bind(view: &mut HarnessView, owner: u64) {
+            view.harness_id = owner;
+        }
+
+        /// Clears every staged input and retained effect while keeping the
+        /// call-correlation counter monotonic, so correlations enqueued
+        /// before a reset can never alias correlations enqueued after it.
+        pub(crate) fn harness_clear(view: &mut HarnessView) {
+            #(#harness_clear)*
+            view.state_records.clear();
+        }
+        }
+    };
+
+    // Generated completion-ownership helpers: one per calling contract,
+    // routing raw tickets through the contract's completion inputs. The
+    // runtime attachment's EndpointView override delegates here.
+    let completion_owner = match &first_call_field {
+        None => quote! {
+            /// This contract declares no generated calls: nothing completes.
+            #[allow(dead_code, reason = "the runtime attachment routes here")]
+            pub fn phoxal_take_completion(
+                _view: &mut Endpoints<'_>,
+                _ticket: u128,
+            ) -> ::std::option::Option<
+                ::std::result::Result<::std::vec::Vec<u8>, ::phoxal::runtime::input::RequestError>,
+            > {
+                ::std::option::Option::None
+            }
+
+            /// This contract declares no generated calls.
+            #[allow(dead_code, reason = "the runtime attachment routes here")]
+            pub fn phoxal_retire_completion(_view: &mut Endpoints<'_>, _ticket: u128) {}
+        },
+        Some(_field) => {
+            quote! {
+                /// Takes one completion by ticket from the contract's
+                /// single retained completion store, destructively.
+                #[allow(dead_code, reason = "the runtime attachment routes here")]
+                pub fn phoxal_take_completion(
+                    view: &mut Endpoints<'_>,
+                    ticket: u128,
+                ) -> ::std::option::Option<
+                    ::std::result::Result<::std::vec::Vec<u8>, ::phoxal::runtime::input::RequestError>,
+                > {
+                    view.inputs.take_completion_raw(ticket)
+                }
+
+                /// Retires one call's local completion eligibility: the
+                /// retained copy is released and the not-yet-accepted
+                /// submission is withdrawn from the candidate output
+                /// transaction, so cancellation before acceptance produces
+                /// no remote effect.
+                #[allow(dead_code, reason = "the runtime attachment routes here")]
+                pub fn phoxal_retire_completion(view: &mut Endpoints<'_>, ticket: u128) {
+                    let _ = Self::phoxal_take_completion(view, ticket);
+                    let _ = view.outputs.withdraw(ticket);
+                }
+            }
+        }
+    };
+
+    // Generated tree-owned staging: one hook per calling contract, routing
+    // the inert call through this invocation's output transaction without
+    // recording direct-field ownership. The runtime attachment's
+    // EndpointView override delegates here.
+    let staging_owner = if has_calls {
+        quote! {
+            /// Stages one generated call owned by the given tree
+            /// generation.
+            #[allow(dead_code, reason = "the runtime attachment routes here")]
+            pub fn phoxal_stage_operation<O>(
+                view: &mut Endpoints<'_>,
+                generation: u64,
+                operation: O,
+            ) -> ::phoxal::Result<::phoxal::runtime::CallTicket<O::Response>>
+            where
+                O: ::phoxal::runtime::outputs::GeneratedSend,
+            {
+                view.stage(generation, operation)
+            }
+        }
+    } else {
+        quote! {
+            /// This contract stages no generated operations.
+            #[allow(dead_code, reason = "the runtime attachment routes here")]
+            pub fn phoxal_stage_operation<O>(
+                _view: &mut Endpoints<'_>,
+                _generation: u64,
+                _operation: O,
+            ) -> ::phoxal::Result<::phoxal::runtime::CallTicket<O::Response>>
+            where
+                O: ::phoxal::runtime::outputs::GeneratedSend,
+            {
+                Err(::phoxal::anyhow!(
+                    "this runtime's contract stages no generated operations"
+                ))
+            }
+        }
+    };
+
+    // An endpoint view and dispatch driver are emitted for every contract,
+    // even one with no handled endpoints, so a runtime attachment can always
+    // bind and dispatch through the same surface.
+    let endpoints_view = quote! {
+        /// The generated endpoint view over one runtime invocation: typed
+        /// reads of this contract's inputs, inert staging of its calls, and
+        /// staging of its non-projected outputs.
+        ///
+        /// Authored code reaches these methods on the SDK context through
+        /// its `Deref`; the view itself is generated plumbing and is never
+        /// constructed by hand.
+        pub struct Endpoints<'a> {
+            step: &'a ::phoxal::runtime::StepContext,
+            inputs: &'a Inputs,
+            outputs: &'a mut Outputs,
+        }
+
+        impl<'a> Endpoints<'a> {
+            fn new(
+                step: &'a ::phoxal::runtime::StepContext,
+                inputs: &'a Inputs,
+                outputs: &'a mut Outputs,
+            ) -> Self {
+                Self {
+                    step,
+                    inputs,
+                    outputs,
+                }
+            }
+
+            #(#view_methods)*
+
+            #view_stage_member
+        }
+
+        /// The dispatch table one attached runtime registers its
+        /// `#[handle]` entry points into. Generated plumbing reached
+        /// through the contract type's dispatch function; it is never
+        /// constructed by hand.
+        pub struct DispatchTable<R: ::phoxal::runtime::EndpointView + ?Sized + 'static> {
+            #(#dispatch_table_fields)*
+            marker: ::std::marker::PhantomData<fn(&R)>,
+        }
+
+        impl<R: ::phoxal::runtime::EndpointView + ?Sized + 'static> ::std::default::Default
+            for DispatchTable<R>
+        {
+            fn default() -> Self {
+                Self {
+                    #(#dispatch_table_defaults,)*
+                    marker: ::std::marker::PhantomData,
+                }
+            }
+        }
+
+        impl<R: ::phoxal::runtime::EndpointView + ?Sized + 'static> DispatchTable<R> {
+            #(#dispatch_table_setters)*
+        }
+
+        impl #contract_name {
+            /// Dispatches one invocation's admitted requests and queued
+            /// events to the runtime's registered handlers.
+            ///
+            /// Requests merge across operation endpoints by their admitted
+            /// command order, with declaration order breaking exact ties, so
+            /// the attached runtime preserves the accepted cross-endpoint
+            /// trace. Queued events follow, endpoint by endpoint in
+            /// declaration order; no ordering relation exists across those
+            /// unrelated input classes.
+            ///
+            /// Resolution is compiler-directed through the contract type:
+            /// any import spelling of the contract attaches identically,
+            /// because the runtime registers its handlers into the table
+            /// through the endpoint names it authored.
+            pub fn phoxal_dispatch<R>(
+                step: &::phoxal::runtime::StepContext,
+                inputs: &Inputs,
+                outputs: &mut Outputs,
+                state: &mut R,
+                resources: &::phoxal::runtime::ContextResources<'_>,
+                attach: impl ::std::ops::FnOnce(&mut DispatchTable<R>),
+            ) -> ::phoxal::Result<()>
+            where
+                R: ::phoxal::runtime::EndpointView<Inputs = Inputs, Outputs = Outputs>
+                    + 'static,
+            {
+                let mut table = <DispatchTable<R> as Default>::default();
+                attach(&mut table);
+                #dispatch_loop
+                #(#event_dispatch)*
+                ::std::result::Result::Ok(())
+            }
+        }
+    };
+
+    // One typed descriptor per queued input endpoint, so behavior trees
+    // can capture already-admitted events by their authored field name.
+    let input_descriptors: Vec<_> = input_descriptors.iter().map(|(name, message)| {
+        let constant = format_ident!("{}", name.to_string().to_shouty_snake_case());
+        let anchored_message = anchored(message, 2);
+        quote! {
+            /// One typed queued-input descriptor for behavior captures.
+            pub const #constant: ::phoxal::runtime::capture::InputDescriptor<#anchored_message> =
+                ::phoxal::runtime::capture::InputDescriptor::new(stringify!(#name));
+        }
+    }).collect();
+    let inputs_module = if input_descriptors.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            /// Typed queued-input descriptors for behavior captures.
+            pub mod inputs {
+                #(#input_descriptors)*
+            }
+        }
+    };
+
+    let projection_table = if projection_table_fields.is_empty() {
+        quote! {
+            /// This contract declares no projected outputs; the encoding
+            /// function's registration parameter still resolves through
+            /// this empty table.
+            #[derive(Default)]
+            pub struct ProjectionTable<S: ?Sized, St: ?Sized> {
+                marker: ::std::marker::PhantomData<fn(&S, &St)>,
+            }
+        }
+    } else {
+        quote! {
+            /// The projection table one attached runtime registers its
+            /// `#[publish]` entry points into. Generated plumbing reached
+            /// through the contract type's encoding function; it is never
+            /// constructed by hand.
+            pub struct ProjectionTable<S: ?Sized, St: ?Sized> {
+                #(#projection_table_fields)*
+                marker: ::std::marker::PhantomData<fn(&S, &St)>,
+            }
+
+            impl<S: ?Sized, St: ?Sized> ::std::default::Default for ProjectionTable<S, St> {
+                fn default() -> Self {
+                    Self {
+                        #(#projection_table_defaults,)*
+                        marker: ::std::marker::PhantomData,
+                    }
+                }
+            }
+
+            impl<S: ?Sized, St: ?Sized> ProjectionTable<S, St> {
+                #(#projection_table_setters)*
             }
         }
     };
@@ -596,6 +1770,7 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         &str,
                     ) -> ::std::option::Option<::phoxal::macro_support::PortSignature>,
                     _source: &str,
+                    _attach: impl ::std::ops::FnOnce(&mut ProjectionTable<S, St>),
                 ) -> ::phoxal::Result<
                     ::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>,
                 > {
@@ -619,12 +1794,12 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         &str,
                     ) -> ::std::option::Option<::phoxal::macro_support::PortSignature>,
                     source: &str,
+                    attach: impl ::std::ops::FnOnce(&mut ProjectionTable<S, St>),
                 ) -> ::phoxal::Result<
                     ::std::vec::Vec<::phoxal::runtime::transport::PreparedOutput>,
-                >
-                where
-                    S: projections::Projections<State = St>,
-                {
+                > {
+                    let mut table = <ProjectionTable<S, St> as Default>::default();
+                    attach(&mut table);
                     let mut records = ::std::vec::Vec::new();
                     let sequence = context.invocation_index();
                     #(#encode_statements)*
@@ -679,6 +1854,8 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
 
             #(#aliases)*
 
+            #inputs_module
+
             #[::phoxal::runtime::inputs]
             pub struct Inputs {
                 #(#input_fields)*
@@ -696,20 +1873,42 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
             impl Outputs {
                 #(#output_methods)*
                 #operations_member
+
+                #outputs_owner_member
             }
 
             #calls_module
 
-            #projections_module
+            #projection_table
+
+            #endpoints_view
+
+            impl #contract_name {
+                #completion_owner
+
+                #staging_owner
+            }
+
+            #harness_view
 
             #attachment
 
             impl ::phoxal::runtime::RuntimeContract for #contract_name {
                 type Inputs = Inputs;
                 type Outputs = Outputs;
+                type View<'a> = Endpoints<'a>;
+                type HarnessView = HarnessView;
 
                 const BINDINGS: &'static [::phoxal::runtime::outputs::OutputField] =
                     &[#(#binding_fields),*];
+
+                fn endpoints_view<'a>(
+                    step: &'a ::phoxal::runtime::StepContext,
+                    inputs: &'a Self::Inputs,
+                    outputs: &'a mut Self::Outputs,
+                ) -> Self::View<'a> {
+                    Endpoints::new(step, inputs, outputs)
+                }
 
                 fn retain_schemas() -> usize {
                     let mut size = 0_usize;
@@ -746,7 +1945,7 @@ fn identity_or_wire(identity: &Option<LitStr>, message: &Path) -> TokenStream {
 }
 
 /// Snake-cases one identifier.
-fn to_snake(ident: &Ident) -> String {
+pub(crate) fn to_snake(ident: &Ident) -> String {
     let name = ident.to_string();
     let mut snake = String::with_capacity(name.len() + 4);
     let mut previous_lower = false;
@@ -771,17 +1970,35 @@ fn is_empty(path: &Path) -> bool {
         .is_some_and(|segment| segment.ident == "Empty")
 }
 
-/// One projection hook declaration.
-fn projection_trait_entry(name: &Ident, message: &Path, leased: bool) -> TokenStream {
+/// The dispatch-table field and setter for one projected endpoint.
+fn projection_table_entries(
+    name: &Ident,
+    message: &Path,
+    leased: bool,
+) -> (TokenStream, TokenStream) {
     let returns = if leased {
         quote!(::std::option::Option<#message>)
     } else {
         quote!(#message)
     };
-    quote! {
-        /// Projects one output from runtime state.
-        fn #name(&self, state: &Self::State) -> #returns;
-    }
+    (
+        quote! {
+            /// The attached runtime's projection for this endpoint.
+            pub #name: ::std::option::Option<
+                ::std::boxed::Box<dyn ::std::ops::Fn(&S, &St) -> #returns + ::std::marker::Send>,
+            >,
+        },
+        quote! {
+            /// Registers the attached runtime's projection for this
+            /// endpoint.
+            pub fn #name<F>(&mut self, project: F)
+            where
+                F: ::std::ops::Fn(&S, &St) -> #returns + ::std::marker::Send + 'static,
+            {
+                self.#name = ::std::option::Option::Some(::std::boxed::Box::new(project));
+            }
+        },
+    )
 }
 
 /// One projection encoding statement inside `phoxal_encode_bindings`,
@@ -799,7 +2016,12 @@ fn encode_statement(
         quote! {
             {
                 let signature = #constant.setpoint_port().signature();
-                let prepared = match <S as projections::Projections>::#name(service, state) {
+                let prepared = match table
+                    .#name
+                    .as_ref()
+                    .map(|project| project(service, state))
+                    .flatten()
+                {
                     ::std::option::Option::Some(value) =>
                         ::phoxal::runtime::transport::PreparedOutput::response(
                             signature,
@@ -828,9 +2050,9 @@ fn encode_statement(
         }
     } else {
         quote! {
-            {
+            if let ::std::option::Option::Some(project) = table.#name.as_ref() {
                 let signature = #constant.state_port().signature();
-                let value = <S as projections::Projections>::#name(service, state);
+                let value = project(service, state);
                 let prepared = ::phoxal::runtime::transport::PreparedOutput::response(
                     signature,
                     &value,
@@ -956,9 +2178,9 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
         ));
     };
     let options = parse_options(&field.attrs, role)?;
-    let max_bytes = options
-        .max_bytes
-        .ok_or_else(|| syn::Error::new_spanned(field, "every endpoint declares max_bytes"))?;
+    // Small-message capacities default to one bounded batch; an endpoint
+    // that needs more declares its explicit override.
+    let max_bytes = options.max_bytes.unwrap_or_else(default_max_bytes);
     match role.as_str() {
         "input" => {
             let (wrapper, inner) = split_wrapper(&field.ty)?;
@@ -974,6 +2196,13 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                         return Err(syn::Error::new_spanned(
                             field,
                             "inputs do not declare projection, bootstrap, or on_change",
+                        ));
+                    }
+                    if options.lease_ms.is_none() && options.max_age_ms.is_none() {
+                        return Err(syn::Error::new_spanned(
+                            field,
+                            "an unleased latest input declares max_age_ms; a deliberately \
+                             timeless observation needs its own named policy",
                         ));
                     }
                     Ok(Endpoint::Input {
@@ -993,16 +2222,13 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                             "queued inputs do not declare lease_ms or max_age_ms",
                         ));
                     }
-                    let max_items = options.max_items.ok_or_else(|| {
-                        syn::Error::new_spanned(field, "queued inputs declare max_items")
-                    })?;
                     Ok(Endpoint::Input {
                         name,
                         message: inner,
                         queued: true,
                         lease_ms: None,
                         max_age_ms: None,
-                        max_items: Some(max_items),
+                        max_items: Some(options.max_items.unwrap_or_else(default_max_items)),
                         max_bytes,
                     })
                 }
@@ -1014,16 +2240,29 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
         }
         "output" => {
             let (wrapper, inner) = split_wrapper(&field.ty)?;
+            let state = wrapper == "State";
             let queued = match wrapper.as_str() {
-                "Latest" => false,
+                "Latest" | "State" => false,
                 "Queue" => true,
                 other => {
                     return Err(syn::Error::new_spanned(
                         &field.ty,
-                        format!("outputs use Latest<T> or Queue<T>, not {other}<T>"),
+                        format!("outputs use Latest<T>, Queue<T>, or State<T>, not {other}<T>"),
                     ));
                 }
             };
+            if state
+                && (options.projection
+                    || options.bootstrap
+                    || options.lease_ms.is_some()
+                    || options.max_items.is_some())
+            {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "a State<T> output declares only max_bytes and on_change; initial \
+                     publication and projection are part of the endpoint semantic",
+                ));
+            }
             if queued {
                 if options.projection
                     || options.bootstrap
@@ -1035,16 +2274,13 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                         "queued outputs declare only max_items and max_bytes",
                     ));
                 }
-                let max_items = options.max_items.ok_or_else(|| {
-                    syn::Error::new_spanned(field, "queued outputs declare max_items")
-                })?;
                 return Ok(Endpoint::Output {
                     name,
                     message: inner,
                     queued: true,
                     projection: false,
                     lease_ms: None,
-                    max_items: Some(max_items),
+                    max_items: Some(options.max_items.unwrap_or_else(default_max_items)),
                     max_bytes,
                     bootstrap: false,
                     on_change: false,
@@ -1056,7 +2292,7 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                     "latest outputs do not declare max_items",
                 ));
             }
-            if !options.projection && options.lease_ms.is_some() {
+            if !options.projection && !state && options.lease_ms.is_some() {
                 return Err(syn::Error::new_spanned(
                     field,
                     "only projected outputs carry lease_ms",
@@ -1066,22 +2302,17 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                 name,
                 message: inner,
                 queued: false,
-                projection: options.projection,
+                // A State<T> output is a projection whose initial
+                // publication is part of the endpoint semantic.
+                projection: options.projection || state,
                 lease_ms: options.lease_ms,
                 max_items: None,
                 max_bytes,
-                bootstrap: options.bootstrap,
+                bootstrap: options.bootstrap || state,
                 on_change: options.on_change,
             })
         }
         "operation" | "call" => {
-            let (wrapper, request, response) = split_request_reply(&field.ty)?;
-            if wrapper != "RequestReply" {
-                return Err(syn::Error::new_spanned(
-                    &field.ty,
-                    "operations and calls use RequestReply<Request, Response>",
-                ));
-            }
             if options.lease_ms.is_some()
                 || options.max_age_ms.is_some()
                 || options.projection
@@ -1091,6 +2322,39 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                 return Err(syn::Error::new_spanned(
                     field,
                     "operations and calls declare contract, request, response, max_items, and max_bytes",
+                ));
+            }
+            let max_items = options.max_items.unwrap_or_else(default_max_items);
+            // A call field may name a typed operation descriptor instead of
+            // repeating the request/response pair and provider identity.
+            if role == "call"
+                && matches!(&field.ty, Type::Path(path)
+                    if path.path.segments.last().is_some_and(|segment| segment.arguments.is_none()))
+            {
+                let descriptor = plain_path(&field.ty)?;
+                return Ok(Endpoint::Request {
+                    name,
+                    source: RequestSource::Descriptor {
+                        descriptor: descriptor.clone(),
+                    },
+                    request: PayloadRef::Descriptor {
+                        descriptor,
+                        response: false,
+                    },
+                    response: PayloadRef::Descriptor {
+                        descriptor: plain_path(&field.ty)?,
+                        response: true,
+                    },
+                    max_items,
+                    max_bytes,
+                    call: true,
+                });
+            }
+            let (wrapper, request, response) = split_request_reply(&field.ty)?;
+            if wrapper != "RequestReply" {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "operations and calls use RequestReply<Request, Response>",
                 ));
             }
             let contract = options.contract.or_else(|| {
@@ -1108,16 +2372,15 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                     "declare contract = \"pkg.v1.Name\", or give provided operations a package on #[phoxal::endpoints]",
                 )
             })?;
-            let max_items = options.max_items.ok_or_else(|| {
-                syn::Error::new_spanned(field, "operations and calls declare max_items")
-            })?;
             Ok(Endpoint::Request {
                 name,
-                contract,
-                request,
-                response,
-                request_identity: options.request_identity,
-                response_identity: options.response_identity,
+                source: RequestSource::Authored {
+                    contract,
+                    request_identity: options.request_identity,
+                    response_identity: options.response_identity,
+                },
+                request: PayloadRef::Message(request),
+                response: PayloadRef::Message(response),
                 max_items,
                 max_bytes,
                 call: role == "call",
@@ -1128,6 +2391,17 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
             format!("unknown endpoint role `{other}`"),
         )),
     }
+}
+
+/// Returns the plain type path of a descriptor-typed call field.
+fn plain_path(ty: &Type) -> syn::Result<Path> {
+    let Type::Path(type_path) = ty else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "a descriptor call field names one operation descriptor type",
+        ));
+    };
+    Ok(type_path.path.clone())
 }
 
 /// Splits `Wrapper<T>` into its wrapper name and message path.

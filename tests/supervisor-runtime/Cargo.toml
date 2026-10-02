@@ -29,8 +29,10 @@ phoxal = { workspace = true, default-features = false, features = ["runtime"] }
 phoxal = { workspace = true, default-features = false, features = ["session"] }
 anyhow.workspace = true
 libc.workspace = true
+prost.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
@@ -48,4 +50,14 @@ required-features = ["test-fixtures"]
 [[test]]
 name = "public_session"
 path = "tests/public_session.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "countdown_process"
+path = "tests/countdown_process.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "simulation_process"
+path = "tests/simulation_process.rs"
 required-features = ["test-fixtures"]

@@ -66,7 +66,6 @@ const BUILD_RS: &str = "fn main() -> Result<(), phoxal::build::Error> {\n    pho
 /// One participant: a projected status output over an authored payload.
 const PROVIDER_BIN: &str = r#"//! Provider: one projected output over an authored package payload.
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message(package = "proof.cycle.v1")]
 pub struct ProviderState {
@@ -80,32 +79,26 @@ pub struct ProviderApi {
     provider_status: Latest<ProviderState>,
 }
 
-pub struct Provider;
-
-impl provider_api::projections::Projections for Provider {
-    type State = u64;
-
-    fn provider_status(&self, state: &u64) -> ProviderState {
-        ProviderState { value: *state }
-    }
+pub struct Provider {
+    beats: u64,
 }
 
-#[phoxal::runtime(contract = ProviderApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Provider {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = ProviderApi, period_ms = 20)]
+impl Provider {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(provider_status)]
+    fn provider_status(&self) -> ProviderState {
+        ProviderState { value: self.beats }
     }
 }
 
@@ -123,13 +116,18 @@ fn brain_main(payload: &str, heartbeat_package: &str) -> String {
     } else {
         format!("#[phoxal::message(package = \"{heartbeat_package}\")]")
     };
+    let beat_value = if payload == "String" {
+        "format!(\"{}\", self.beats)".to_owned()
+    } else {
+        "self.beats".to_owned()
+    };
     format!(
         r#"//! Brain: binds the participant's status and serves an authored
 //! heartbeat report.
 phoxal::api!();
 
 use phoxal::contracts::{{Empty, Latest, RequestReply}};
-use phoxal::runtime::{{InitContext, Runtime, StepContext}};
+use phoxal::runtime::Context;
 
 use crate::api::provider::ProviderState;
 
@@ -148,30 +146,32 @@ pub struct BrainApi {{
     read: RequestReply<Empty, Heartbeat>,
 }}
 
-pub struct Brain;
+pub struct Brain {{
+    beats: u64,
+}}
 
-#[phoxal::runtime(contract = BrainApi, period_ms = 50, timeout_ms = 200, init_timeout_ms = 1_000)]
-impl Runtime for Brain {{
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {{
-        Ok(0)
+#[phoxal::runtime(contract = BrainApi, period_ms = 50)]
+impl Brain {{
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {{
+        Ok(Self {{ beats: 0 }})
     }}
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {{
-        let _ = inputs.telemetry.value();
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[handle(read)]
+    fn read(&mut self, _ctx: &mut Context<'_, Self>, _request: Empty) -> phoxal::Result<Heartbeat> {{
+        Ok(Heartbeat {{ beats: {beat_value} }})
+    }}
+
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {{
+        let _ = ctx.telemetry().value();
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
     }}
 }}
 
 fn main() -> phoxal::Result<()> {{
-    phoxal::runtime::run(Brain)
+    phoxal::runtime::run::<Brain>()
 }}
 "#
     )
@@ -306,7 +306,6 @@ fn provider_manifest() -> String {
 /// package, selected by pinning the new commit.
 const PROVIDER_BIN_REVISED: &str = r#"//! Provider revision B: the payload gains a field.
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message(package = "proof.cycle.v1")]
 pub struct ProviderState {
@@ -322,35 +321,29 @@ pub struct ProviderApi {
     provider_status: Latest<ProviderState>,
 }
 
-pub struct Provider;
-
-impl provider_api::projections::Projections for Provider {
-    type State = u64;
-
-    fn provider_status(&self, state: &u64) -> ProviderState {
-        ProviderState {
-            value: *state,
-            label: format!("step-{state}"),
-        }
-    }
+pub struct Provider {
+    beats: u64,
 }
 
-#[phoxal::runtime(contract = ProviderApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Provider {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = ProviderApi, period_ms = 20)]
+impl Provider {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(provider_status)]
+    fn provider_status(&self) -> ProviderState {
+        ProviderState {
+            value: self.beats,
+            label: format!("step-{}", self.beats),
+        }
     }
 }
 
@@ -478,7 +471,6 @@ phoxal::api!();
 phoxal::conversions!();
 
 use phoxal::contracts::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 
 #[phoxal::message]
 pub struct TelemetryDetail {
@@ -518,30 +510,27 @@ pub struct BrainApi {
     telemetry: Latest<TelemetryIn>,
 }
 
-pub struct Brain;
+pub struct Brain {
+    beats: u64,
+}
 
-#[phoxal::runtime(contract = BrainApi, period_ms = 50, timeout_ms = 200, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
+#[phoxal::runtime(contract = BrainApi, period_ms = 50)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { beats: 0 })
     }
 
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        let _ = inputs.telemetry.value();
-        Ok((state.saturating_add(1), Self::Outputs::default()))
+    #[step]
+    fn advance(&mut self, ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        let _ = ctx.telemetry().value();
+        self.beats = self.beats.saturating_add(1);
+        Ok(())
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    run_hosted_roles(Brain)
+    run_hosted_roles(phoxal_runtime_brain::Adapter::new())
 }
 "#
     .to_owned()

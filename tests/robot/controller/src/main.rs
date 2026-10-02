@@ -5,7 +5,7 @@
 use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget, Control};
 use phoxal::contracts::component::encoder::EncoderSample;
 use phoxal::contracts::{Latest, Queue};
-use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal::runtime::Context;
 
 const WHEEL_RADIUS_M: f64 = 0.11;
 const WHEEL_BASE_M: f64 = 0.52;
@@ -46,8 +46,10 @@ pub struct ControllerApi {
     actuators: Latest<ActuatorSetpoint>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Controller;
+#[derive(Clone, Debug, Default)]
+struct Controller {
+    actuators: ActuatorSetpoint,
+}
 
 fn setpoint(linear_mps: f64, angular_radps: f64) -> ActuatorSetpoint {
     let linear = linear_mps.clamp(-MAX_LINEAR_MPS, MAX_LINEAR_MPS);
@@ -66,50 +68,37 @@ fn setpoint(linear_mps: f64, angular_radps: f64) -> ActuatorSetpoint {
     ActuatorSetpoint { targets }
 }
 
-impl controller_api::projections::Projections for Controller {
-    type State = ActuatorSetpoint;
-
-    fn actuators(&self, state: &ActuatorSetpoint) -> Option<ActuatorSetpoint> {
-        Some(state.clone())
-    }
-}
-
-#[phoxal::runtime(contract = ControllerApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Controller {
-    type Config = ();
-    type State = ActuatorSetpoint;
-
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(setpoint(0.0, 0.0))
+#[phoxal::runtime(contract = ControllerApi, period_ms = 20)]
+impl Controller {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self {
+            actuators: setpoint(0.0, 0.0),
+        })
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        _state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        for sample in inputs.encoders.items() {
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        for sample in ctx.encoders().items() {
             sample
                 .payload()
                 .validate()
                 .map_err(|error| phoxal::anyhow!(error))?;
         }
 
-        let next = match inputs
-            .manual
-            .is_valid_at(ctx.now())
-            .then(|| inputs.manual.value())
-            .flatten()
-        {
+        self.actuators = match ctx.manual().valid().copied() {
             Some(intent) => setpoint(intent.linear_x_mps, intent.angular_z_radps),
             None => setpoint(0.0, 0.0),
         };
-        let outputs = Self::Outputs::default();
-        Ok((next, outputs))
+        Ok(())
+    }
+
+    #[publish(actuators)]
+    fn actuators_projection(&self) -> Option<ActuatorSetpoint> {
+        Some(self.actuators.clone())
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(Controller)
+    phoxal::runtime::run::<Controller>()
 }

@@ -310,11 +310,92 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             }
         }
     } else {
+        // One retained store: the whole delivered batch is projected into
+        // the contract's first call field and no other field holds a
+        // copy, so consuming a completion releases every retained charge
+        // and no reader can take one result twice from two copies.
+        let store = &completion_fields[0];
+        quote! {
+            self.#store = ::phoxal::runtime::input::Completions::from_transport(values);
+            Ok(())
+        }
+    };
+
+    // Mailbox cleanup generated whenever the contract declares call
+    // fields, independently of any direct completion handler: unowned
+    // results — foreign, retired, or from another era — are dropped from
+    // the retained store with their charges released.
+    let unowned_cleanup = if completion_fields.is_empty() {
+        quote! {
+            /// This contract declares no generated calls: nothing to clean.
+            pub(crate) fn discard_unowned(
+                &self,
+                _pending: &::phoxal::runtime::PendingCalls,
+            ) {
+            }
+        }
+    } else {
+        quote! {
+            /// Drops every unowned result from the retained store: no
+            /// owner may ever claim it, so its item and byte charges are
+            /// released instead of lingering forever. Committed owners —
+            /// direct fields and tree generations — keep their results.
+            pub(crate) fn discard_unowned(
+                &self,
+                pending: &::phoxal::runtime::PendingCalls,
+            ) {
+                for ticket in self.store_ticket_ids() {
+                    if pending.owner_of(ticket).is_none() {
+                        self.discard_completion(ticket);
+                    }
+                }
+            }
+        }
+    };
+
+    // The single-store take used by generated dispatch and the context's
+    // completion hooks.
+    let take_completion_raw = if completion_fields.is_empty() {
+        quote! {}
+    } else {
+        let store = &completion_fields[0];
+        quote! {
+            /// Takes one completion from the single retained store,
+            /// destructively; no other call field holds a copy.
+            pub(crate) fn take_completion_raw(
+                &self,
+                ticket: u128,
+            ) -> ::std::option::Option<
+                ::std::result::Result<::std::vec::Vec<u8>, ::phoxal::runtime::input::RequestError>,
+            > {
+                self.#store.take_raw(ticket)
+            }
+
+            /// The tickets currently present in the single retained
+            /// store, in delivery order.
+            pub(crate) fn store_ticket_ids(&self) -> ::std::vec::Vec<u128> {
+                self.#store.ticket_ids()
+            }
+
+            /// Drops one unowned result from the retained store, releasing
+            /// its item and byte charges: a result no owner may ever claim
+            /// must not linger in the mailbox.
+            pub(crate) fn discard_completion(&self, ticket: u128) {
+                let _ = self.#store.take_raw(ticket);
+            }
+        }
+    };
+
+    let completion_tickets = if completion_fields.is_empty() {
+        quote! {
+            Vec::new()
+        }
+    } else {
         let fields = &completion_fields;
         quote! {
-            #(self.#fields =
-                ::phoxal::runtime::input::Completions::from_transport(values.clone());)*
-            Ok(())
+            let mut tickets = Vec::new();
+            #(tickets.extend(self.#fields.ticket_ids());)*
+            tickets
         }
     };
 
@@ -641,6 +722,16 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             ) -> ::phoxal::Result<()> {
                 #set_call_completions
             }
+
+            fn completion_tickets(&self, _field: &str) -> Vec<u128> {
+                #completion_tickets
+            }
+        }
+
+        impl #name {
+            #take_completion_raw
+
+            #unowned_cleanup
         }
 
         impl ::phoxal::runtime::input::InputSnapshot for #name {

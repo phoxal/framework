@@ -3,7 +3,7 @@
 
 use phoxal::contracts::component::encoder::EncoderSample;
 use phoxal::contracts::{Empty, Latest, Queue, RequestReply};
-use phoxal::runtime::{CallTicket, InitContext, Runtime, StepContext};
+use phoxal::runtime::{CallCompletion, Context};
 
 #[phoxal::message(package = "example.contract_evaluation.v1")]
 pub struct ConsumerStatus {
@@ -75,8 +75,8 @@ fn default_ready_phase() -> String {
     "running".to_owned()
 }
 
-#[derive(Debug, Default)]
-struct ConsumerState {
+#[derive(Debug)]
+struct Consumer {
     ready_phase: String,
     phase: String,
     steps: u64,
@@ -87,13 +87,12 @@ struct ConsumerState {
     failed_reads: u64,
     last_position: Option<f64>,
     backup_position: Option<f64>,
-    pending_read: Option<CallTicket<EncoderSample>>,
-    pending_backup: Option<CallTicket<EncoderSample>>,
+    read_in_flight: bool,
+    backup_in_flight: bool,
+    applied_invocation: u64,
 }
 
-struct Consumer;
-
-fn status(state: &ConsumerState) -> ConsumerStatus {
+fn status(state: &Consumer) -> ConsumerStatus {
     ConsumerStatus {
         phase: if state.phase.is_empty() {
             "starting".to_owned()
@@ -109,18 +108,23 @@ fn status(state: &ConsumerState) -> ConsumerStatus {
     }
 }
 
-fn observe(state: &mut ConsumerState, inputs: &<Consumer as Runtime>::Inputs, ctx: &StepContext) {
-    // Freshness gates the ready phase through the generated helper, which
-    // applies the declared 100 ms bound; hardware-local clocks share the
-    // wall-clock epoch, so a foreign stamp evaluates against this runtime's
-    // now within the bounded-skew policy.  Absence and staleness are both
-    // deliberate observable states: the previous position is kept and the
-    // phase reports waiting rather than treating stale data as current.
-    if !inputs.encoder_fresh(ctx.now()) {
-        state.phase = "waiting".to_owned();
-        return;
+/// Observes the encoder input and the queued tick batch exactly once per
+/// invocation, so an inspect dispatched before the periodic step reports
+/// the same invocation state the unified step observed.
+fn observe(state: &mut Consumer, ctx: &Context<'_, Consumer>) -> phoxal::Result<()> {
+    if state.applied_invocation == ctx.invocation_index() {
+        return Ok(());
     }
-    if let Some(sample) = inputs.encoder.sample()
+    state.applied_invocation = ctx.invocation_index();
+    // Freshness gates the ready phase through the declared 100 ms bound;
+    // hardware-local clocks share the wall-clock epoch, so a foreign stamp
+    // evaluates against this runtime's now within the bounded-skew policy.
+    // Absence and staleness are both deliberate observable states: the
+    // previous position is kept and the phase reports waiting rather than
+    // treating stale data as current.
+    if !ctx.encoder().is_fresh() {
+        state.phase = "waiting".to_owned();
+    } else if let Some(sample) = ctx.encoder().sample()
         && sample.payload().validate().is_ok()
     {
         state.observed = state.observed.saturating_add(1);
@@ -133,81 +137,82 @@ fn observe(state: &mut ConsumerState, inputs: &<Consumer as Runtime>::Inputs, ct
     } else {
         state.phase = "waiting".to_owned();
     }
+
+    // Queued data is required: an overflow that dropped records is a
+    // visible rejection, never a silent prefix.
+    if ctx.ticks().has_gap() {
+        return Err(phoxal::anyhow!(
+            "queued ticks overflowed the declared 4-item bound"
+        ));
+    }
+    for tick in ctx.ticks().items() {
+        tick.payload()
+            .validate()
+            .map_err(|error| phoxal::anyhow!(error))?;
+        state.ticks = state.ticks.saturating_add(1);
+    }
+    Ok(())
 }
 
-#[phoxal::runtime(contract = ConsumerApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Consumer {
-    type Config = ConsumerConfig;
-    type State = ConsumerState;
-
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(ConsumerState {
+#[phoxal::runtime(contract = ConsumerApi, period_ms = 20)]
+impl Consumer {
+    #[init]
+    fn new(config: ConsumerConfig) -> phoxal::Result<Self> {
+        Ok(Self {
             ready_phase: config.ready_phase,
-            ..ConsumerState::default()
+            phase: String::new(),
+            steps: 0,
+            observed: 0,
+            ticks: 0,
+            readings: 0,
+            backups: 0,
+            failed_reads: 0,
+            last_position: None,
+            backup_position: None,
+            read_in_flight: false,
+            backup_in_flight: false,
+            applied_invocation: u64::MAX,
         })
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        observe(&mut state, inputs, ctx);
+    /// Reports the consumer's status from this invocation's observed state.
+    #[handle(inspect)]
+    fn inspect(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        _request: Empty,
+    ) -> phoxal::Result<ConsumerStatus> {
+        observe(self, ctx)?;
+        Ok(status(self))
+    }
 
-        // Queued data is required: an overflow that dropped records is a
-        // visible rejection, never a silent prefix.
-        if inputs.ticks.has_gap() {
-            return Err(phoxal::anyhow!(
-                "queued ticks overflowed the declared 4-item bound"
-            ));
-        }
-        for tick in inputs.ticks.items() {
-            tick.payload()
-                .validate()
-                .map_err(|error| phoxal::anyhow!(error))?;
-            state.ticks = state.ticks.saturating_add(1);
-        }
+    /// Completes one staged primary reading; failures are counted, never
+    /// fabricated into successful readings.
+    #[complete(read_encoder)]
+    fn read_completed(
+        &mut self,
+        _ctx: &mut Context<'_, Self>,
+        completion: CallCompletion<EncoderSample>,
+    ) -> phoxal::Result<()> {
+        self.read_in_flight = false;
+        self.complete_reading(completion, false)
+    }
 
-        // Complete staged readings; failures are counted, never fabricated
-        // into successful readings.  The primary and backup requirements
-        // keep independent tickets on their own completion fields.
-        if let Some(ticket) = state.pending_read.take() {
-            match inputs.read_encoder.get(&ticket) {
-                Some(completion) => match completion.response() {
-                    Ok(sample) => {
-                        sample.validate().map_err(|error| phoxal::anyhow!(error))?;
-                        state.readings = state.readings.saturating_add(1);
-                        state.last_position = sample.position_rad;
-                    }
-                    Err(_) => {
-                        state.failed_reads = state.failed_reads.saturating_add(1);
-                    }
-                },
-                None => state.pending_read = Some(ticket),
-            }
-        }
-        if let Some(ticket) = state.pending_backup.take() {
-            match inputs.read_backup.get(&ticket) {
-                Some(completion) => match completion.response() {
-                    Ok(sample) => {
-                        sample.validate().map_err(|error| phoxal::anyhow!(error))?;
-                        state.backups = state.backups.saturating_add(1);
-                        state.backup_position = sample.position_rad;
-                    }
-                    Err(_) => {
-                        state.failed_reads = state.failed_reads.saturating_add(1);
-                    }
-                },
-                None => state.pending_backup = Some(ticket),
-            }
-        }
+    /// Completes one staged backup reading on its own completion field.
+    #[complete(read_backup)]
+    fn backup_completed(
+        &mut self,
+        _ctx: &mut Context<'_, Self>,
+        completion: CallCompletion<EncoderSample>,
+    ) -> phoxal::Result<()> {
+        self.backup_in_flight = false;
+        self.complete_reading(completion, true)
+    }
 
-        let mut outputs = Self::Outputs::default();
-        outputs.status(status(&state))?;
-        for request in inputs.inspect.items() {
-            outputs.inspect_reply(request.reply(status(&state)))?;
-        }
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        observe(self, ctx)?;
+        ctx.publish_status(status(self))?;
 
         // Stage the next composition-bound readings; the provider instances
         // are resolved from this service's own robot connections at
@@ -215,27 +220,50 @@ impl Runtime for Consumer {
         // provider's declared ingress bound: boundary counters drift
         // between independent runtimes, so per-step calling can overflow
         // the receiver.
-        state.steps = state.steps.saturating_add(1);
+        self.steps = self.steps.saturating_add(1);
         const READ_WARMUP_STEPS: u64 = 10;
         const READ_EVERY_STEPS: u64 = 25;
-        if state.steps >= READ_WARMUP_STEPS
-            && (state.steps - READ_WARMUP_STEPS).is_multiple_of(READ_EVERY_STEPS)
+        if self.steps >= READ_WARMUP_STEPS
+            && (self.steps - READ_WARMUP_STEPS).is_multiple_of(READ_EVERY_STEPS)
         {
-            if state.pending_read.is_none() {
-                let ticket = outputs.send(ctx, consumer_api::calls::read_encoder(Empty {}))?;
-                state.pending_read = Some(ticket);
+            if !self.read_in_flight {
+                ctx.read_encoder(Empty {})?;
+                self.read_in_flight = true;
             }
-            if state.pending_backup.is_none() {
-                let ticket = outputs.send(ctx, consumer_api::calls::read_backup(Empty {}))?;
-                state.pending_backup = Some(ticket);
+            if !self.backup_in_flight {
+                ctx.read_backup(Empty {})?;
+                self.backup_in_flight = true;
             }
         }
-        Ok((state, outputs))
+        Ok(())
+    }
+
+    fn complete_reading(
+        &mut self,
+        completion: CallCompletion<EncoderSample>,
+        backup: bool,
+    ) -> phoxal::Result<()> {
+        match completion.into_result() {
+            Ok(sample) => {
+                sample.validate().map_err(|error| phoxal::anyhow!(error))?;
+                if backup {
+                    self.backups = self.backups.saturating_add(1);
+                    self.backup_position = sample.position_rad;
+                } else {
+                    self.readings = self.readings.saturating_add(1);
+                    self.last_position = sample.position_rad;
+                }
+            }
+            Err(_) => {
+                self.failed_reads = self.failed_reads.saturating_add(1);
+            }
+        }
+        Ok(())
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(Consumer)
+    phoxal::runtime::run::<Consumer>()
 }
 
 /// Owner-level acceptance through the generated endpoint surface: typed
@@ -243,13 +271,14 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal::runtime::StepContext;
     use phoxal::runtime::input::{Commands, Completions, Latest, Samples};
     use phoxal::runtime::{
         ExecutionDuration, ExecutionTime, ObservationStamp, OutputAdmission, RuntimeOwner,
         RuntimeStatus, initialize, invoke,
     };
 
-    type ConsumerInputs = <Consumer as Runtime>::Inputs;
+    type ConsumerInputs = consumer_api::Inputs;
 
     fn unavailable_inputs() -> ConsumerInputs {
         ConsumerInputs {
@@ -264,7 +293,7 @@ mod tests {
     #[test]
     fn direct_adapter_uses_typed_init_and_step() {
         let state = initialize(
-            &Consumer,
+            &super::phoxal_runtime_consumer::Adapter::new(),
             ExecutionTime::from_nanos(0),
             ConsumerConfig {
                 ready_phase: "cruising".to_owned(),
@@ -276,16 +305,113 @@ mod tests {
             ExecutionTime::from_nanos(20_000_000),
             ExecutionDuration::from_millis(20),
         );
-        let (state, outputs) =
-            invoke(&Consumer, &context, state, &unavailable_inputs()).expect("step");
+        let (state, outputs) = invoke(
+            &super::phoxal_runtime_consumer::Adapter::new(),
+            &context,
+            state,
+            &unavailable_inputs(),
+        )
+        .expect("step");
         assert_eq!(state.phase, "waiting");
         assert_eq!(outputs.status.as_ref().expect("status").phase, "waiting");
+    }
+
+    /// Qualifies the authored dispatch order explicitly: within one
+    /// invocation, the merged command dispatch (inspect) runs before the
+    /// direct completion handlers, which run before the periodic step.
+    /// An inspect merged with its survey reply therefore reports the
+    /// state before that reply's reading lands.
+    #[test]
+    fn an_inspect_merged_with_its_reply_reports_the_pre_completion_state() {
+        use phoxal::contracts::ProstPayload;
+        use phoxal::runtime::StepContext;
+        use phoxal::runtime::input::{
+            Command, CommandId, CommandOrder, TransportCallCompletion, TransportInputSink,
+        };
+
+        let adapter = super::phoxal_runtime_consumer::Adapter::new();
+        let epoch = adapter.execution_epoch();
+        let mut service = initialize(
+            &adapter,
+            ExecutionTime::default(),
+            ConsumerConfig::default(),
+        )
+        .expect("initialize consumer");
+
+        // Warm up so a survey is staged (warmup 10, every 25 steps).
+        for index in 0..10 {
+            let context = StepContext::from_previous(
+                ExecutionTime::from_nanos(index * 20_000_000),
+                ExecutionDuration::from_millis(20),
+                Some(ExecutionTime::from_nanos(
+                    index.saturating_sub(1) * 20_000_000,
+                )),
+                0,
+                index,
+            );
+            let (_service, _) =
+                invoke(&adapter, &context, service, &unavailable_inputs()).expect("warmup step");
+            service = _service;
+        }
+        let _ = epoch;
+
+        // Invocation 10 stages the primary and backup surveys; invocation
+        // 11 merges one inspect with the primary reply. The inspect runs
+        // first in the merged dispatch and must report the pre-reply
+        // reading count; the reply lands afterwards in the same
+        // invocation.
+        let staging = StepContext::from_previous(
+            ExecutionTime::from_nanos(200_000_000),
+            ExecutionDuration::from_millis(20),
+            Some(ExecutionTime::from_nanos(180_000_000)),
+            0,
+            10,
+        );
+        let (service, _) =
+            invoke(&adapter, &staging, service, &unavailable_inputs()).expect("staging step");
+
+        let ticket = phoxal::runtime::outputs::compose_call_ticket(epoch, 10, 0)
+            .expect("ticket space representable");
+        let mut merged = unavailable_inputs();
+        merged.inspect = Commands::new(vec![Command::with_order(
+            CommandOrder::new(1, 0, CommandId::new(9)),
+            Empty {},
+        )]);
+        merged
+            .set_call_completions(vec![TransportCallCompletion {
+                ticket,
+                result: Ok(EncoderSample {
+                    position_rad: Some(4.0),
+                    velocity_radps: Some(0.0),
+                }
+                .encode_payload()
+                .expect("encode")),
+            }])
+            .expect("completion accepted");
+        let observing = StepContext::from_previous(
+            ExecutionTime::from_nanos(220_000_000),
+            ExecutionDuration::from_millis(20),
+            Some(ExecutionTime::from_nanos(200_000_000)),
+            0,
+            11,
+        );
+        let (_service, outputs) =
+            invoke(&adapter, &observing, service, &merged).expect("merged invocation");
+        let reported = outputs.inspect_replies[0].response();
+        assert_eq!(
+            reported.readings, 0,
+            "the merged inspect observed the pre-completion state"
+        );
+        assert_eq!(
+            reported.position_rad, None,
+            "the reply's reading lands after the inspect in the same invocation"
+        );
     }
 
     #[test]
     fn owner_serializes_acceptance_from_generated_inputs_and_outputs() {
         let mut owner = RuntimeOwner::new(
-            Consumer,
+            super::phoxal_runtime_consumer::Adapter::new(),
             ExecutionTime::from_nanos(0),
             ConsumerConfig::default(),
         )
@@ -339,12 +465,12 @@ mod tests {
 
     struct RejectOutputs;
 
-    impl OutputAdmission<<Consumer as Runtime>::Outputs> for RejectOutputs {
+    impl OutputAdmission<consumer_api::Outputs> for RejectOutputs {
         type Reservation = ();
 
         fn reserve(
             &mut self,
-            _outputs: &<Consumer as Runtime>::Outputs,
+            _outputs: &consumer_api::Outputs,
         ) -> phoxal::Result<Self::Reservation> {
             Err(phoxal::anyhow!("fixture capacity exhausted"))
         }
@@ -353,7 +479,7 @@ mod tests {
     #[test]
     fn output_capacity_is_reserved_before_invocation_acceptance() {
         let mut owner = RuntimeOwner::new(
-            Consumer,
+            super::phoxal_runtime_consumer::Adapter::new(),
             ExecutionTime::from_nanos(0),
             ConsumerConfig::default(),
         )

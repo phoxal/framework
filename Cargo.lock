@@ -2270,6 +2270,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "trybuild",
  "zenoh",
 ]
@@ -2369,6 +2370,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-countdown-brain-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-countdown-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
 name = "phoxal-encoder-a-fixture"
 version = "0.1.0"
 dependencies = [
@@ -2411,6 +2428,20 @@ dependencies = [
  "serde_derive_internals",
  "syn 2.0.119",
  "trybuild",
+]
+
+[[package]]
+name = "phoxal-multistage-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
+
+[[package]]
+name = "phoxal-procedure-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
 ]
 
 [[package]]
@@ -2512,8 +2543,10 @@ dependencies = [
  "anyhow",
  "libc",
  "phoxal",
+ "prost",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
 ]

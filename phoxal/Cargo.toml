@@ -80,6 +80,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 tempfile.workspace = true
+# The accepted-behavior diary test captures the real `phoxal::boundary`
+# trace output through a scoped subscriber.
+tracing-subscriber = { workspace = true }
 # Descriptor construction for receiver-side projection unit tests.
 prost-types = { workspace = true }
 
@@ -111,6 +114,20 @@ path = "tests/consumer_policy.rs"
 [[test]]
 name = "config_derive"
 path = "tests/config_derive.rs"
+required-features = ["runtime"]
+
+[[test]]
+name = "runtime_authoring"
+path = "tests/runtime_authoring.rs"
+required-features = ["runtime"]
+
+# Delivery-observing diagnostics tests live in their own process: ordinary
+# `tracing` emission consults a process-wide call-site interest cache, so
+# subscriber delivery assertions are only deterministic without unrelated
+# parallel tests in the same process.
+[[test]]
+name = "runtime_behavior_observers"
+path = "tests/runtime_behavior_observers.rs"
 required-features = ["runtime"]
 
 [[test]]

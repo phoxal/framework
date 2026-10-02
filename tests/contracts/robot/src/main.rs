@@ -6,17 +6,16 @@
 mod contract;
 phoxal::api!();
 
-use phoxal::runtime::{CallTicket, InitContext, Runtime, StepContext};
+use phoxal::runtime::{CallCompletion, Context};
 
 use crate::contract::ProbeReport;
-use crate::contract::brain_api;
 use phoxal::contracts::Empty;
 
 use crate::api::consumer::ConsumerStatus;
 
 #[derive(Default)]
-struct BrainState {
-    pending: Option<CallTicket<ConsumerStatus>>,
+struct Brain {
+    inspect_in_flight: bool,
     completions: u64,
     failures: u64,
     last_phase: String,
@@ -30,9 +29,7 @@ struct BrainState {
 const PROBE_EVERY_STEPS: u64 = 25;
 const PROBE_WARMUP_STEPS: u64 = 50;
 
-struct Brain;
-
-fn report(state: &BrainState) -> ProbeReport {
+fn report(state: &Brain) -> ProbeReport {
     ProbeReport {
         inspect_completions: state.completions,
         inspect_failures: state.failures,
@@ -40,51 +37,60 @@ fn report(state: &BrainState) -> ProbeReport {
     }
 }
 
-#[phoxal::runtime(contract = crate::contract::BrainApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Brain {
-    type Config = ();
-    type State = BrainState;
-
-    fn init(&self, _ctx: &InitContext, _config: ()) -> phoxal::Result<Self::State> {
-        Ok(BrainState::default())
+#[phoxal::runtime(contract = crate::contract::BrainApi, period_ms = 20)]
+impl Brain {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self::default())
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        if let Some(ticket) = state.pending.take() {
-            match inputs.inspect.get(&ticket) {
-                Some(completion) => match completion.response() {
-                    Ok(status) => {
-                        state.completions = state.completions.saturating_add(1);
-                        state.last_phase = status.phase.clone();
-                    }
-                    Err(_) => state.failures = state.failures.saturating_add(1),
-                },
-                None => state.pending = Some(ticket),
+    /// Reports the probe tallies from this invocation's observed state.
+    #[handle(report)]
+    fn report_status(
+        &mut self,
+        _ctx: &mut Context<'_, Self>,
+        _request: Empty,
+    ) -> phoxal::Result<ProbeReport> {
+        Ok(report(self))
+    }
+
+    /// Completes one generated cross-service inspect; failures are
+    /// counted, never fabricated into completions.
+    #[complete(inspect)]
+    fn inspect_completed(
+        &mut self,
+        _ctx: &mut Context<'_, Self>,
+        completion: CallCompletion<ConsumerStatus>,
+    ) -> phoxal::Result<()> {
+        self.inspect_in_flight = false;
+        match completion.into_result() {
+            Ok(status) => {
+                self.completions = self.completions.saturating_add(1);
+                self.last_phase = status.phase.clone();
+            }
+            Err(_) => {
+                self.failures = self.failures.saturating_add(1);
             }
         }
-        let mut outputs = Self::Outputs::default();
-        for request in inputs.report.items() {
-            outputs.report_reply(request.reply(report(&state)))?;
-        }
-        state.step = state.step.saturating_add(1);
+        Ok(())
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.step = self.step.saturating_add(1);
         // One paced robot-brain-initiated operation through the shared
         // generated robot API.
-        if state.pending.is_none()
-            && state.step >= PROBE_WARMUP_STEPS
-            && (state.step - PROBE_WARMUP_STEPS).is_multiple_of(PROBE_EVERY_STEPS)
+        if !self.inspect_in_flight
+            && self.step >= PROBE_WARMUP_STEPS
+            && (self.step - PROBE_WARMUP_STEPS).is_multiple_of(PROBE_EVERY_STEPS)
         {
-            let ticket = outputs.send(ctx, brain_api::calls::inspect(Empty {}))?;
-            state.pending = Some(ticket);
+            ctx.inspect(Empty {})?;
+            self.inspect_in_flight = true;
         }
-        Ok((state, outputs))
+        Ok(())
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(Brain)
+    phoxal::runtime::run::<Brain>()
 }

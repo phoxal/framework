@@ -1147,6 +1147,40 @@ where
     }
 }
 
+/// Conflicting staged writes to one leased output are refused atomically
+/// before acceptance: traversal order is not a last-write-wins motion
+/// policy, and no implicit domain arbiter picks a single effect. An
+/// explicit arbiter stages exactly one write itself.
+fn reject_conflicting_leased_writes(
+    records: &[super::transport::PreparedOutput],
+) -> crate::Result<()> {
+    let mut leased_writes = std::collections::BTreeSet::<(String, &str)>::new();
+    for record in records {
+        if record.is_withdrawal() {
+            continue;
+        }
+        let Some(target) = record.target_identity() else {
+            continue;
+        };
+        let Some(signature) = record.port_signature() else {
+            continue;
+        };
+        if signature.kind != crate::port::PortKind::Setpoint {
+            continue;
+        }
+        if !leased_writes.insert((target.to_owned(), signature.name)) {
+            return Err(crate::anyhow!(TransportError::InvalidMetadata {
+                detail: format!(
+                    "conflicting staged writes to the leased output `{target}.{}` in one \
+                     candidate: stage a single arbitrated write",
+                    signature.name
+                ),
+            }));
+        }
+    }
+    crate::Result::Ok(())
+}
+
 impl<R> OutputAdmission<R::Outputs> for ExecutionOutputAdapter<R>
 where
     R: RegisteredRuntime,
@@ -1173,6 +1207,7 @@ where
             &resolve_input_port,
             self.instance.as_deref().unwrap_or_default(),
         )?;
+        reject_conflicting_leased_writes(&transient)?;
         let mut generated_correlations: Vec<(u64, GeneratedCorrelation)> = Vec::new();
         for record in &mut transient {
             let Some((staged_target, signature, ticket, payload_bytes, request)) =
@@ -1185,14 +1220,20 @@ where
                     detail: "generated operation has no admitted launch manifest".to_owned(),
                 })
             })?;
-            let (target, signature) = if staged_target.is_empty() {
+            let (target, signature) = if staged_target.is_empty()
+                || manifest
+                    .requirement_destinations
+                    .contains_key(staged_target.as_str())
+            {
                 // A local requirement handle: composition resolves the
                 // destination and the provider's actual endpoint identity
-                // through this runtime's own connection.  The request is
-                // re-signed so keys and replies use the provider's spelling
-                // while the ticket stays the consumer's own.
+                // through this runtime's own connection, keyed by the
+                // staging field's own name (the empty marker is the legacy
+                // uniquely-resolved form). The request is re-signed so
+                // keys and replies use the provider's spelling while the
+                // ticket stays the consumer's own.
                 let (resolved, provider_signature) =
-                    manifest.resolve_requirement_destination(&signature)?;
+                    manifest.resolve_requirement_destination(staged_target.as_str(), &signature)?;
                 record.retarget_instance(&resolved);
                 record.retarget_signature(provider_signature);
                 (resolved, provider_signature)
@@ -1659,5 +1700,72 @@ where
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod conflict_guard_tests {
+    use super::reject_conflicting_leased_writes;
+    use crate::runtime::transport::{PreparedOutput, RuntimeWireMetadata};
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn setpoint_record(
+        target: Option<&str>,
+        control: crate::runtime::transport::WireControl,
+    ) -> PreparedOutput {
+        let method: crate::contracts::CallMethod<(), u64> = crate::contracts::CallMethod::new(
+            "fixture.Actuate",
+            "actuate",
+            "actuate",
+            "google.protobuf.Empty",
+            "fixture.Value",
+            Some(100),
+            &[],
+        );
+        let signature = crate::port::PortSignature::from_method(
+            method.signature(),
+            crate::port::PortKind::Setpoint,
+        );
+        PreparedOutput::withdrawal(
+            signature,
+            RuntimeWireMetadata::data("fixture", crate::runtime::ExecutionTime::from_nanos(0), 1),
+        )
+        .retarget_for_test(target.unwrap_or("drive"))
+        .with_test_control(control)
+    }
+
+    /// Two staged writes to one leased endpoint in one candidate are
+    /// refused atomically; distinct endpoints and withdrawals do not trip
+    /// the guard.
+    #[test]
+    fn conflicting_leased_writes_are_refused_atomically() {
+        let write = crate::runtime::transport::WireControl::Data;
+        let withdraw = crate::runtime::transport::WireControl::Withdraw;
+        // Distinct targets never conflict.
+        assert!(
+            reject_conflicting_leased_writes(&[
+                setpoint_record(Some("drive"), write),
+                setpoint_record(Some("arm"), write),
+            ])
+            .is_ok()
+        );
+        // A withdrawal beside a write never conflicts.
+        assert!(
+            reject_conflicting_leased_writes(&[
+                setpoint_record(Some("drive"), withdraw),
+                setpoint_record(Some("drive"), write),
+            ])
+            .is_ok()
+        );
+        // Two writes to one leased endpoint are refused, naming the port.
+        let error = reject_conflicting_leased_writes(&[
+            setpoint_record(Some("drive"), write),
+            setpoint_record(Some("drive"), write),
+        ])
+        .expect_err("two staged writes to one leased endpoint conflict");
+        assert!(
+            error.to_string().contains("conflicting staged writes"),
+            "the refusal names the conflict, got {error}"
+        );
     }
 }

@@ -164,9 +164,10 @@ impl FieldShape {
 /// Re-anchors an authored field type for generated code one module below
 /// the authored item.
 ///
-/// Path types rooted at the crate or starting with `::`/`self`/`super`
-/// resolve as authored; bare paths gain `depth` leading `super` steps.
-fn anchored_type(ty: &Type, depth: usize) -> Type {
+/// Paths rooted at the crate or starting with `::` resolve as authored;
+/// `self` and leading `super` spellings rebase through [`anchored`]'s
+/// rules, so `self::Settings` resolves exactly like the bare `Settings`.
+pub(crate) fn anchored_type(ty: &Type, depth: usize) -> Type {
     let Type::Path(type_path) = ty else {
         return ty.clone();
     };
@@ -207,22 +208,12 @@ fn anchored_type(ty: &Type, depth: usize) -> Type {
         }
         return syn::Type::Path(anchored);
     }
-    let mut segments = type_path.path.segments.clone();
-    for _ in 0..depth {
-        segments.insert(
-            0,
-            syn::PathSegment {
-                ident: syn::Ident::new("super", proc_macro2::Span::call_site()),
-                arguments: syn::PathArguments::None,
-            },
-        );
-    }
+    // Plain and `self`/`super`-prefixed paths share one re-anchoring rule
+    // with [`anchored`], instead of blind `super` prefixing that would
+    // fabricate `super::self::Settings`.
     syn::Type::Path(syn::TypePath {
         qself: None,
-        path: Path {
-            leading_colon: None,
-            segments,
-        },
+        path: anchored(&type_path.path, depth),
     })
 }
 
@@ -1253,36 +1244,41 @@ fn expand_payload_enum(options: MessageOptions, item: ItemEnum) -> syn::Result<T
                     }
                 }
 
-                impl ::phoxal::schema::MessageSchema for #unit_ident {
-                    const RECORD: ::phoxal::schema::SchemaRecord<'static> =
-                        ::phoxal::schema::SchemaRecord::Message(
-                            ::phoxal::schema::MessageRecord {
-                                package: #package_nested,
-                                name: #unit_wire_name_tail,
-                                fields: &[],
-                            },
-                        );
-                    const WIRE_NAME: &'static str = #unit_wire_name;
+                // Each unit payload's schema frame lives in its own unnamed
+                // const scope: the frame's fixed name would otherwise collide
+                // for a payload enum with more than one unit variant.
+                const _: () = {
+                    impl ::phoxal::schema::MessageSchema for #unit_ident {
+                        const RECORD: ::phoxal::schema::SchemaRecord<'static> =
+                            ::phoxal::schema::SchemaRecord::Message(
+                                ::phoxal::schema::MessageRecord {
+                                    package: #package_nested,
+                                    name: #unit_wire_name_tail,
+                                    fields: &[],
+                                },
+                            );
+                        const WIRE_NAME: &'static str = #unit_wire_name;
 
-                    fn retain_schema() -> usize {
-                        ::std::hint::black_box(&UNIT_FRAME).len()
+                        fn retain_schema() -> usize {
+                            ::std::hint::black_box(&UNIT_FRAME).len()
+                        }
                     }
-                }
 
-                #[used]
-                #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_schema"))]
-                #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_schema"))]
-                static UNIT_FRAME: [u8; ::phoxal::schema::encoded_len(
-                    &<#unit_ident as ::phoxal::schema::MessageSchema>::RECORD,
-                )] = {
-                    let mut bytes = [0_u8; ::phoxal::schema::encoded_len(
+                    #[used]
+                    #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_schema"))]
+                    #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_schema"))]
+                    static UNIT_FRAME: [u8; ::phoxal::schema::encoded_len(
                         &<#unit_ident as ::phoxal::schema::MessageSchema>::RECORD,
-                    )];
-                    ::phoxal::schema::write_frame(
-                        &<#unit_ident as ::phoxal::schema::MessageSchema>::RECORD,
-                        &mut bytes,
-                    );
-                    bytes
+                    )] = {
+                        let mut bytes = [0_u8; ::phoxal::schema::encoded_len(
+                            &<#unit_ident as ::phoxal::schema::MessageSchema>::RECORD,
+                        )];
+                        ::phoxal::schema::write_frame(
+                            &<#unit_ident as ::phoxal::schema::MessageSchema>::RECORD,
+                            &mut bytes,
+                        );
+                        bytes
+                    };
                 };
             });
         }

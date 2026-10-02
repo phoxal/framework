@@ -1494,14 +1494,20 @@ fn graph_delivery_routes(
                         ),
                         format!("{source_instance}.{field}"),
                     );
-                    routes
+                    let reply_route = routes
                         .entry((
                             source_instance.to_owned(),
                             source_port.to_owned(),
                             "reply".to_owned(),
                         ))
-                        .or_default()
-                        .insert(receiving_field.clone());
+                        .or_default();
+                    reply_route.insert(receiving_field.clone());
+                    // The runtime's generated call path issues commands
+                    // under its stable virtual field `generated_call` and
+                    // delivers the completion into the same connected
+                    // receiving field, so that identity is a valid reply
+                    // target alias for the connected caller.
+                    reply_route.insert(format!("{consumer_instance}.generated_call"));
                 }
                 "call_result" | "call_target" => {
                     let target = artifacts.get(source_instance).with_context(|| {
@@ -1540,14 +1546,20 @@ fn graph_delivery_routes(
                         ),
                         format!("{source_instance}.{field}"),
                     );
-                    routes
+                    let reply_route = routes
                         .entry((
                             source_instance.to_owned(),
                             source_port.to_owned(),
                             "reply".to_owned(),
                         ))
-                        .or_default()
-                        .insert(receiving_field.clone());
+                        .or_default();
+                    reply_route.insert(receiving_field.clone());
+                    // The runtime's generated call path issues commands
+                    // under its stable virtual field `generated_call` and
+                    // delivers the completion into the same connected
+                    // receiving field, so that identity is a valid reply
+                    // target alias for the connected caller.
+                    reply_route.insert(format!("{consumer_instance}.generated_call"));
                 }
                 "observation_latest" | "observation_history" | "leased_value" => {
                     routes
@@ -3516,7 +3528,13 @@ mod tests {
                         "emergency".to_owned(),
                         "reply".to_owned()
                     ),
-                    BTreeSet::from(["brain.emergency".to_owned()])
+                    // The connected receiving field and the runtime's
+                    // stable generated-call caller alias both route this
+                    // reply leg.
+                    BTreeSet::from([
+                        "brain.emergency".to_owned(),
+                        "brain.generated_call".to_owned(),
+                    ])
                 )])
             );
         }

@@ -452,7 +452,7 @@ pub struct SetpointUpdate {
 #[derive(Clone)]
 pub struct TransportCallCompletion {
     /// Execution-local ticket identity.
-    pub ticket: u64,
+    pub ticket: u128,
     /// Exact response body or definitive call failure.
     pub result: Result<Vec<u8>, RequestError>,
 }
@@ -486,6 +486,14 @@ pub trait TransportInputSink {
         value: TransportValue,
         stamp: ObservationStamp,
     ) -> crate::Result<()>;
+
+    /// Reports the completion tickets still present in one field's cut,
+    /// so the runner can retire consumed completions from the retained
+    /// mailbox after an accepted invocation.
+    fn completion_tickets(&self, field: &str) -> Vec<u128> {
+        let _ = field;
+        Vec::new()
+    }
 
     /// Clear a latest value when the original observation has expired.
     fn clear_latest(&mut self, field: &str) -> crate::Result<()> {
@@ -1865,12 +1873,44 @@ pub enum RequestError {
     /// The request timed out before response evidence was available.
     #[error("request timed out")]
     Timeout,
+    /// The delivered response bytes failed decoding or integrity checks.
+    /// This is never a domain outcome: consumers fault the invocation
+    /// rather than treating it as a retryable or terminal tree state.
+    #[error("response failed integrity: {0}")]
+    Integrity(String),
 }
 
 /// One typed generated-call completion in an immutable input cut.
 #[derive(Debug)]
 pub struct CallCompletion<Response> {
+    ticket: u128,
     result: Result<Response, RequestError>,
+}
+
+impl<Response> CallCompletion<Response> {
+    /// Builds one completion from its transport result, for generated
+    /// ownership plumbing.
+    pub fn from_transport_result(
+        ticket: u128,
+        result: Result<Vec<u8>, RequestError>,
+    ) -> Result<Self, RequestError>
+    where
+        Response: CallResponse,
+    {
+        crate::Result::Ok(Self {
+            ticket,
+            result: match result {
+                Ok(bytes) => Response::decode_call_response(&bytes),
+                Err(error) => Err(error),
+            },
+        })
+    }
+
+    /// The execution-local ticket this completion answers.
+    #[must_use]
+    pub const fn ticket(&self) -> u128 {
+        self.ticket
+    }
 }
 
 impl<Response> CallCompletion<Response> {
@@ -1896,7 +1936,7 @@ where
 {
     fn decode_call_response(bytes: &[u8]) -> Result<Self, RequestError> {
         crate::runtime::transport::decode_prost(bytes).map_err(|error| {
-            RequestError::OutcomeUnknown(format!("generated response did not decode: {error}"))
+            RequestError::Integrity(format!("generated response did not decode: {error}"))
         })
     }
 }
@@ -1904,7 +1944,7 @@ where
 /// Newly admitted generated-call completions for one runtime invocation.
 #[derive(Debug, Default)]
 pub struct Completions {
-    values: BTreeMap<u64, Result<Vec<u8>, RequestError>>,
+    values: std::cell::RefCell<BTreeMap<u128, Result<Vec<u8>, RequestError>>>,
 }
 
 impl Completions {
@@ -1917,20 +1957,61 @@ impl Completions {
     where
         Response: CallResponse,
     {
-        self.values.get(&ticket.id()).map(|result| CallCompletion {
-            result: match result {
-                Ok(bytes) => Response::decode_call_response(bytes),
-                Err(error) => Err(error.clone()),
-            },
-        })
+        self.values
+            .borrow()
+            .get(&ticket.id())
+            .map(|result| CallCompletion {
+                ticket: ticket.id(),
+                result: match result {
+                    Ok(bytes) => Response::decode_call_response(bytes),
+                    Err(error) => Err(error.clone()),
+                },
+            })
+    }
+
+    /// Takes one completion destructively: the ticket's completion is
+    /// consumed by its exclusive owner and never delivered again. The cut
+    /// is shared during dispatch, so consumption works through interior
+    /// mutability and the runner's retained-mailbox diff observes it.
+    pub fn take<Response>(
+        &self,
+        ticket: &super::outputs::CallTicket<Response>,
+    ) -> Option<CallCompletion<Response>>
+    where
+        Response: CallResponse,
+    {
+        self.values
+            .borrow_mut()
+            .remove(&ticket.id())
+            .map(|result| CallCompletion {
+                ticket: ticket.id(),
+                result: match result {
+                    Ok(bytes) => Response::decode_call_response(&bytes),
+                    Err(error) => Err(error),
+                },
+            })
+    }
+
+    /// Takes one completion by raw ticket, for generated ownership
+    /// plumbing that has already erased the response type.
+    pub fn take_raw(&self, ticket: u128) -> Option<Result<Vec<u8>, RequestError>> {
+        self.values.borrow_mut().remove(&ticket)
+    }
+
+    /// The ticket identities still present in this cut, in delivery order.
+    #[must_use]
+    pub fn ticket_ids(&self) -> Vec<u128> {
+        self.values.borrow().keys().copied().collect()
     }
 
     pub fn from_transport(values: Vec<TransportCallCompletion>) -> Self {
         Self {
-            values: values
-                .into_iter()
-                .map(|value| (value.ticket, value.result))
-                .collect(),
+            values: std::cell::RefCell::new(
+                values
+                    .into_iter()
+                    .map(|value| (value.ticket, value.result))
+                    .collect(),
+            ),
         }
     }
 }

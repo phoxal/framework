@@ -9,11 +9,11 @@ use crate::validation;
 #[cfg(test)]
 use phoxal::contracts::component::encoder::EncoderSample;
 use phoxal::contracts::robotics::OdometryState;
+use phoxal::runtime::Context;
 #[cfg(test)]
 use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 use std::collections::VecDeque;
 
 /// Private state retained by the serialized kinematics owner.
@@ -30,6 +30,7 @@ pub struct KinematicsState {
     available: bool,
     unavailable_reasons: Vec<UnavailableReason>,
     frame_history: VecDeque<FrameTree>,
+    applied_invocation: u64,
 }
 
 impl KinematicsState {
@@ -47,6 +48,7 @@ impl KinematicsState {
             available: false,
             unavailable_reasons: vec![UnavailableReason::Encoder],
             frame_history: VecDeque::new(),
+            applied_invocation: u64::MAX,
         }
     }
 
@@ -104,53 +106,76 @@ impl KinematicsState {
 }
 
 /// The official kinematics service implementation.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Kinematics;
-
-impl crate::contract::kinematics_api::projections::Projections for Kinematics {
-    type State = KinematicsState;
-
-    fn odometry(&self, state: &KinematicsState) -> OdometryState {
-        state.odometry()
-    }
-
-    fn frames(&self, state: &KinematicsState) -> FrameTree {
-        state.frames()
-    }
-
-    fn status(&self, state: &KinematicsState) -> KinematicsStatus {
-        state.status()
-    }
+pub struct Kinematics {
+    state: KinematicsState,
 }
 
-#[phoxal::runtime(contract = crate::contract::KinematicsApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Kinematics {
-    type Config = KinematicsConfig;
-    type State = KinematicsState;
-
-    fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
-        validate_config(config)
+#[phoxal::runtime(contract = crate::contract::KinematicsApi, period_ms = 20)]
+impl Kinematics {
+    #[init]
+    fn new(config: KinematicsConfig) -> phoxal::Result<Self> {
+        validate_config(&config)?;
+        Ok(Self {
+            state: KinematicsState::new(config),
+        })
     }
 
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(KinematicsState::new(config))
+    /// Answers one frame lookup from the current integrated state.
+    ///
+    /// The invocation's encoder integration runs first when this handler
+    /// is the first to observe the invocation, exactly as the unified
+    /// step integrated before serving lookups.
+    #[handle(lookup_frame)]
+    fn lookup(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        request: LookupFrameRequest,
+    ) -> phoxal::Result<LookupFrameResponse> {
+        self.integrate(ctx)?;
+        let response = lookup_frame(&self.state, &request);
+        validation::lookup_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(response)
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        inputs
-            .lookup_frame
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-        let mut outputs = Self::Outputs::default();
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.integrate(ctx)?;
+        validation::odometry(&self.state.odometry()).map_err(|error| anyhow::anyhow!(error))?;
+        validation::frame_tree(&self.state.frames()).map_err(|error| anyhow::anyhow!(error))?;
+        validation::status(&self.state.status()).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Projects the integrated wheel odometry.
+    #[publish(odometry)]
+    fn odometry(&self) -> OdometryState {
+        self.state.odometry()
+    }
+
+    /// Projects the current frame tree.
+    #[publish(frames)]
+    fn frames(&self) -> FrameTree {
+        self.state.frames()
+    }
+
+    /// Projects availability separately from the odometry payload.
+    #[publish(status)]
+    fn status(&self) -> KinematicsStatus {
+        self.state.status()
+    }
+
+    /// Integrates this invocation's admitted encoder cut exactly once, so
+    /// a lookup dispatched before the periodic step observes the same
+    /// freshly integrated state the unified step produced.
+    fn integrate(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        if self.state.applied_invocation == ctx.invocation_index() {
+            return Ok(());
+        }
+        self.state.applied_invocation = ctx.invocation_index();
         match measurements::collect(
-            &state.config,
-            &mut state.encoders,
-            &inputs.encoders,
+            &self.state.config,
+            &mut self.state.encoders,
+            ctx.encoders(),
             ctx.now(),
         ) {
             Ok(cut) => {
@@ -163,43 +188,39 @@ impl Runtime for Kinematics {
                     half.sin() / half
                 };
                 let distance = cut.linear_mps * dt * scale;
-                let heading = state.yaw_rad + half;
-                let x = state.x_m + distance * heading.cos();
-                let y = state.y_m + distance * heading.sin();
+                let heading = self.state.yaw_rad + half;
+                let x = self.state.x_m + distance * heading.cos();
+                let y = self.state.y_m + distance * heading.sin();
                 if !x.is_finite() || !y.is_finite() || !delta.is_finite() {
                     return Err(anyhow::anyhow!("odometry integration overflow"));
                 }
-                state.x_m = x;
-                state.y_m = y;
-                state.yaw_rad = normalize_yaw(state.yaw_rad + delta);
-                state.linear_x_mps = cut.linear_mps;
-                state.angular_z_radps = cut.angular_radps;
-                state.oldest_capture_time_nanos = Some(cut.oldest_capture_time_nanos);
-                state.revision = state
+                self.state.x_m = x;
+                self.state.y_m = y;
+                self.state.yaw_rad = normalize_yaw(self.state.yaw_rad + delta);
+                self.state.linear_x_mps = cut.linear_mps;
+                self.state.angular_z_radps = cut.angular_radps;
+                self.state.oldest_capture_time_nanos = Some(cut.oldest_capture_time_nanos);
+                self.state.revision = self
+                    .state
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("odometry revision overflow"))?;
-                state.available = true;
-                state.unavailable_reasons.clear();
-                state.retain_frames(state.frames());
-                outputs.joints(cut.joints)?;
+                self.state.available = true;
+                self.state.unavailable_reasons.clear();
+                let frames = self.state.frames();
+                self.state.retain_frames(frames);
+                for joint in cut.joints {
+                    ctx.emit_joints(joint)?;
+                }
             }
             Err(reason) => {
-                state.available = false;
-                state.linear_x_mps = 0.0;
-                state.angular_z_radps = 0.0;
-                state.unavailable_reasons = vec![reason];
+                self.state.available = false;
+                self.state.linear_x_mps = 0.0;
+                self.state.angular_z_radps = 0.0;
+                self.state.unavailable_reasons = vec![reason];
             }
         }
-        validation::odometry(&state.odometry()).map_err(|error| anyhow::anyhow!(error))?;
-        validation::frame_tree(&state.frames()).map_err(|error| anyhow::anyhow!(error))?;
-        validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
-        for command in inputs.lookup_frame.items() {
-            let response = lookup_frame(&state, command.request());
-            validation::lookup_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-            outputs.lookup_frame_reply(command.reply(response))?;
-        }
-        Ok((state, outputs))
+        Ok(())
     }
 }
 

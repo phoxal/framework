@@ -537,7 +537,12 @@ pub struct PreparedOutput {
     reply: bool,
     field: Option<&'static str>,
     change_token: Option<ChangeToken>,
-    generated_operation: bool,
+    /// The complete 128-bit ticket of one generated operation, when this
+    /// record is one. The wire carries only its low half as the sequence,
+    /// but the correlation must retain the full epoch-qualified identity:
+    /// a completion mis-ticketed with only the low half is unowned from
+    /// the second execution epoch onward.
+    generated_ticket: Option<u128>,
 }
 
 impl PreparedOutput {
@@ -585,7 +590,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         })
     }
 
@@ -608,7 +613,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         })
     }
 
@@ -631,7 +636,7 @@ impl PreparedOutput {
             reply: true,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         })
     }
 
@@ -654,7 +659,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         })
     }
 
@@ -684,7 +689,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         })
     }
 
@@ -704,7 +709,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         }
     }
 
@@ -750,7 +755,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
-            generated_operation: false,
+            generated_ticket: None,
         }
     }
 
@@ -788,8 +793,8 @@ impl PreparedOutput {
 
     /// Mark a record as originating from the generated robot API.
     #[must_use]
-    pub fn generated_operation(mut self) -> Self {
-        self.generated_operation = true;
+    pub fn generated_ticket(mut self, ticket: u128) -> Self {
+        self.generated_ticket = Some(ticket);
         self
     }
 
@@ -808,17 +813,15 @@ impl PreparedOutput {
         }
     }
 
-    pub(crate) fn generated_identity(&self) -> Option<(String, PortSignature, u64, usize, bool)> {
-        if !self.generated_operation {
-            return None;
-        }
+    pub(crate) fn generated_identity(&self) -> Option<(String, PortSignature, u128, usize, bool)> {
+        let ticket = self.generated_ticket?;
         let PreparedEndpoint::Signature(signature) = self.endpoint else {
             return None;
         };
         Some((
             self.target_instance.clone()?,
             signature,
-            self.metadata.command_id.or(self.metadata.sequence)?,
+            ticket,
             self.payload.len(),
             self.request,
         ))
@@ -844,6 +847,38 @@ impl PreparedOutput {
         Ok(())
     }
 
+    /// The instance this record targets, when one is resolved.
+    pub(crate) fn target_identity(&self) -> Option<&str> {
+        self.target_instance.as_deref()
+    }
+
+    /// Test-only: retargets the record to an explicit instance.
+    #[cfg(test)]
+    pub(crate) fn retarget_for_test(mut self, target: &str) -> Self {
+        self.target_instance = Some(target.to_owned());
+        self
+    }
+
+    /// Test-only: overrides the record's wire control.
+    #[cfg(test)]
+    pub(crate) fn with_test_control(mut self, control: WireControl) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// Whether this record is a lease withdrawal rather than a write.
+    pub(crate) fn is_withdrawal(&self) -> bool {
+        self.control == WireControl::Withdraw
+    }
+
+    /// The record's port signature, when it carries a compile-time one.
+    pub(crate) fn port_signature(&self) -> Option<&crate::port::PortSignature> {
+        match &self.endpoint {
+            PreparedEndpoint::Signature(signature) => Some(signature),
+            PreparedEndpoint::Binding(_) => None,
+        }
+    }
+
     /// Returns the generated output field identity, when one was supplied.
     #[must_use]
     pub const fn field(&self) -> Option<&'static str> {
@@ -863,6 +898,12 @@ impl PreparedOutput {
     #[must_use]
     pub const fn payload_len(&self) -> usize {
         self.payload.len()
+    }
+
+    /// Encoded body bytes of this prepared record.
+    #[must_use]
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload
     }
 
     /// Return the bounded receipt facts for an ordinary published product.

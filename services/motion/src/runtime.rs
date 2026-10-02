@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::contract::motion_api::Inputs as MotionInputs;
 use phoxal::contracts::robotics::OdometryState;
 
@@ -16,8 +17,10 @@ use crate::validation;
 use phoxal::contracts::Empty;
 use phoxal::contracts::component::actuator::ActuatorSetpoint;
 #[cfg(test)]
+use phoxal::runtime::StepContext;
+#[cfg(test)]
 use phoxal::runtime::input::{Latest, Setpoint};
-use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
+use phoxal::runtime::{Context, ExecutionTime, Leased, Observation};
 
 const INPUT_MAX_AGE_MS: u64 = 100;
 
@@ -37,6 +40,7 @@ pub struct ArbiterState {
     config: MotionConfig,
     armed_mode: Option<ArmedMode>,
     emergency_latched: bool,
+    last_engaged_invocation: Option<u64>,
     engaged_this_invocation: bool,
     protective_state_clear: bool,
     measurement_available: bool,
@@ -52,6 +56,7 @@ impl ArbiterState {
             config,
             armed_mode: None,
             emergency_latched: false,
+            last_engaged_invocation: None,
             engaged_this_invocation: false,
             protective_state_clear: false,
             measurement_available: false,
@@ -74,171 +79,168 @@ impl ArbiterState {
 }
 
 /// The official motion service implementation.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Motion;
+pub struct Motion {
+    arbiter: ArbiterState,
+}
 
-#[phoxal::runtime(contract = crate::contract::MotionApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Motion {
-    type Config = MotionConfig;
-    type State = ArbiterState;
-
-    fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
-        validate_motion_config(config)
+#[phoxal::runtime(contract = crate::contract::MotionApi, period_ms = 20)]
+impl Motion {
+    #[init]
+    fn new(config: MotionConfig) -> phoxal::Result<Self> {
+        validate_motion_config(&config)?;
+        Ok(Self {
+            arbiter: ArbiterState::new(config),
+        })
     }
 
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(ArbiterState::new(config))
+    /// Arms one authenticated caller at its merged dispatch position.
+    #[handle(arm)]
+    fn arm(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        request: ArmRequest,
+    ) -> phoxal::Result<ApplyEmergencyResponse> {
+        let facts = fresh_facts(ctx);
+        Ok(apply_arm(
+            &mut self.arbiter,
+            &request,
+            ctx.command_source().unwrap_or_default(),
+            facts,
+            &ctx.manual(),
+            &ctx.autonomous(),
+            ctx.now(),
+        ))
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        inputs
-            .arm
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-        inputs
-            .disarm
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-        inputs
-            .engage_emergency
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-        inputs
-            .release_emergency
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
+    /// Disarms the selected authority at its merged dispatch position.
+    #[handle(disarm)]
+    fn disarm(
+        &mut self,
+        _ctx: &mut Context<'_, Self>,
+        _request: Empty,
+    ) -> phoxal::Result<ApplyEmergencyResponse> {
+        self.arbiter.disarm();
+        Ok(accepted())
+    }
 
-        state.engaged_this_invocation = false;
-        state.protective_state_clear = fresh_safety(inputs, ctx.now())
-            .is_some_and(|safety| safety_is_clear(safety, ctx.now()));
-        state.measurement_available = fresh_measurement(inputs, ctx.now())
-            .is_some_and(|measurement| measurement.available && valid_measurement(measurement));
-        let mut outputs = Self::Outputs::default();
-        let protective_state_clear = state.protective_state_clear;
-        let measurement_available = state.measurement_available;
+    /// Latches the protective emergency stop at its merged dispatch
+    /// position.
+    #[handle(engage_emergency)]
+    fn engage(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        _request: Empty,
+    ) -> phoxal::Result<ApplyEmergencyResponse> {
+        self.arbiter.emergency_latched = true;
+        self.arbiter.last_engaged_invocation = Some(ctx.invocation_index());
+        Ok(accepted())
+    }
 
-        let mut calls = Vec::new();
-        calls.extend(inputs.arm.items().iter().map(MotionCall::Arm));
-        calls.extend(inputs.disarm.items().iter().map(MotionCall::Disarm));
-        calls.extend(
-            inputs
-                .engage_emergency
-                .items()
-                .iter()
-                .map(MotionCall::EngageEmergency),
-        );
-        calls.extend(
-            inputs
-                .release_emergency
-                .items()
-                .iter()
-                .map(MotionCall::ReleaseEmergency),
-        );
-        calls.sort_by_key(MotionCall::order);
-        for call in calls {
-            match call {
-                MotionCall::Arm(command) => {
-                    let response = apply_arm(
-                        &mut state,
-                        command.request(),
-                        command.source(),
-                        protective_state_clear,
-                        measurement_available,
-                        inputs,
-                        ctx.now(),
-                    );
-                    outputs.arm_replies.push(command.reply(response));
-                }
-                MotionCall::Disarm(command) => {
-                    state.disarm();
-                    outputs.disarm_replies.push(command.reply(accepted()));
-                }
-                MotionCall::EngageEmergency(command) => {
-                    state.emergency_latched = true;
-                    state.engaged_this_invocation = true;
-                    outputs
-                        .engage_emergency_replies
-                        .push(command.reply(accepted()));
-                }
-                MotionCall::ReleaseEmergency(command) => {
-                    let response = apply_release(
-                        &mut state,
-                        command.request(),
-                        protective_state_clear,
-                        measurement_available,
-                    );
-                    outputs
-                        .release_emergency_replies
-                        .push(command.reply(response));
-                }
-            }
-        }
+    /// Releases a latched emergency under fresh protective evidence at its
+    /// merged dispatch position.
+    #[handle(release_emergency)]
+    fn release(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        request: ReleaseEmergencyRequest,
+    ) -> phoxal::Result<ApplyEmergencyResponse> {
+        let facts = fresh_facts(ctx);
+        Ok(apply_release(&mut self.arbiter, &request, facts))
+    }
 
-        if state.engaged_this_invocation || state.emergency_latched {
-            state.disarm();
+    #[step]
+    fn arbitrate(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        let facts = fresh_facts(ctx);
+        self.arbiter.protective_state_clear = facts.protective_state_clear;
+        self.arbiter.measurement_available = facts.measurement_available;
+        let engaged_this_invocation =
+            self.arbiter.last_engaged_invocation == Some(ctx.invocation_index());
+        if engaged_this_invocation || self.arbiter.emergency_latched {
+            self.arbiter.disarm();
         } else {
-            select_and_limit_intent(&mut state, inputs, ctx.now());
+            select_and_limit_intent(
+                &mut self.arbiter,
+                &ctx.safety(),
+                &ctx.manual(),
+                &ctx.autonomous(),
+                ctx.now(),
+            );
         }
 
         validation::actuator_setpoint(
-            &state.actuator_setpoint,
-            state
+            &self.arbiter.actuator_setpoint,
+            self.arbiter
                 .config
                 .left_wheels
                 .iter()
-                .chain(&state.config.right_wheels)
+                .chain(&self.arbiter.config.right_wheels)
                 .map(|wheel| wheel.actuator_id.as_str()),
         )
         .map_err(|error| anyhow::anyhow!(error))?;
 
-        Ok((state, outputs))
+        // Materialize this invocation's engagement for the status
+        // projection: handlers recorded the invocation that engaged, and
+        // the projection encodes after this step.
+        self.arbiter.engaged_this_invocation = engaged_this_invocation;
+        Ok(())
     }
-}
-
-impl crate::contract::motion_api::projections::Projections for Motion {
-    type State = ArbiterState;
 
     /// Projects the final actuator intent with an independent validity bound.
-    fn actuators(&self, state: &ArbiterState) -> Option<ActuatorSetpoint> {
-        Some(state.actuator_setpoint.clone())
+    #[publish(actuators)]
+    fn actuators(&self) -> Option<ActuatorSetpoint> {
+        Some(self.arbiter.actuator_setpoint.clone())
     }
 
     /// Renews authority and protective status at each invocation so Safety
     /// can apply its freshness bound even while the robot remains disarmed.
-    fn status(&self, state: &ArbiterState) -> MotionStatus {
+    #[publish(status)]
+    fn status(&self) -> MotionStatus {
         MotionStatus {
-            mode: state
+            mode: self
+                .arbiter
                 .armed_mode
                 .map_or(ControlMode::Disarmed, |mode| match mode {
                     ArmedMode::Manual => ControlMode::Manual,
                     ArmedMode::Autonomous => ControlMode::Autonomous,
                 }),
-            emergency_latched: state.emergency_latched,
-            selected_owner_id: state.selected_owner_id.clone(),
-            protective_state_clear: state.protective_state_clear,
-            stopped: state.actuator_setpoint == stopped_setpoint(&state.config)
-                || state.engaged_this_invocation,
+            emergency_latched: self.arbiter.emergency_latched,
+            selected_owner_id: self.arbiter.selected_owner_id.clone(),
+            protective_state_clear: self.arbiter.protective_state_clear,
+            stopped: self.arbiter.actuator_setpoint == stopped_setpoint(&self.arbiter.config)
+                || self.arbiter.engaged_this_invocation,
         }
     }
 }
 
-fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionConstraints> {
-    inputs
-        .safety
-        .is_fresh_at(now, Some(INPUT_MAX_AGE_MS))
-        .then(|| inputs.safety.value())
-        .flatten()
-        .filter(|safety| {
-            validation::constraints(safety).is_ok()
-                && safety.valid_from_nanos <= now.as_nanos()
-                && safety.expires_at_nanos > now.as_nanos()
-                && fresh_capture(safety.oldest_capture_time_nanos, now)
-        })
+/// The input-derived facts one motion handler or step observes from the
+/// same frozen cut the unified step refreshed before dispatch.
+struct MotionFacts {
+    invocation_index: u64,
+    protective_state_clear: bool,
+    measurement_available: bool,
+}
+
+fn fresh_facts(ctx: &Context<'_, Motion>) -> MotionFacts {
+    let now = ctx.now();
+    MotionFacts {
+        invocation_index: ctx.invocation_index(),
+        protective_state_clear: fresh_safety(&ctx.safety(), now)
+            .is_some_and(|safety| safety_is_clear(safety, now)),
+        measurement_available: fresh_measurement(&ctx.measurements(), now)
+            .is_some_and(|measurement| measurement.available && valid_measurement(measurement)),
+    }
+}
+
+fn fresh_safety<'a>(
+    safety: &Observation<'a, MotionConstraints>,
+    now: ExecutionTime,
+) -> Option<&'a MotionConstraints> {
+    safety.fresh_within(INPUT_MAX_AGE_MS).filter(|safety| {
+        validation::constraints(safety).is_ok()
+            && safety.valid_from_nanos <= now.as_nanos()
+            && safety.expires_at_nanos > now.as_nanos()
+            && fresh_capture(safety.oldest_capture_time_nanos, now)
+    })
 }
 
 fn safety_is_clear(safety: &MotionConstraints, now: ExecutionTime) -> bool {
@@ -249,12 +251,12 @@ fn safety_is_clear(safety: &MotionConstraints, now: ExecutionTime) -> bool {
         && fresh_capture(safety.oldest_capture_time_nanos, now)
 }
 
-fn fresh_measurement(inputs: &MotionInputs, now: ExecutionTime) -> Option<&OdometryState> {
-    inputs
-        .measurements
-        .is_fresh_at(now, Some(INPUT_MAX_AGE_MS))
-        .then(|| inputs.measurements.value())
-        .flatten()
+fn fresh_measurement<'a>(
+    measurements: &Observation<'a, OdometryState>,
+    now: ExecutionTime,
+) -> Option<&'a OdometryState> {
+    measurements
+        .fresh_within(INPUT_MAX_AGE_MS)
         .filter(|measurement| fresh_capture(measurement.oldest_capture_time_nanos, now))
 }
 
@@ -274,36 +276,18 @@ fn fresh_capture(capture: Option<u64>, now: ExecutionTime) -> bool {
         .is_some_and(|age| age <= INPUT_MAX_AGE_MS.saturating_mul(1_000_000))
 }
 
-enum MotionCall<'a> {
-    Arm(&'a phoxal::runtime::Command<ArmRequest, ApplyEmergencyResponse>),
-    Disarm(&'a phoxal::runtime::Command<Empty, ApplyEmergencyResponse>),
-    EngageEmergency(&'a phoxal::runtime::Command<Empty, ApplyEmergencyResponse>),
-    ReleaseEmergency(&'a phoxal::runtime::Command<ReleaseEmergencyRequest, ApplyEmergencyResponse>),
-}
-
-impl MotionCall<'_> {
-    fn order(&self) -> phoxal::runtime::CommandOrder {
-        match self {
-            Self::Arm(command) => command.order(),
-            Self::Disarm(command) => command.order(),
-            Self::EngageEmergency(command) => command.order(),
-            Self::ReleaseEmergency(command) => command.order(),
-        }
-    }
-}
-
 fn apply_arm(
     state: &mut ArbiterState,
     request: &ArmRequest,
     owner: &str,
-    protective_state_clear: bool,
-    measurement_available: bool,
-    inputs: &MotionInputs,
+    facts: MotionFacts,
+    manual: &Leased<'_, MotionIntent>,
+    autonomous: &Leased<'_, MotionIntent>,
     now: ExecutionTime,
 ) -> ApplyEmergencyResponse {
     if validation::arm_request(request).is_err() {
         state.emergency_latched = true;
-        state.engaged_this_invocation = true;
+        state.last_engaged_invocation = Some(facts.invocation_index);
         state.disarm();
         return refused(EmergencyRefusalReason::InvalidRequest);
     }
@@ -311,9 +295,9 @@ fn apply_arm(
         return refused(EmergencyRefusalReason::InvalidRequest);
     };
     if state.emergency_latched
-        || !protective_state_clear
-        || !measurement_available
-        || !intent_matches(mode, owner, inputs, now)
+        || !facts.protective_state_clear
+        || !facts.measurement_available
+        || !intent_matches(mode, owner, manual, autonomous, now)
     {
         return refused(EmergencyRefusalReason::ProtectiveState);
     }
@@ -324,13 +308,12 @@ fn apply_arm(
 fn apply_release(
     state: &mut ArbiterState,
     request: &ReleaseEmergencyRequest,
-    protective_state_clear: bool,
-    measurement_available: bool,
+    facts: MotionFacts,
 ) -> ApplyEmergencyResponse {
     if validation::release_request(request).is_err() {
         return refused(EmergencyRefusalReason::InvalidRequest);
     }
-    if !protective_state_clear || !measurement_available {
+    if !facts.protective_state_clear || !facts.measurement_available {
         return refused(EmergencyRefusalReason::ProtectiveState);
     }
     state.emergency_latched = false;
@@ -349,22 +332,18 @@ fn armed_mode(mode: ControlMode) -> Option<ArmedMode> {
 fn intent_matches(
     mode: ArmedMode,
     owner_id: &str,
-    inputs: &MotionInputs,
-    now: ExecutionTime,
+    manual: &Leased<'_, MotionIntent>,
+    autonomous: &Leased<'_, MotionIntent>,
+    _now: ExecutionTime,
 ) -> bool {
-    let intent = match mode {
-        ArmedMode::Manual => inputs.manual.value(),
-        ArmedMode::Autonomous => inputs.autonomous.value(),
+    let (intent, source, valid) = match mode {
+        ArmedMode::Manual => (manual.value(), manual.source(), manual.valid()),
+        ArmedMode::Autonomous => (autonomous.value(), autonomous.source(), autonomous.valid()),
     };
     intent
-        .filter(|_| match mode {
-            ArmedMode::Manual => intent_owner_matches(owner_id, inputs.manual.source()),
-            ArmedMode::Autonomous => intent_owner_matches(owner_id, inputs.autonomous.source()),
-        })
-        .is_some_and(|_| match mode {
-            ArmedMode::Manual => inputs.manual.is_valid_at(now),
-            ArmedMode::Autonomous => inputs.autonomous.is_valid_at(now),
-        })
+        .zip(source)
+        .zip(valid)
+        .is_some_and(|((_, source), _)| intent_owner_matches(owner_id, Some(source)))
 }
 
 fn intent_owner_matches(command_owner: &str, intent_source: Option<&str>) -> bool {
@@ -374,8 +353,14 @@ fn intent_owner_matches(command_owner: &str, intent_source: Option<&str>) -> boo
         || (command_owner == "supervisor.public" && intent_source == Some("supervisor"))
 }
 
-fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now: ExecutionTime) {
-    let Some(safety) = fresh_safety(inputs, now) else {
+fn select_and_limit_intent(
+    state: &mut ArbiterState,
+    safety_view: &Observation<'_, MotionConstraints>,
+    manual: &Leased<'_, MotionIntent>,
+    autonomous: &Leased<'_, MotionIntent>,
+    now: ExecutionTime,
+) {
+    let Some(safety) = fresh_safety(safety_view, now) else {
         state.disarm();
         return;
     };
@@ -389,25 +374,16 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
         state.disarm();
         return;
     };
-    let intent = match mode {
-        ArmedMode::Manual => inputs
-            .manual
-            .is_valid_at(now)
-            .then(|| inputs.manual.value())
-            .flatten(),
-        ArmedMode::Autonomous => inputs
-            .autonomous
-            .is_valid_at(now)
-            .then(|| inputs.autonomous.value())
-            .flatten(),
+    let (intent, owner) = match mode {
+        ArmedMode::Manual => (manual.valid(), manual.source()),
+        ArmedMode::Autonomous => (autonomous.valid(), autonomous.source()),
     };
-    let Some(intent) = intent.filter(|intent| validation::intent(intent).is_ok()) else {
+    let Some(intent) = intent
+        .copied()
+        .filter(|intent| validation::intent(intent).is_ok())
+    else {
         state.disarm();
         return;
-    };
-    let owner = match mode {
-        ArmedMode::Manual => inputs.manual.source(),
-        ArmedMode::Autonomous => inputs.autonomous.source(),
     };
     let Some(owner) = owner else {
         state.disarm();
@@ -422,8 +398,8 @@ fn select_and_limit_intent(state: &mut ArbiterState, inputs: &MotionInputs, now:
         return;
     }
     state.selected_owner_id = Some(owner.to_owned());
-    state.selected_intent = Some(*intent);
-    let mut limited = *intent;
+    state.selected_intent = Some(intent);
+    let mut limited = intent;
     for constraint in &safety.constraints {
         if let Some(maximum) = constraint.max_linear_speed_mps {
             limited.linear_x_mps = limited.linear_x_mps.clamp(-maximum, maximum);
@@ -523,10 +499,28 @@ pub fn measurement(at: ExecutionTime) -> Latest<OdometryState> {
 
 #[cfg(test)]
 mod tests {
-    use crate::contract::motion_api::projections::Projections as _;
-    use phoxal::runtime::{Command, CommandId, CommandOrder, Commands, ExecutionDuration};
+    use phoxal::runtime::{Command, CommandId, CommandOrder, Commands, ExecutionDuration, invoke};
 
+    use super::phoxal_runtime_motion;
     use super::*;
+
+    fn new_arbiter(config: MotionConfig) -> Motion {
+        Motion::new(config).expect("valid motion configuration")
+    }
+
+    fn step(
+        service: Motion,
+        context: &StepContext,
+        inputs: &MotionInputs,
+    ) -> (Motion, crate::contract::motion_api::Outputs) {
+        invoke(
+            &phoxal_runtime_motion::Adapter::new(),
+            context,
+            service,
+            inputs,
+        )
+        .expect("the motion step accepts the inputs")
+    }
 
     fn at(nanos: u64) -> ExecutionTime {
         ExecutionTime::from_nanos(nanos)
@@ -715,12 +709,10 @@ mod tests {
                     input.measurements =
                         Latest::from_sample(phoxal::runtime::Sample::new(value, stamp));
                 }
-                let initial = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
-                let (state, _) = Motion
-                    .step(&context(0, now.as_nanos()), initial, &input)
-                    .unwrap();
-                assert_eq!(Motion.status(&state).mode, ControlMode::Disarmed);
-                assert!(Motion.status(&state).stopped);
+                let initial = new_arbiter(config());
+                let (state, _) = step(initial, &context(0, now.as_nanos()), &input);
+                assert_eq!(state.status().mode, ControlMode::Disarmed);
+                assert!(state.status().stopped);
             }
         }
         assert!(fresh_capture(Some(0), at(100_000_000)));
@@ -729,8 +721,7 @@ mod tests {
 
     #[test]
     fn unavailable_odometry_cannot_arm_even_when_its_velocity_is_zero() {
-        let service = Motion;
-        let initial = phoxal::runtime::initialize(&service, at(0), config()).unwrap();
+        let initial = new_arbiter(config());
         let mut input = inputs(
             manual_intent("operator", 0.2, 0.0, at(0)),
             Setpoint::withdrawn(),
@@ -743,8 +734,8 @@ mod tests {
             },
             phoxal::runtime::ObservationStamp::new("kinematics", at(0), None),
         ));
-        let (state, _) = service.step(&context(0, 0), initial, &input).unwrap();
-        assert_eq!(service.status(&state).mode, ControlMode::Disarmed);
+        let (state, _) = step(initial, &context(0, 0), &input);
+        assert_eq!(state.status().mode, ControlMode::Disarmed);
     }
 
     #[test]
@@ -754,9 +745,9 @@ mod tests {
             Setpoint::withdrawn(),
             vec![arm(1, ControlMode::Manual, "operator")],
         );
-        let initial = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
-        let (armed, _) = Motion.step(&context(0, 0), initial, &input).unwrap();
-        assert_eq!(Motion.status(&armed).mode, ControlMode::Manual);
+        let initial = new_arbiter(config());
+        let (armed, _) = step(initial, &context(0, 0), &input);
+        assert_eq!(armed.status().mode, ControlMode::Manual);
         let mut safety = input.safety.value().unwrap().clone();
         safety.permission = Permission::Limited;
         safety.constraints = vec![Constraint {
@@ -769,80 +760,91 @@ mod tests {
             safety,
             phoxal::runtime::ObservationStamp::new("safety", at(20_000_000), None),
         ));
-        let fresh = phoxal::runtime::initialize(&Motion, at(0), config()).unwrap();
-        let (refused, _) = Motion.step(&context(0, 20_000_000), fresh, &input).unwrap();
-        assert_eq!(Motion.status(&refused).mode, ControlMode::Disarmed);
+        let fresh = new_arbiter(config());
+        let (refused, _) = step(fresh, &context(0, 20_000_000), &input);
+        assert_eq!(refused.status().mode, ControlMode::Disarmed);
         input.arm = Commands::default();
-        let (limited, _) = Motion.step(&context(1, 20_000_000), armed, &input).unwrap();
-        assert_eq!(Motion.status(&limited).mode, ControlMode::Manual);
-        assert!(!Motion.status(&limited).protective_state_clear);
+        let (limited, _) = step(armed, &context(1, 20_000_000), &input);
+        assert_eq!(limited.status().mode, ControlMode::Manual);
+        assert!(!limited.status().protective_state_clear);
         assert_eq!(
-            limited.actuator_setpoint.targets[0].control,
+            limited.arbiter.actuator_setpoint.targets[0].control,
             Some(phoxal::contracts::component::actuator::Control::VelocityRadps(0.15 / 0.11))
         );
         input.safety = safety_state(false, at(40_000_000));
-        let (stopped, _) = Motion
-            .step(&context(2, 40_000_000), limited, &input)
-            .unwrap();
-        assert_eq!(Motion.status(&stopped).mode, ControlMode::Disarmed);
-        assert!(Motion.status(&stopped).stopped);
+        let (stopped, _) = step(limited, &context(2, 40_000_000), &input);
+        assert_eq!(stopped.status().mode, ControlMode::Disarmed);
+        assert!(stopped.status().stopped);
     }
 
     #[test]
     fn restart_starts_disarmed_and_requires_explicit_arm() {
-        let service = Motion;
-        let initial =
-            phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        assert_eq!(service.status(&initial).mode, ControlMode::Disarmed);
+        let initial = new_arbiter(config());
+        assert_eq!(initial.status().mode, ControlMode::Disarmed);
 
-        let (state, outputs) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(0)),
-                    Setpoint::withdrawn(),
-                    vec![arm(1, ControlMode::Manual, "operator")],
-                ),
-            )
-            .expect("arm command");
+        let (state, outputs) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                Setpoint::withdrawn(),
+                vec![arm(1, ControlMode::Manual, "operator")],
+            ),
+        );
         assert_eq!(outputs.arm_replies.len(), 1);
-        assert_eq!(service.status(&state).mode, ControlMode::Manual);
+        assert_eq!(state.status().mode, ControlMode::Manual);
+    }
+
+    #[test]
+    fn invalid_arm_then_release_and_arm_keeps_the_current_invocation_stopped() {
+        let initial = new_arbiter(config());
+        let (state, outputs) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                Setpoint::withdrawn(),
+                vec![
+                    arm(1, ControlMode::Unspecified, "operator"),
+                    release(CommandOrder::new(0, 0, CommandId::new(2))),
+                    arm(3, ControlMode::Manual, "operator"),
+                ],
+            ),
+        );
+        assert_eq!(outputs.arm_replies.len(), 2);
+        assert_eq!(outputs.release_emergency_replies.len(), 1);
+        assert_eq!(state.status().mode, ControlMode::Disarmed);
+        assert!(state.status().stopped);
+        assert_eq!(state.arbiter.actuator_setpoint, stopped_setpoint(&config()));
     }
 
     #[test]
     fn engage_then_release_in_one_batch_stops_and_does_not_rearm() {
-        let service = Motion;
-        let initial =
-            phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        let (state, _) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(0)),
-                    Setpoint::withdrawn(),
-                    vec![arm(1, ControlMode::Manual, "operator")],
-                ),
-            )
-            .expect("arm command");
-        let (state, outputs) = service
-            .step(
-                &context(1, 20_000_000),
-                state,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(20_000_000)),
-                    Setpoint::withdrawn(),
-                    vec![
-                        engage(CommandOrder::new(1, 0, CommandId::new(2))),
-                        release(CommandOrder::new(1, 0, CommandId::new(3))),
-                    ],
-                ),
-            )
-            .expect("engage and release batch");
+        let initial = new_arbiter(config());
+        let (state, _) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                Setpoint::withdrawn(),
+                vec![arm(1, ControlMode::Manual, "operator")],
+            ),
+        );
+        let (state, outputs) = step(
+            state,
+            &context(1, 20_000_000),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(20_000_000)),
+                Setpoint::withdrawn(),
+                vec![
+                    engage(CommandOrder::new(1, 0, CommandId::new(2))),
+                    release(CommandOrder::new(1, 0, CommandId::new(3))),
+                ],
+            ),
+        );
         assert_eq!(outputs.engage_emergency_replies.len(), 1);
         assert_eq!(outputs.release_emergency_replies.len(), 1);
-        let status = service.status(&state);
+        let status = state.status();
         assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(!status.emergency_latched);
         assert!(status.stopped);
@@ -850,8 +852,7 @@ mod tests {
 
     #[test]
     fn disarm_is_ordered_with_other_service_calls() {
-        let service = Motion;
-        let initial = phoxal::runtime::initialize(&service, at(0), config()).unwrap();
+        let initial = new_arbiter(config());
         let input = inputs(
             manual_intent("operator", 0.2, 0.0, at(0)),
             Setpoint::withdrawn(),
@@ -861,42 +862,36 @@ mod tests {
             ],
         );
 
-        let (state, outputs) = service.step(&context(0, 0), initial, &input).unwrap();
+        let (state, outputs) = step(initial, &context(0, 0), &input);
 
         assert_eq!(outputs.arm_replies.len(), 1);
         assert_eq!(outputs.disarm_replies.len(), 1);
-        assert_eq!(service.status(&state).mode, ControlMode::Disarmed);
-        assert!(service.status(&state).stopped);
+        assert_eq!(state.status().mode, ControlMode::Disarmed);
+        assert!(state.status().stopped);
     }
 
     #[test]
     fn expired_intent_stops_without_falling_back_to_autonomy() {
-        let service = Motion;
-        let initial =
-            phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        let (state, _) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(0)),
-                    autonomous_intent("planner", 0.1, 0.0, at(0)),
-                    vec![arm(1, ControlMode::Manual, "operator")],
-                ),
-            )
-            .expect("arm manual");
-        let (state, _) = service
-            .step(
-                &context(1, 200_000_000),
-                state,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(0)),
-                    autonomous_intent("planner", 0.1, 0.0, at(0)),
-                    Vec::new(),
-                ),
-            )
-            .expect("expired intent is safe");
-        let status = service.status(&state);
+        let initial = new_arbiter(config());
+        let (state, _) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                autonomous_intent("planner", 0.1, 0.0, at(0)),
+                vec![arm(1, ControlMode::Manual, "operator")],
+            ),
+        );
+        let (state, _) = step(
+            state,
+            &context(1, 200_000_000),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                autonomous_intent("planner", 0.1, 0.0, at(0)),
+                Vec::new(),
+            ),
+        );
+        let status = state.status();
         assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(status.stopped);
     }
@@ -919,32 +914,26 @@ mod tests {
 
     #[test]
     fn owner_change_requires_a_new_explicit_arm() {
-        let service = Motion;
-        let initial =
-            phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        let (state, _) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator-a", 0.2, 0.0, at(0)),
-                    Setpoint::withdrawn(),
-                    vec![arm(1, ControlMode::Manual, "operator-a")],
-                ),
-            )
-            .expect("arm first operator");
-        let (state, _) = service
-            .step(
-                &context(1, 20_000_000),
-                state,
-                &inputs(
-                    manual_intent("operator-b", 0.2, 0.0, at(20_000_000)),
-                    Setpoint::withdrawn(),
-                    Vec::new(),
-                ),
-            )
-            .expect("owner change is handled as a safe transition");
-        let status = service.status(&state);
+        let initial = new_arbiter(config());
+        let (state, _) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator-a", 0.2, 0.0, at(0)),
+                Setpoint::withdrawn(),
+                vec![arm(1, ControlMode::Manual, "operator-a")],
+            ),
+        );
+        let (state, _) = step(
+            state,
+            &context(1, 20_000_000),
+            &inputs(
+                manual_intent("operator-b", 0.2, 0.0, at(20_000_000)),
+                Setpoint::withdrawn(),
+                Vec::new(),
+            ),
+        );
+        let status = state.status();
         assert_eq!(status.mode, ControlMode::Disarmed);
         assert!(status.stopped);
     }
@@ -953,24 +942,23 @@ mod tests {
     fn config_validates_limits_and_unique_actuator_ids() {
         let mut invalid = config();
         invalid.max_linear_mps = 0.0;
-        assert!(phoxal::runtime::initialize(&Motion, at(0), invalid).is_err());
+        assert!(Motion::new(invalid).is_err());
 
         invalid = config();
         invalid.max_angular_radps = f64::NAN;
-        assert!(phoxal::runtime::initialize(&Motion, at(0), invalid).is_err());
+        assert!(Motion::new(invalid).is_err());
 
         invalid = config();
         invalid.left_wheels[0].actuator_id = invalid.right_wheels[0].actuator_id.clone();
-        assert!(phoxal::runtime::initialize(&Motion, at(0), invalid).is_err());
+        assert!(Motion::new(invalid).is_err());
 
         invalid = config();
         invalid.left_wheels[0].actuator_id.clear();
-        assert!(phoxal::runtime::initialize(&Motion, at(0), invalid).is_err());
+        assert!(Motion::new(invalid).is_err());
     }
 
     #[test]
     fn config_controls_limits_and_actuator_membership() {
-        let service = Motion;
         let mut custom = MotionConfig {
             max_linear_mps: 0.1,
             max_angular_radps: 0.2,
@@ -978,20 +966,17 @@ mod tests {
         };
         custom.left_wheels[0].actuator_id = "left-wheel".into();
         custom.right_wheels[0].actuator_id = "right-wheel".into();
-        let initial = phoxal::runtime::initialize(&service, at(0), custom)
-            .expect("initialize configured motion");
-        let (state, _) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator", 0.5, 0.5, at(0)),
-                    Setpoint::withdrawn(),
-                    vec![arm(1, ControlMode::Manual, "operator")],
-                ),
-            )
-            .expect("configured motion step");
-        let setpoint = service.actuators(&state).expect("setpoint projection");
+        let initial = new_arbiter(custom);
+        let (state, _) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.5, 0.5, at(0)),
+                Setpoint::withdrawn(),
+                vec![arm(1, ControlMode::Manual, "operator")],
+            ),
+        );
+        let setpoint = state.actuators().expect("setpoint projection");
         assert_eq!(setpoint.targets[0].actuator_id, "left-wheel");
         assert_eq!(setpoint.targets[1].actuator_id, "right-wheel");
         let left = match setpoint.targets[0].control.as_ref() {
@@ -1008,25 +993,21 @@ mod tests {
 
     #[test]
     fn malformed_emergency_input_latches_stop() {
-        let service = Motion;
-        let initial =
-            phoxal::runtime::initialize(&service, at(0), config()).expect("initialize motion");
-        let (state, outputs) = service
-            .step(
-                &context(0, 0),
-                initial,
-                &inputs(
-                    manual_intent("operator", 0.2, 0.0, at(0)),
-                    Setpoint::withdrawn(),
-                    vec![arm(1, ControlMode::Unspecified, "operator")],
-                ),
-            )
-            .expect("invalid command returns typed refusal");
+        let initial = new_arbiter(config());
+        let (state, outputs) = step(
+            initial,
+            &context(0, 0),
+            &inputs(
+                manual_intent("operator", 0.2, 0.0, at(0)),
+                Setpoint::withdrawn(),
+                vec![arm(1, ControlMode::Unspecified, "operator")],
+            ),
+        );
         assert!(matches!(
             outputs.arm_replies[0].response(),
             ApplyEmergencyResponse::Refused(_)
         ));
-        let status = service.status(&state);
+        let status = state.status();
         assert!(status.emergency_latched);
         assert!(status.stopped);
     }

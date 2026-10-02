@@ -44,19 +44,21 @@ pub struct PreparedOutput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreparedSignature {
     #[serde(default)]
-    endpoint: String,
+    pub endpoint: String,
     #[serde(default)]
-    service: String,
+    pub service: String,
     #[serde(default)]
-    shape: String,
+    pub method: String,
     #[serde(default)]
-    request: String,
+    pub shape: String,
     #[serde(default)]
-    response: String,
+    pub request: String,
     #[serde(default)]
-    retained_latest: bool,
+    pub response: String,
     #[serde(default)]
-    lease_valid_for_ms: Option<u64>,
+    pub retained_latest: bool,
+    #[serde(default)]
+    pub lease_valid_for_ms: Option<u64>,
 }
 
 /// Narrow read-model of one retained runtime record.
@@ -585,7 +587,18 @@ impl PreparedContract {
         self.descriptors.encode_to_vec()
     }
 
-    /// Iterates every retained method signature with its input role.
+    /// The call-shaped endpoint signatures this contract provides: the
+    /// operations it serves on its call ingress, which a composed brain
+    /// may name as provider descriptor markers.
+    pub fn runtime_call_signatures(&self) -> impl Iterator<Item = &PreparedSignature> {
+        self.runtime
+            .inputs
+            .iter()
+            .filter(|input| input.role == "call_ingress")
+            .filter_map(|input| input.signature.as_ref())
+            .filter(|signature| signature.shape == "call")
+    }
+
     fn signatures(&self) -> impl Iterator<Item = (&'static str, &PreparedSignature)> {
         self.runtime
             .transient_outputs
@@ -607,7 +620,7 @@ impl PreparedContract {
 }
 
 /// Resolves the Rust path of one message through the descriptor closure.
-fn rust_message_path(
+pub fn rust_message_path(
     pool: &prost_reflect::DescriptorPool,
     fqn: &str,
     module_root: &str,
@@ -615,15 +628,27 @@ fn rust_message_path(
     if let Some(path) = crate::sdk_type_path(fqn) {
         return Ok(path);
     }
-    let message = pool
-        .get_message_by_name(fqn)
-        .ok_or_else(|| Error::ApiInput {
+    // A payload may be a message or an enumeration: both generate typed
+    // Rust items in the same package modules.
+    let (file_package, item_name) = if let Some(message) = pool.get_message_by_name(fqn) {
+        (
+            message.parent_file().package_name().to_owned(),
+            message.name().to_owned(),
+        )
+    } else if let Some(enumeration) = pool.get_enum_by_name(fqn) {
+        (
+            enumeration.parent_file().package_name().to_owned(),
+            enumeration.name().to_owned(),
+        )
+    } else {
+        return Err(Error::ApiInput {
             path: PathBuf::new(),
             message: format!("prepared closure does not define `{fqn}`"),
-        })?;
+        });
+    };
     let mut segments = vec![module_root.to_owned()];
-    segments.extend(package_modules(message.parent_file().package_name())?);
-    segments.push(message.name().to_owned());
+    segments.extend(package_modules(&file_package)?);
+    segments.push(item_name);
     Ok(segments.join("::"))
 }
 
@@ -637,7 +662,15 @@ pub fn emit_instance_module(
     methods_root: &str,
 ) -> Result<String, Error> {
     let module = instance.to_snake_case();
-    if ["types", "calls", "projections", "service_methods"].contains(&module.as_str()) {
+    if [
+        "types",
+        "calls",
+        "projections",
+        "service_methods",
+        "operations",
+    ]
+    .contains(&module.as_str())
+    {
         return Err(Error::ApiInput {
             path: PathBuf::from("robot.yaml"),
             message: format!(

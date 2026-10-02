@@ -1,10 +1,11 @@
 use crate::config::{NavigationConfig, validate_navigation_config};
-#[cfg(test)]
 use crate::contract::MapState;
+use crate::contract::NavigationState;
+#[cfg(test)]
 use crate::contract::navigation_api::Inputs as NavigationInputs;
 use crate::contract::{
     ApplyCommand, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse, GoalFinished,
-    GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason, UnavailableReason,
+    GoalOutcome, GoalTarget, Phase, RefusalReason, UnavailableReason,
 };
 use crate::validation;
 use phoxal::contracts::robotics::OdometryState;
@@ -12,7 +13,7 @@ use phoxal::contracts::robotics::OdometryState;
 use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::{Commands, Latest};
-use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
+use phoxal::runtime::{Context, ExecutionTime, Observation};
 use std::collections::VecDeque;
 
 const LOCALIZATION_MAX_AGE_MS: u64 = 100;
@@ -77,115 +78,107 @@ impl PlannerState {
 }
 
 /// The official navigation service implementation.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Navigation;
+#[derive(Debug)]
+pub struct Navigation {
+    planner: PlannerState,
+}
 
-#[phoxal::runtime(contract = crate::contract::NavigationApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for Navigation {
-    type Config = NavigationConfig;
-    type State = PlannerState;
-
-    fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
-        validate_navigation_config(config)
+#[phoxal::runtime(contract = crate::contract::NavigationApi, period_ms = 20)]
+impl Navigation {
+    #[init]
+    fn new(config: NavigationConfig) -> phoxal::Result<Self> {
+        validate_navigation_config(&config)?;
+        Ok(Self {
+            planner: PlannerState::new(config),
+        })
     }
 
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(PlannerState::new(config))
-    }
-
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        inputs
-            .apply_command
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-        inputs
-            .get_goal_status
-            .validate_order()
-            .map_err(|error| anyhow::anyhow!(error))?;
-
-        state.unavailable_reasons = unavailable_reasons(inputs, ctx.now());
-        state.map_revision = fresh_map_revision(inputs, ctx.now());
-        let mut outputs = Self::Outputs::default();
-
-        let mut command_index = 0;
-        let mut status_index = 0;
-        while command_index < inputs.apply_command.items().len()
-            || status_index < inputs.get_goal_status.items().len()
-        {
-            let next_is_command = match (
-                inputs.apply_command.items().get(command_index),
-                inputs.get_goal_status.items().get(status_index),
-            ) {
-                (Some(command), Some(status)) => command.order() <= status.order(),
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => break,
-            };
-            if next_is_command {
-                let command = &inputs.apply_command.items()[command_index];
-                command_index += 1;
-                let (response, terminal) = apply_command(&mut state, command.request());
-                validation::command_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.apply_command_replies.push(command.reply(response));
-                if let Some(finished) = terminal {
-                    validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
-                    state.retain_terminal(finished.clone());
-                    outputs.finished.push(finished);
-                }
-            } else {
-                let call = &inputs.get_goal_status.items()[status_index];
-                status_index += 1;
-                let response = goal_status(&state, call.request());
-                validation::status_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.get_goal_status_replies.push(call.reply(response));
-            }
+    /// Applies one navigation command at its merged dispatch position.
+    ///
+    /// Fresh availability and map facts are recomputed from the same frozen
+    /// input cut at entry, exactly as the pre-dispatch refresh did, so the
+    /// command observes the invocation's live facts rather than a stale
+    /// retained copy.
+    #[handle(apply_command)]
+    fn apply(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        command: ApplyCommand,
+    ) -> phoxal::Result<ApplyCommandResponse> {
+        self.refresh_facts(ctx);
+        let (response, terminal) = apply_command(&mut self.planner, &command);
+        validation::command_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+        if let Some(finished) = terminal {
+            validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
+            self.planner.retain_terminal(finished.clone());
+            ctx.emit_finished(finished)?;
         }
+        Ok(response)
+    }
 
-        if state.active_goal_id.is_some() && state.unavailable() {
-            if let Some(goal_id) = state.active_goal_id.take() {
+    /// Answers one status query from the state at its merged position.
+    #[handle(get_goal_status)]
+    fn goal_status_query(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        request: GetGoalStatusRequest,
+    ) -> phoxal::Result<GetGoalStatusResponse> {
+        self.refresh_facts(ctx);
+        let response = goal_status(&self.planner, &request);
+        validation::status_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(response)
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.refresh_facts(ctx);
+        if self.planner.active_goal_id.is_some() && self.planner.unavailable() {
+            if let Some(goal_id) = self.planner.active_goal_id.take() {
                 let finished = GoalFinished {
                     goal_id,
                     outcome: GoalOutcome::Unavailable,
-                    unavailable_reasons: state.unavailable_reasons.clone(),
+                    unavailable_reasons: self.planner.unavailable_reasons.clone(),
                 };
-                state.clear_active();
-                state.retain_terminal(finished.clone());
+                self.planner.clear_active();
+                self.planner.retain_terminal(finished.clone());
                 validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.finished.push(finished);
+                ctx.emit_finished(finished)?;
             }
-        } else if state.active_goal_id.is_some() {
-            advance_search_or_follow(&mut state, inputs.localization.value());
-            if state.phase == Phase::Idle
-                && let Some(goal_id) = state.active_goal_id.take()
+        } else if self.planner.active_goal_id.is_some() {
+            advance_search_or_follow(&mut self.planner, ctx.localization().value());
+            if self.planner.phase == Phase::Idle
+                && let Some(goal_id) = self.planner.active_goal_id.take()
             {
                 let finished = GoalFinished {
                     goal_id,
                     outcome: GoalOutcome::Reached,
                     unavailable_reasons: Vec::new(),
                 };
-                state.clear_active();
-                state.retain_terminal(finished.clone());
+                self.planner.clear_active();
+                self.planner.retain_terminal(finished.clone());
                 validation::finished(&finished).map_err(|error| anyhow::anyhow!(error))?;
-                outputs.finished.push(finished);
+                ctx.emit_finished(finished)?;
             }
         }
 
-        validation::state(&public_status(&state)).map_err(|error| anyhow::anyhow!(error))?;
-        Ok((state, outputs))
+        validation::state(&public_status(&self.planner)).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
     }
-}
-
-impl crate::contract::navigation_api::projections::Projections for Navigation {
-    type State = PlannerState;
 
     /// Projects the private planner state to its public status port.
-    fn status(&self, state: &PlannerState) -> NavigationState {
-        public_status(state)
+    #[publish(status)]
+    fn status(&self) -> NavigationState {
+        public_status(&self.planner)
+    }
+
+    /// Recomputes the fresh availability and map facts from this
+    /// invocation's frozen input cut, under the contract's declared age
+    /// bounds.
+    fn refresh_facts(&mut self, ctx: &Context<'_, Self>) {
+        let now = ctx.now();
+        self.planner.unavailable_reasons =
+            unavailable_reasons(&ctx.localization(), &ctx.map(), now);
+        self.planner.map_revision = fresh_map_revision(&ctx.map(), now);
     }
 }
 
@@ -225,12 +218,14 @@ fn public_status(state: &PlannerState) -> NavigationState {
     }
 }
 
-fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<UnavailableReason> {
+fn unavailable_reasons(
+    localization: &Observation<'_, OdometryState>,
+    map: &Observation<'_, MapState>,
+    now: ExecutionTime,
+) -> Vec<UnavailableReason> {
     let mut reasons = Vec::with_capacity(2);
-    let localization_ready = inputs
-        .localization
-        .is_fresh_at(now, Some(LOCALIZATION_MAX_AGE_MS))
-        && inputs.localization.value().is_some_and(|pose| {
+    let localization_ready = localization.is_fresh()
+        && localization.value().is_some_and(|pose| {
             validation::odometry(pose).is_ok()
                 && pose.available
                 && validation::capture_is_fresh_at(
@@ -242,8 +237,8 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<Una
     if !localization_ready {
         reasons.push(UnavailableReason::Localization);
     }
-    let map_ready = inputs.map.is_fresh_at(now, Some(MAP_MAX_AGE_MS))
-        && inputs.map.value().is_some_and(|revision| {
+    let map_ready = map.is_fresh()
+        && map.value().is_some_and(|revision| {
             validation::world_revision(revision).is_ok()
                 && revision.available
                 && validation::capture_is_fresh_at(
@@ -258,14 +253,10 @@ fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<Una
     reasons
 }
 
-fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u64> {
-    inputs
-        .map
-        .is_fresh_at(now, Some(MAP_MAX_AGE_MS))
+fn fresh_map_revision(map: &Observation<'_, MapState>, now: ExecutionTime) -> Option<u64> {
+    map.is_fresh()
         .then(|| {
-            inputs
-                .map
-                .value()
+            map.value()
                 .filter(|value| {
                     validation::world_revision(value).is_ok()
                         && value.available
@@ -407,6 +398,7 @@ mod tests {
         Command, CommandId, CommandOrder, ExecutionDuration, RuntimeOwner, StepContext,
     };
 
+    use super::phoxal_runtime_navigation;
     use super::*;
 
     fn at(nanos: u64) -> ExecutionTime {
@@ -418,6 +410,11 @@ mod tests {
             max_expansions_per_step: 200,
             goal_tolerance_m: 0.15,
         }
+    }
+
+    fn owner() -> RuntimeOwner<phoxal_runtime_navigation::Adapter> {
+        RuntimeOwner::new(phoxal_runtime_navigation::Adapter::new(), at(0), config())
+            .expect("initialize navigation")
     }
 
     fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommand {
@@ -436,6 +433,12 @@ mod tests {
         ApplyCommand::Cancel(crate::contract::CancelGoal {
             goal_id: goal_id.to_owned(),
         })
+    }
+
+    fn query(goal_id: &str) -> GetGoalStatusRequest {
+        GetGoalStatusRequest {
+            goal_id: goal_id.to_owned(),
+        }
     }
 
     fn inputs(commands: Vec<Command<ApplyCommand, ApplyCommandResponse>>) -> NavigationInputs {
@@ -471,8 +474,7 @@ mod tests {
 
     #[test]
     fn direct_owner_accepts_ordered_commands_and_retains_reached_result() {
-        let mut owner =
-            RuntimeOwner::new(Navigation, at(0), config()).expect("initialize navigation");
+        let mut owner = owner();
         let command = Command::with_order(
             CommandOrder::new(1, 0, CommandId::new(1)),
             start("goal-a", 0.0, 0.0),
@@ -494,10 +496,83 @@ mod tests {
         assert_eq!(finished[0].outcome, GoalOutcome::Reached);
     }
 
+    /// The received-data trace across both operation endpoints: commands and
+    /// queries interleave by their admitted `CommandOrder`, an exact order
+    /// tie resolves command-first (declaration order never reorders received
+    /// data), and each query observes the state at its own merge position.
+    #[test]
+    fn queries_merge_by_received_order_with_command_first_ties() {
+        let mut owner = owner();
+        let inputs = NavigationInputs {
+            apply_command: Commands::new(vec![
+                // Sequence 2: start goal-a.
+                Command::with_order(
+                    CommandOrder::new(1, 0, CommandId::new(2)),
+                    start("goal-a", 10.0, 0.0),
+                ),
+                // Sequence 4: replace goal-a with goal-b.
+                Command::with_order(
+                    CommandOrder::new(1, 0, CommandId::new(4)),
+                    start("goal-b", 10.0, 0.0),
+                ),
+            ]),
+            get_goal_status: Commands::new(vec![
+                // Sequence 1: ordered before the start of goal-a.
+                Command::with_order(CommandOrder::new(1, 0, CommandId::new(1)), query("goal-a")),
+                // Sequence 2: an exact tie with the start — the command
+                // runs first.
+                Command::with_order(CommandOrder::new(1, 0, CommandId::new(2)), query("goal-a")),
+                // Sequence 3: between the start and the replacement.
+                Command::with_order(CommandOrder::new(1, 0, CommandId::new(3)), query("goal-a")),
+                // Sequence 5: after the replacement — the retained
+                // terminal evidence answers.
+                Command::with_order(CommandOrder::new(1, 0, CommandId::new(5)), query("goal-a")),
+            ]),
+            localization: inputs(Vec::new()).localization,
+            map: inputs(Vec::new()).map,
+        };
+        let accepted = owner
+            .accept(&context(0, 0), &inputs)
+            .expect("accept the merged batch");
+
+        let replies = &accepted.outputs().get_goal_status_replies;
+        assert_eq!(replies.len(), 4, "every query received its reply");
+        assert!(
+            matches!(
+                replies[0].response(),
+                GetGoalStatusResponse::UnknownOrNoLongerRetained(_)
+            ),
+            "the query ordered before the start saw no active goal"
+        );
+        assert!(
+            matches!(replies[1].response(), GetGoalStatusResponse::Running(_)),
+            "the exact-order tie resolved command-first"
+        );
+        assert!(
+            matches!(replies[2].response(), GetGoalStatusResponse::Running(_)),
+            "the query between the two starts saw goal-a running"
+        );
+        assert!(
+            matches!(
+                replies[3].response(),
+                GetGoalStatusResponse::Finished(finished)
+                    if finished.outcome == GoalOutcome::Replaced
+            ),
+            "the query after the replacement saw the retained terminal evidence"
+        );
+
+        let outcomes = accepted
+            .outputs()
+            .finished
+            .iter()
+            .map(|finished| finished.outcome)
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes, [GoalOutcome::Replaced]);
+    }
+
     #[test]
     fn cancellation_during_search_is_one_terminal_event_and_no_replay() {
-        let mut owner =
-            RuntimeOwner::new(Navigation, at(0), config()).expect("initialize navigation");
+        let mut owner = owner();
         owner
             .accept(
                 &context(0, 0),
@@ -526,8 +601,7 @@ mod tests {
 
     #[test]
     fn unavailable_inputs_refuse_start_without_faulting_runtime() {
-        let mut owner =
-            RuntimeOwner::new(Navigation, at(0), config()).expect("initialize navigation");
+        let mut owner = owner();
         let unavailable = NavigationInputs {
             apply_command: Commands::new(vec![Command::new(
                 CommandId::new(1),
@@ -551,8 +625,7 @@ mod tests {
 
     #[test]
     fn same_invocation_can_replace_then_cancel_without_replaying_events() {
-        let mut owner =
-            RuntimeOwner::new(Navigation, at(0), config()).expect("initialize navigation");
+        let mut owner = owner();
         let accepted = owner
             .accept(
                 &context(0, 0),
@@ -576,15 +649,24 @@ mod tests {
     fn config_validates_positive_search_budget_and_tolerance() {
         let mut invalid = config();
         invalid.max_expansions_per_step = 0;
-        assert!(phoxal::runtime::initialize(&Navigation, at(0), invalid).is_err());
+        assert!(
+            phoxal::runtime::initialize(&phoxal_runtime_navigation::Adapter::new(), at(0), invalid)
+                .is_err()
+        );
 
-        invalid = config();
+        let mut invalid = config();
         invalid.goal_tolerance_m = f64::INFINITY;
-        assert!(phoxal::runtime::initialize(&Navigation, at(0), invalid).is_err());
+        assert!(
+            phoxal::runtime::initialize(&phoxal_runtime_navigation::Adapter::new(), at(0), invalid)
+                .is_err()
+        );
 
-        invalid = config();
+        let mut invalid = config();
         invalid.goal_tolerance_m = -0.01;
-        assert!(phoxal::runtime::initialize(&Navigation, at(0), invalid).is_err());
+        assert!(
+            phoxal::runtime::initialize(&phoxal_runtime_navigation::Adapter::new(), at(0), invalid)
+                .is_err()
+        );
     }
 
     #[test]

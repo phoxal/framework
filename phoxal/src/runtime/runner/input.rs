@@ -42,6 +42,13 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) generated_correlations: Option<GeneratedCorrelationMap>,
     pub(super) generated_completions: Option<GeneratedCompletionQueue>,
     pub(super) generated_reply_control: Option<GeneratedReplyControl>,
+    /// Completions retained across cuts until their exclusive owner
+    /// consumes or retires them; bounded by generation, reset, or stop.
+    pub(super) retained_completions:
+        std::collections::BTreeMap<u128, crate::runtime::input::TransportCallCompletion>,
+    /// Encoded response bytes currently held by the retained completion
+    /// mailbox; reserved before a new completion is exposed.
+    pub(super) retained_completions_bytes: usize,
     pub(super) managed_inputs: BTreeMap<&'static str, TransportValue>,
     pub(super) observed_attempts: BTreeMap<&'static str, u64>,
     pub(super) stream_terminal: BTreeSet<&'static str>,
@@ -49,6 +56,21 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) arrivals: Option<Arc<tokio::sync::Notify>>,
     pub(super) stopped: bool,
     pub(super) _runtime: PhantomData<fn() -> R>,
+}
+
+/// The encoded response bytes one retained completion holds.
+fn retained_bytes(completion: &crate::runtime::input::TransportCallCompletion) -> usize {
+    match &completion.result {
+        Ok(bytes) => bytes.len(),
+        Err(error) => match error {
+            crate::runtime::input::RequestError::NotSent(detail)
+            | crate::runtime::input::RequestError::OutcomeUnknown(detail)
+            | crate::runtime::input::RequestError::RejectedBeforeAdmission(detail)
+            | crate::runtime::input::RequestError::Integrity(detail) => detail.len(),
+            crate::runtime::input::RequestError::Oversized
+            | crate::runtime::input::RequestError::Timeout => 0,
+        },
+    }
 }
 
 pub(super) type RuntimeSubscription =
@@ -902,6 +924,8 @@ impl<R> ExecutionInputAdapter<R> {
             generated_correlations: None,
             generated_completions: None,
             generated_reply_control: None,
+            retained_completions: std::collections::BTreeMap::new(),
+            retained_completions_bytes: 0,
             managed_inputs: BTreeMap::new(),
             observed_attempts: BTreeMap::new(),
             stream_terminal: BTreeSet::new(),
@@ -1600,6 +1624,46 @@ where
                 let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
                 std::mem::take(&mut *queue)
             };
+            for completion in completions {
+                // Reserve both bounded resources before the completion is
+                // exposed: an item slot and its encoded response bytes. A
+                // duplicate ticket replaces its own copy and releases the
+                // old bytes first.
+                if !self.retained_completions.contains_key(&completion.ticket)
+                    && self.retained_completions.len() >= super::exchange::MAX_RETAINED_COMPLETIONS
+                {
+                    return Err(anyhow::anyhow!(
+                        crate::runtime::transport::TransportError::BatchTooLarge {
+                            port: "generated-completions".to_owned(),
+                            what: "retained completion count",
+                            actual: (self.retained_completions.len() + 1) as u64,
+                            maximum: super::exchange::MAX_RETAINED_COMPLETIONS as u64,
+                        }
+                    ));
+                }
+                if let Some(previous) = self.retained_completions.get(&completion.ticket) {
+                    self.retained_completions_bytes = self
+                        .retained_completions_bytes
+                        .saturating_sub(retained_bytes(previous));
+                }
+                let bytes = retained_bytes(&completion);
+                if self.retained_completions_bytes.saturating_add(bytes)
+                    > super::exchange::MAX_RETAINED_COMPLETION_BYTES
+                {
+                    return Err(anyhow::anyhow!(
+                        crate::runtime::transport::TransportError::BatchTooLarge {
+                            port: "generated-completions".to_owned(),
+                            what: "retained completion encoded bytes",
+                            actual: (self.retained_completions_bytes + bytes) as u64,
+                            maximum: super::exchange::MAX_RETAINED_COMPLETION_BYTES as u64,
+                        }
+                    ));
+                }
+                self.retained_completions_bytes += bytes;
+                self.retained_completions
+                    .insert(completion.ticket, completion);
+            }
+            let completions: Vec<_> = self.retained_completions.values().cloned().collect();
             <R::Inputs as crate::runtime::input::TransportInputSink>::set_call_completions(
                 &mut inputs,
                 completions,
@@ -2012,6 +2076,19 @@ where
 
     fn retain(&mut self, mut inputs: R::Inputs) -> crate::Result<()> {
         self.managed_inputs.clear();
+        if !self.retained_completions.is_empty() {
+            let surviving: std::collections::BTreeSet<u128> =
+                <R::Inputs as crate::runtime::input::TransportInputSink>::completion_tickets(
+                    &inputs,
+                    "completions",
+                )
+                .into_iter()
+                .collect();
+            self.retained_completions
+                .retain(|ticket, _| surviving.contains(ticket));
+            self.retained_completions_bytes =
+                self.retained_completions.values().map(retained_bytes).sum();
+        }
         for field in <R::Inputs as crate::runtime::input::InputSet>::FIELDS
             .iter()
             .filter(|field| {
@@ -2114,6 +2191,8 @@ where
 
     fn reset(&mut self) -> crate::Result<()> {
         self.stopped = false;
+        self.retained_completions.clear();
+        self.retained_completions_bytes = 0;
         self.command_high_watermarks.clear();
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();

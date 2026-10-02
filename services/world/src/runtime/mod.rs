@@ -8,15 +8,15 @@ use crate::contract::{
 use crate::validation;
 #[cfg(test)]
 use phoxal::contracts::robotics::OdometryState;
+use phoxal::runtime::Context;
 #[cfg(test)]
 use phoxal::runtime::input::Latest;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
 use std::collections::VecDeque;
 
 struct WorldSnapshot {
     window: GridWindow,
 }
-/// Private world state retained by the serialized Runtime owner.
+/// Private world state retained by the serialized compute owner.
 pub struct WorldState {
     config: WorldConfig,
     belief: WorldBelief,
@@ -24,6 +24,7 @@ pub struct WorldState {
     available: bool,
     unavailable_reasons: Vec<UnavailableReason>,
     snapshots: VecDeque<WorldSnapshot>,
+    applied_invocation: u64,
 }
 
 impl WorldState {
@@ -44,6 +45,7 @@ impl WorldState {
             available: false,
             unavailable_reasons: vec![UnavailableReason::Pose],
             snapshots: VecDeque::new(),
+            applied_invocation: u64::MAX,
         }
     }
 
@@ -103,104 +105,116 @@ impl WorldState {
 }
 
 /// The official world service implementation.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct World;
+pub struct World {
+    state: WorldState,
+}
 
-#[phoxal::runtime(contract = crate::contract::WorldApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for World {
-    type Config = WorldConfig;
-    type State = WorldState;
-
-    fn validate_config(config: &Self::Config) -> phoxal::Result<()> {
-        validate_config(config)
+#[phoxal::runtime(contract = crate::contract::WorldApi, period_ms = 20)]
+impl World {
+    #[init]
+    fn new(config: WorldConfig) -> phoxal::Result<Self> {
+        validate_config(&config)?;
+        Ok(Self {
+            state: WorldState::new(config),
+        })
     }
 
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(WorldState::new(config))
+    /// Serves one occupancy-window request from the current retained belief.
+    ///
+    /// The invocation's pose update is applied first when this handler is
+    /// the first to observe the invocation, exactly as the unified step
+    /// updated belief before serving window requests.
+    #[handle(window)]
+    fn serve_window(
+        &mut self,
+        ctx: &mut Context<'_, Self>,
+        request: WindowRequest,
+    ) -> phoxal::Result<WindowResponse> {
+        self.apply_pose(ctx);
+        let response = window_for(&self.state, &request);
+        validation::window_response(&response).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(response)
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        inputs
-            .window
-            .validate_order()
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.apply_pose(ctx);
+        validation::belief(&self.state.belief).map_err(|error| anyhow::anyhow!(error))?;
+        validation::revision(&self.state.revision_marker())
             .map_err(|error| anyhow::anyhow!(error))?;
-        let pose = inputs
-            .pose
-            .is_fresh_at(ctx.now(), Some(state.config.max_age_ms))
-            .then(|| inputs.pose.value())
-            .flatten()
+        validation::status(&self.state.status()).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(())
+    }
+
+    /// Projects the current estimated spatial belief.
+    #[publish(belief)]
+    fn belief(&self) -> WorldBelief {
+        self.state.belief.clone()
+    }
+
+    /// Projects the coherent current revision marker.
+    #[publish(revision)]
+    fn revision(&self) -> WorldRevision {
+        self.state.revision_marker()
+    }
+
+    /// Projects availability separately from the belief payload.
+    #[publish(status)]
+    fn status(&self) -> WorldStatus {
+        self.state.status()
+    }
+
+    /// Applies this invocation's pose-derived update exactly once, so a
+    /// window handler dispatched before the periodic step observes the
+    /// same freshly updated state the unified step produced.
+    fn apply_pose(&mut self, ctx: &Context<'_, Self>) {
+        if self.state.applied_invocation == ctx.invocation_index() {
+            return;
+        }
+        self.state.applied_invocation = ctx.invocation_index();
+        let now = ctx.now();
+        let max_age_ms = self.state.config.max_age_ms;
+        let pose = ctx
+            .pose()
+            .fresh_within(max_age_ms)
             .filter(|pose| {
                 validation::capture_is_fresh_at(
                     pose.oldest_capture_time_nanos,
-                    ctx.now().as_nanos(),
-                    state.config.max_age_ms.saturating_mul(1_000_000),
+                    now.as_nanos(),
+                    max_age_ms.saturating_mul(1_000_000),
                 )
-            });
+            })
+            .copied();
         if pose.is_none() {
-            state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::StalePose];
-            state.belief.available = false;
-        } else if pose.is_some_and(|pose| validation::odometry(pose).is_err()) {
-            state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::InvalidPose];
-            state.belief.available = false;
+            self.state.available = false;
+            self.state.unavailable_reasons = vec![UnavailableReason::StalePose];
+            self.state.belief.available = false;
+        } else if pose.is_some_and(|pose| validation::odometry(&pose).is_err()) {
+            self.state.available = false;
+            self.state.unavailable_reasons = vec![UnavailableReason::InvalidPose];
+            self.state.belief.available = false;
         } else if pose.is_some_and(|pose| !pose.available) {
-            state.available = false;
-            state.unavailable_reasons = vec![UnavailableReason::Pose];
-            state.belief.available = false;
+            self.state.available = false;
+            self.state.unavailable_reasons = vec![UnavailableReason::Pose];
+            self.state.belief.available = false;
         } else if let Some(pose) = pose {
-            state.revision = state.revision.saturating_add(1);
-            state.belief = WorldBelief {
-                frame_id: state.config.frame_id.clone(),
+            self.state.revision = self.state.revision.saturating_add(1);
+            self.state.belief = WorldBelief {
+                frame_id: self.state.config.frame_id.clone(),
                 x_m: pose.x_m,
                 y_m: pose.y_m,
                 yaw_rad: pose.yaw_rad,
                 confidence: 1.0,
-                revision: state.revision,
+                revision: self.state.revision,
                 available: true,
                 oldest_capture_time_nanos: pose.oldest_capture_time_nanos,
             };
-            state.available = true;
-            state.unavailable_reasons.clear();
-            let requested = state.covered_bounds();
-            let window = state.window(requested, state.revision);
-            state.retain_snapshot(WorldSnapshot { window });
+            self.state.available = true;
+            self.state.unavailable_reasons.clear();
+            let requested = self.state.covered_bounds();
+            let window = self.state.window(requested, self.state.revision);
+            self.state.retain_snapshot(WorldSnapshot { window });
         }
-
-        validation::belief(&state.belief).map_err(|error| anyhow::anyhow!(error))?;
-        validation::revision(&state.revision_marker()).map_err(|error| anyhow::anyhow!(error))?;
-        validation::status(&state.status()).map_err(|error| anyhow::anyhow!(error))?;
-        let mut outputs = Self::Outputs::default();
-        for command in inputs.window.items() {
-            let response = window_for(&state, command.request());
-            validation::window_response(&response).map_err(|error| anyhow::anyhow!(error))?;
-            outputs.window_replies.push(command.reply(response));
-        }
-        Ok((state, outputs))
-    }
-}
-
-impl crate::contract::world_api::projections::Projections for World {
-    type State = WorldState;
-
-    /// Projects the current estimated spatial belief.
-    fn belief(&self, state: &WorldState) -> WorldBelief {
-        state.belief.clone()
-    }
-
-    /// Projects the coherent current revision marker.
-    fn revision(&self, state: &WorldState) -> WorldRevision {
-        state.revision_marker()
-    }
-
-    /// Projects availability separately from the belief payload.
-    fn status(&self, state: &WorldState) -> WorldStatus {
-        state.status()
     }
 }
 
@@ -246,8 +260,10 @@ fn unavailable(reason: WindowUnavailableReason, revision: u64) -> WindowResponse
 mod tests {
     use phoxal::runtime::{
         ExecutionDuration, ExecutionTime, ObservationStamp, RuntimeOwner, Sample, StepContext,
+        invoke,
     };
 
+    use super::phoxal_runtime_world;
     use super::*;
 
     fn context(index: u64, now_ms: u64, previous_ms: Option<u64>) -> StepContext {
@@ -258,6 +274,17 @@ mod tests {
             0,
             index,
         )
+    }
+
+    fn step(world: World, context: &StepContext, inputs: &WorldInputs) -> World {
+        let (world, _) = invoke(
+            &phoxal_runtime_world::Adapter::new(),
+            context,
+            world,
+            inputs,
+        )
+        .expect("the world step accepts the inputs");
+        world
     }
 
     fn pose(at_ms: u64, source_revision: u64) -> Latest<OdometryState> {
@@ -282,17 +309,15 @@ mod tests {
 
     #[test]
     fn fresh_pose_creates_coherent_revisioned_belief_and_window() {
-        let state = WorldState::new(WorldConfig::default());
-        let (state, _) = World
-            .step(
-                &context(0, 20, None),
-                state,
-                &WorldInputs {
-                    pose: pose(20, 7),
-                    window: Default::default(),
-                },
-            )
-            .expect("fresh pose");
+        let world = step(
+            World::new(WorldConfig::default()).expect("valid config"),
+            &context(0, 20, None),
+            &WorldInputs {
+                pose: pose(20, 7),
+                window: Default::default(),
+            },
+        );
+        let state = &world.state;
         assert!(state.available);
         assert_eq!(state.revision, 1);
         let request = WindowRequest {
@@ -304,7 +329,7 @@ mod tests {
             }),
             revision: 1,
         };
-        let response = window_for(&state, &request);
+        let response = window_for(state, &request);
         validation::window_response(&response).expect("retained window response");
         let WindowResponse::Window(window) = response else {
             panic!("available window")
@@ -320,72 +345,68 @@ mod tests {
         for capture in [Some(0), Some(200_000_001), None] {
             let mut value = *pose(200, 7).value().unwrap();
             value.oldest_capture_time_nanos = capture;
-            let (state, _) = World
-                .step(
-                    &context(0, 200, None),
-                    WorldState::new(WorldConfig::default()),
-                    &WorldInputs {
-                        pose: Latest::from_sample(Sample::new(
-                            value,
-                            ObservationStamp::new(
-                                "kinematics",
-                                ExecutionTime::from_nanos(200_000_000),
-                                None,
-                            ),
-                        )),
-                        window: Default::default(),
-                    },
-                )
-                .unwrap();
-            assert!(
-                !state.available,
-                "fresh publication cannot renew {capture:?}"
-            );
-        }
-        let mut value = *pose(100, 7).value().unwrap();
-        value.oldest_capture_time_nanos = Some(50_000_000);
-        let (state, _) = World
-            .step(
-                &context(0, 100, None),
-                WorldState::new(WorldConfig::default()),
+            let world = step(
+                World::new(WorldConfig::default()).expect("valid config"),
+                &context(0, 200, None),
                 &WorldInputs {
                     pose: Latest::from_sample(Sample::new(
                         value,
                         ObservationStamp::new(
                             "kinematics",
-                            ExecutionTime::from_nanos(100_000_000),
+                            ExecutionTime::from_nanos(200_000_000),
                             None,
                         ),
                     )),
                     window: Default::default(),
                 },
-            )
-            .unwrap();
-        assert!(state.available);
-        assert_eq!(state.belief.oldest_capture_time_nanos, Some(50_000_000));
+            );
+            assert!(
+                !world.state.available,
+                "fresh publication cannot renew {capture:?}"
+            );
+        }
+        let mut value = *pose(100, 7).value().unwrap();
+        value.oldest_capture_time_nanos = Some(50_000_000);
+        let world = step(
+            World::new(WorldConfig::default()).expect("valid config"),
+            &context(0, 100, None),
+            &WorldInputs {
+                pose: Latest::from_sample(Sample::new(
+                    value,
+                    ObservationStamp::new(
+                        "kinematics",
+                        ExecutionTime::from_nanos(100_000_000),
+                        None,
+                    ),
+                )),
+                window: Default::default(),
+            },
+        );
+        assert!(world.state.available);
         assert_eq!(
-            state.revision_marker().oldest_capture_time_nanos,
+            world.state.belief.oldest_capture_time_nanos,
+            Some(50_000_000)
+        );
+        assert_eq!(
+            world.state.revision_marker().oldest_capture_time_nanos,
             Some(50_000_000)
         );
     }
 
     #[test]
     fn stale_pose_is_unavailable_instead_of_reusing_old_belief() {
-        let state = WorldState::new(WorldConfig::default());
-        let (state, _) = World
-            .step(
-                &context(0, 200, None),
-                state,
-                &WorldInputs {
-                    pose: pose(20, 7),
-                    window: Default::default(),
-                },
-            )
-            .expect("stale pose is a valid transition");
-        assert!(!state.available);
-        assert_eq!(state.revision, 0);
+        let world = step(
+            World::new(WorldConfig::default()).expect("valid config"),
+            &context(0, 200, None),
+            &WorldInputs {
+                pose: pose(20, 7),
+                window: Default::default(),
+            },
+        );
+        assert!(!world.state.available);
+        assert_eq!(world.state.revision, 0);
         assert_eq!(
-            state.unavailable_reasons,
+            world.state.unavailable_reasons,
             vec![UnavailableReason::StalePose]
         );
     }
@@ -396,6 +417,13 @@ mod tests {
             width: 0,
             ..WorldConfig::default()
         };
-        assert!(RuntimeOwner::new(World, ExecutionTime::from_nanos(0), config).is_err());
+        assert!(
+            RuntimeOwner::new(
+                phoxal_runtime_world::Adapter::new(),
+                ExecutionTime::from_nanos(0),
+                config
+            )
+            .is_err()
+        );
     }
 }

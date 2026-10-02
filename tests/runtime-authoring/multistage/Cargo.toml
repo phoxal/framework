@@ -1,0 +1,18 @@
+[package]
+name = "phoxal-multistage-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Standalone service-owned multistage procedure fixture over the behavior facility."
+
+[[bin]]
+name = "multistage-authoring-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+
+[lints]
+workspace = true

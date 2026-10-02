@@ -6,7 +6,7 @@
 //! must attach through the contract type itself, never a derived module or
 //! macro path.
 
-use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal::runtime::Context;
 
 /// A vocabulary module one level deeper than the contract that uses it.
 pub mod vocabulary {
@@ -56,85 +56,75 @@ pub mod contracts {
 use contracts::LessorApi as ImportedLessorApi;
 
 /// Attaches `LocalApi` through its plain relative module path.
-pub struct RelativeRuntime;
-
-#[phoxal::runtime(contract = contracts::LocalApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for RelativeRuntime {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
-    }
-
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
-    }
+pub struct RelativeRuntime {
+    value: u64,
 }
 
-impl contracts::local_api::projections::Projections for RelativeRuntime {
-    type State = u64;
-
-    fn state(&self, state: &u64) -> vocabulary::ProbeState {
-        vocabulary::ProbeState { value: *state }
+#[phoxal::runtime(contract = contracts::LocalApi, period_ms = 20)]
+impl RelativeRuntime {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { value: 0 })
     }
 
-    fn summary(&self, state: &u64) -> vocabulary::ProbeSummary {
+    #[step]
+    fn advance(&mut self, _ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.value = self.value.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(state)]
+    fn state(&self) -> vocabulary::ProbeState {
+        vocabulary::ProbeState { value: self.value }
+    }
+
+    #[publish(summary)]
+    fn summary(&self) -> vocabulary::ProbeSummary {
         vocabulary::ProbeSummary {
-            state: Some(vocabulary::ProbeState { value: *state }),
+            state: Some(vocabulary::ProbeState { value: self.value }),
         }
     }
 }
 
 /// Attaches a leased projection contract through a renamed import.
-pub struct ImportedRuntime;
-
-#[phoxal::runtime(contract = ImportedLessorApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for ImportedRuntime {
-    type Config = ();
-    type State = u64;
-
-    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> phoxal::Result<Self::State> {
-        Ok(0)
-    }
-
-    fn step(
-        &self,
-        _ctx: &StepContext,
-        state: Self::State,
-        _inputs: &Self::Inputs,
-    ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        Ok((state.saturating_add(1), Self::Outputs::default()))
-    }
+pub struct ImportedRuntime {
+    value: u64,
 }
 
-impl contracts::lessor_api::projections::Projections for ImportedRuntime {
-    type State = u64;
+#[phoxal::runtime(contract = ImportedLessorApi, period_ms = 20)]
+impl ImportedRuntime {
+    #[init]
+    fn new(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self { value: 0 })
+    }
 
-    fn leased(&self, state: &u64) -> Option<vocabulary::ProbeState> {
-        (*state > 0).then_some(vocabulary::ProbeState { value: *state })
+    #[step]
+    fn advance(&mut self, _ctx: &mut Context<'_, Self>) -> phoxal::Result<()> {
+        self.value = self.value.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(leased)]
+    fn leased(&self) -> Option<vocabulary::ProbeState> {
+        (self.value > 0).then_some(vocabulary::ProbeState { value: self.value })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal::runtime::StepContext;
     use phoxal::runtime::outputs::OutputBindings;
 
     #[test]
     fn relative_and_imported_attachments_bind_their_own_endpoints() {
-        let fields = <RelativeRuntime as OutputBindings>::FIELDS;
+        let fields = <super::phoxal_runtime_relative_runtime::Adapter as OutputBindings>::FIELDS;
         assert_eq!(
             fields.iter().map(|field| field.name).collect::<Vec<_>>(),
             vec!["state", "summary"],
             "relative attachment binds its own endpoints"
         );
-        let leased = <ImportedRuntime as OutputBindings>::FIELDS;
+        let leased = <super::phoxal_runtime_imported_runtime::Adapter as OutputBindings>::FIELDS;
         assert_eq!(
             leased.iter().map(|field| field.name).collect::<Vec<_>>(),
             vec!["leased"],
@@ -165,13 +155,13 @@ mod tests {
             phoxal::runtime::ExecutionTime::from_nanos(20_000_000),
             phoxal::runtime::ExecutionDuration::from_millis(20),
         );
-        let relative = RelativeRuntime
-            .encode_transport(&7_u64, context, &|_| None, "probe")
+        let relative = super::phoxal_runtime_relative_runtime::Adapter::new()
+            .encode_transport(&RelativeRuntime { value: 7 }, context, &|_| None, "probe")
             .expect("relative projections encode");
         assert_eq!(relative.len(), 2, "one prepared output per projection");
 
-        let imported = ImportedRuntime
-            .encode_transport(&7_u64, context, &|_| None, "probe")
+        let imported = super::phoxal_runtime_imported_runtime::Adapter::new()
+            .encode_transport(&ImportedRuntime { value: 7 }, context, &|_| None, "probe")
             .expect("imported projections encode");
         assert_eq!(imported.len(), 1, "the leased projection encodes");
     }

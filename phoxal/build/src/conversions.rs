@@ -255,7 +255,7 @@ fn render(plan: &ConversionPlan) -> String {
         source.push_str("        }\n");
     }
     source.push_str(
-        "            Ok((state, outputs))\n        }\n    }\n\n    #[phoxal::runtime::outputs]\n    impl Adapter {}\n\n    pub(crate) fn run_adapter() -> phoxal::Result<()> {\n        phoxal::runtime::run(Adapter)\n    }\n}\n\n",
+        "            Ok((state, outputs))\n        }\n    }\n\n    #[phoxal::runtime::outputs]\n    impl Adapter {}\n\n    pub(crate) fn run_adapter() -> phoxal::Result<()> {\n        phoxal::runtime::run_registered(Adapter)\n    }\n}\n\n",
     );
     source.push_str(
         "/// Enter this executable: run the authored brain runtime, or the\n\

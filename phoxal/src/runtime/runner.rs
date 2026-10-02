@@ -502,7 +502,13 @@ impl RuntimeLaunchManifest {
             // field subscribes to nothing - the exchange delivers completions
             // for locally staged calls.
             if let Some(signature) = field.signature {
-                self.validate_call_requirement(&consumer, &signature)?;
+                // Admission resolved and validated this exact field's
+                // requirement against the authored connection keyed by the
+                // consumer's own field name; a field that did not resolve
+                // is validated directly against its connection here.
+                if !self.requirement_destinations.contains_key(field.name) {
+                    self.validate_call_requirement(&consumer, &signature)?;
+                }
             }
             return Ok(Vec::new());
         }
@@ -883,11 +889,17 @@ impl RuntimeLaunchManifest {
         signature: &crate::port::PortSignature,
     ) -> crate::Result<()> {
         let reject = |message: String| anyhow::anyhow!(RunnerError::BundleInvalid { message });
-        let sources = self.connections.get(consumer).ok_or_else(|| {
-            reject(format!(
-                "required call `{consumer}` has no authored connection"
-            ))
-        })?;
+        let consumer_key = consumer.to_owned();
+        let port_key = format!("{}.{}", self.instance_id, signature.name);
+        let sources = self
+            .connections
+            .get(&consumer_key)
+            .or_else(|| self.connections.get(&port_key))
+            .ok_or_else(|| {
+                reject(format!(
+                    "required call `{consumer}` has no authored connection"
+                ))
+            })?;
         if sources.len() != 1 {
             return Err(reject(format!(
                 "required call `{consumer}` accepts exactly one provider"
@@ -924,26 +936,53 @@ impl RuntimeLaunchManifest {
     }
 
     /// Resolves the destination of a locally staged generated call whose
-    /// handle bound the empty instance marker.
+    /// handle bound one of this runtime's own call-field markers.
     ///
     /// The requirement's own authored connection names the provider, so a
-    /// reusable service never learns a robot instance name.  Destinations
-    /// were resolved once at admission; this lookup allocates nothing.
+    /// reusable service never learns a robot instance name. Destinations
+    /// were resolved once at admission, keyed by the local field name, so
+    /// two fields declaring the same descriptor keep independent
+    /// providers. The legacy empty marker resolves only when exactly one
+    /// requirement carries the staged identity; an ambiguous duplicate is
+    /// a hard error demanding the field-bound constructor.
     fn resolve_requirement_destination(
         &self,
+        marker: &str,
         signature: &crate::port::PortSignature,
     ) -> crate::Result<(String, crate::port::PortSignature)> {
-        self.requirement_destinations
-            .get(signature.name)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(RunnerError::BundleInvalid {
-                    message: format!(
-                        "required call `{}.{}` has no composition-bound provider",
-                        self.instance_id, signature.name
-                    ),
+        if let Some(destination) = self.requirement_destinations.get(marker) {
+            return Ok(destination.clone());
+        }
+        if marker.is_empty() {
+            let matches: Vec<&String> = self
+                .artifacts
+                .get(&self.instance_id)
+                .into_iter()
+                .flat_map(|record| record.inputs.iter())
+                .filter(|input| {
+                    self.requirement_destinations.contains_key(&input.name)
+                        && input.signature.as_ref().is_some_and(|required| {
+                            required.service == signature.service
+                                && required.method == signature.method
+                                && required.request == signature.request
+                                && required.response == signature.response
+                        })
                 })
-            })
+                .map(|input| &input.name)
+                .collect();
+            if let [field] = matches.as_slice()
+                && let Some(destination) = self.requirement_destinations.get(field.as_str())
+            {
+                return Ok(destination.clone());
+            }
+        }
+        Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "required call `{}.{}` has no composition-bound provider for local field \
+                 marker `{marker}`; generated constructors bind the requirement's own field name",
+                self.instance_id, signature.name
+            ),
+        }))
     }
 
     /// Decode the selected configuration into the exact runtime type.
@@ -2990,13 +3029,17 @@ fn precompute_requirement_destinations(
         if input.role != "call_completions" {
             continue;
         }
-        let Some(requirement) = input.port.as_deref() else {
+        if input.port.is_none() {
             continue;
-        };
+        }
         let Some(required) = input.signature.as_ref() else {
             continue;
         };
-        let consumer = format!("{instance_id}.{requirement}");
+        // Connections name the consumer's own field (for example
+        // `brain.start_countdown: countdown.start`), and the resolved
+        // destination is keyed by that same local field name: two fields
+        // declaring the same descriptor keep independent providers.
+        let consumer = format!("{instance_id}.{}", input.name);
         let Some(sources) = connections.get(&consumer) else {
             return Err(reject(format!(
                 "required call `{consumer}` has no authored connection"
@@ -3046,7 +3089,7 @@ fn precompute_requirement_destinations(
             served.request.as_str(),
             served.response.as_str(),
         );
-        destinations.insert(requirement.to_owned(), (source_instance, signature));
+        destinations.insert(input.name.clone(), (source_instance, signature));
     }
     Ok(destinations)
 }

@@ -1874,6 +1874,436 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
 }
 
 #[crate::runtime::inputs]
+struct LocalRequirementInputs {
+    // Two fields deliberately declare the SAME descriptor: each keeps its
+    // own connection, destination, and completion copy, proving per-field
+    // requirement identity instead of descriptor-keyed collapsing. The
+    // field names differ from the served port name on purpose.
+    ask: crate::runtime::Completions,
+    verify: crate::runtime::Completions,
+}
+
+#[derive(Default)]
+struct LocalRequirementState {
+    ask: Option<crate::runtime::outputs::CallTicket<TransportResponse>>,
+    verify: Option<crate::runtime::outputs::CallTicket<TransportResponse>>,
+}
+
+struct LocalRequirementRuntime {
+    response: Arc<Mutex<Option<u32>>>,
+    verification: Arc<Mutex<Option<u32>>>,
+}
+
+impl Runtime for LocalRequirementRuntime {
+    type Config = ();
+    type State = LocalRequirementState;
+    type Inputs = LocalRequirementInputs;
+    type Outputs = crate::runtime::Outputs;
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(LocalRequirementState::default())
+    }
+
+    fn step(
+        &self,
+        ctx: &StepContext,
+        mut state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        let mut outputs = crate::runtime::Outputs::default();
+        if let Some(ticket) = state.ask
+            && let Some(completion) = inputs.ask.take(&ticket)
+        {
+            let response = completion.into_result()?;
+            *self.response.lock().expect("local requirement lock") = Some(response.value);
+            state.ask = None;
+        } else if state.ask.is_none() {
+            // The generated constructors' staging shape: the call carries
+            // its own field's name through routing.
+            state.ask = Some(outputs.send(
+                ctx,
+                GENERATED_TRANSPORT_METHOD.bind("ask", TransportRequest { value: 41 }),
+            )?);
+        }
+        // Completions live in the single retained store (the first call
+        // field), regardless of which field's call produced them, and are
+        // consumed destructively so the retained mailbox reclaims them.
+        if let Some(ticket) = state.verify
+            && let Some(completion) = inputs.ask.take(&ticket)
+        {
+            let response = completion.into_result()?;
+            *self.verification.lock().expect("verification lock") = Some(response.value);
+            state.verify = None;
+        } else if state.verify.is_none() {
+            state.verify = Some(outputs.send(
+                ctx,
+                GENERATED_TRANSPORT_METHOD.bind("verify", TransportRequest { value: 41 }),
+            )?);
+        }
+        Ok((state, outputs))
+    }
+}
+
+impl RegisteredRuntime for LocalRequirementRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn retain_artifact_metadata() {}
+}
+
+impl crate::runtime::outputs::OutputBindings for LocalRequirementRuntime {
+    const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+}
+
+#[derive(Clone, Default)]
+struct CountingProviderRuntime {
+    handled: Arc<std::sync::atomic::AtomicUsize>,
+    offset: u32,
+}
+
+impl Runtime for CountingProviderRuntime {
+    type Config = ();
+    type State = ();
+    type Inputs = TransportInputs;
+    type Outputs = TransportOutputs;
+
+    fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+        Ok(())
+    }
+
+    fn step(
+        &self,
+        _ctx: &StepContext,
+        state: Self::State,
+        inputs: &Self::Inputs,
+    ) -> crate::Result<(Self::State, Self::Outputs)> {
+        let mut outputs = TransportOutputs::default();
+        for command in inputs.commands.items() {
+            self.handled
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            outputs.replies.push(command.reply(TransportResponse {
+                value: command.request().value.saturating_add(self.offset),
+            }));
+        }
+        Ok((state, outputs))
+    }
+}
+
+impl RegisteredRuntime for CountingProviderRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+    fn retain_artifact_metadata() {}
+}
+
+impl crate::runtime::outputs::OutputBindings for CountingProviderRuntime {
+    const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+}
+
+fn local_requirement_manifest() -> RuntimeLaunchManifest {
+    let mut manifest = generated_call_manifest();
+    let signature = SourceMethodSignature {
+        endpoint: TRANSPORT_PORT.name.to_owned(),
+        service: TRANSPORT_PORT.service.to_owned(),
+        method: TRANSPORT_PORT.method.to_owned(),
+        shape: crate::artifact::MethodShape::Call,
+        request: TRANSPORT_PORT.request.to_owned(),
+        response: TRANSPORT_PORT.response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
+    };
+    let requirement = |field: &str| SourceInputRecord {
+        name: field.to_owned(),
+        role: "call_completions".to_owned(),
+        max_items: None,
+        max_bytes: None,
+        port: Some(TRANSPORT_PORT.name.to_owned()),
+        signature: Some(signature.clone()),
+    };
+    let consumer = SourceRuntimeRecord {
+        period_ms: Some(1),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![requirement("ask"), requirement("verify")],
+        transient_outputs: Vec::new(),
+        service_outputs: Vec::new(),
+    };
+    manifest.instance_id = "local".to_owned();
+    manifest.connections = BTreeMap::from([
+        (
+            "local.ask".to_owned(),
+            vec![format!("countdown.{}", TRANSPORT_PORT.name)],
+        ),
+        (
+            "local.verify".to_owned(),
+            vec![format!("countdown2.{}", TRANSPORT_PORT.name)],
+        ),
+    ]);
+    // Bundle admission resolves each requirement destination once, keyed by
+    // the local field name, exactly as precompute_requirement_destinations
+    // would for an admitted bundle.
+    manifest.requirement_destinations = BTreeMap::from([
+        ("ask".to_owned(), ("countdown".to_owned(), TRANSPORT_PORT)),
+        (
+            "verify".to_owned(),
+            ("countdown2".to_owned(), TRANSPORT_PORT),
+        ),
+    ]);
+    manifest.artifacts.insert("local".to_owned(), consumer);
+    let server = manifest
+        .artifacts
+        .remove("server")
+        .expect("the shared server record exists");
+    manifest
+        .artifacts
+        .insert("countdown".to_owned(), server.clone());
+    manifest.artifacts.insert("countdown2".to_owned(), server);
+    manifest
+}
+
+fn poll_provider(
+    runner: &mut Option<
+        RuntimeRunner<
+            CountingProviderRuntime,
+            ExecutionInputAdapter<CountingProviderRuntime>,
+            ExecutionOutputAdapter<CountingProviderRuntime>,
+        >,
+    >,
+    attempt: u64,
+) -> crate::Result<()> {
+    if let Some(runner) = runner {
+        runner.poll(ExecutionTime::from_nanos(attempt * 1_000_000))?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_local_requirement_resolves_through_the_graph_and_completes() -> crate::Result<()>
+{
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("local-requirement-graph")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let consumer_manifest = local_requirement_manifest();
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let mut input = ExecutionInputAdapter::<LocalRequirementRuntime>::unbound()
+        .with_generated_calls(
+            Arc::clone(&generated_correlations),
+            Arc::clone(&generated_completions),
+        );
+    input.bind(bus.clone(), &consumer_manifest).await?;
+    let mut output = ExecutionOutputAdapter::<LocalRequirementRuntime>::unbound()
+        .with_generated_calls(generated_correlations, generated_completions);
+    output
+        .bind(
+            bus.clone(),
+            &consumer_manifest.instance_id,
+            &consumer_manifest,
+        )
+        .await?;
+    let response = Arc::new(Mutex::new(None));
+    let verification = Arc::new(Mutex::new(None));
+    let mut consumer = RuntimeRunner::new(
+        LocalRequirementRuntime {
+            response: Arc::clone(&response),
+            verification: Arc::clone(&verification),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+
+    // Both provider sides are real runners over the same execution and the
+    // same shared bundle graph, each serving the same descriptor with its
+    // own response offset, so a crossed destination is observable.
+    let ask_handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let verify_handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut providers = Vec::new();
+    for (instance, handled, offset) in [
+        ("countdown", Arc::clone(&ask_handled), 1),
+        ("countdown2", Arc::clone(&verify_handled), 2),
+    ] {
+        let mut manifest = consumer_manifest.clone();
+        manifest.instance_id = instance.to_owned();
+        let mut provider_input = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+        let mut provider_output = ExecutionOutputAdapter::<CountingProviderRuntime>::unbound();
+        provider_input.bind(bus.clone(), &manifest).await?;
+        provider_output
+            .bind(bus.clone(), &manifest.instance_id, &manifest)
+            .await?;
+        providers.push(RuntimeRunner::new(
+            CountingProviderRuntime { handled, offset },
+            ExecutionTime::default(),
+            (),
+            provider_input,
+            provider_output,
+        )?);
+    }
+    let mut providers = providers.into_iter();
+    let (mut first, mut second) = (providers.next(), providers.next());
+
+    consumer.poll(ExecutionTime::default())?;
+    assert_eq!(*response.lock().expect("local requirement lock"), None);
+    let mut completed = false;
+    for attempt in 1_u64..40 {
+        poll_provider(&mut first, attempt)?;
+        poll_provider(&mut second, attempt)?;
+        consumer.poll(ExecutionTime::from_nanos(attempt * 1_000_000 + 500_000))?;
+        if response.lock().expect("local requirement lock").is_some()
+            && verification.lock().expect("verification lock").is_some()
+        {
+            completed = true;
+            break;
+        }
+        assert!(
+            attempt < 39,
+            "the served requirements never completed: ask handled {}, verify handled {}, status {:?}",
+            ask_handled.load(std::sync::atomic::Ordering::Relaxed),
+            verify_handled.load(std::sync::atomic::Ordering::Relaxed),
+            consumer.status(),
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(completed);
+    assert_eq!(
+        ask_handled.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the ask field's request is admitted by its own provider exactly once"
+    );
+    assert_eq!(
+        verify_handled.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the verify field's request is admitted by its own provider exactly once"
+    );
+
+    assert_eq!(
+        *response.lock().expect("local requirement lock"),
+        Some(42),
+        "the ask field completes through its own served port"
+    );
+    assert_eq!(
+        *verification.lock().expect("verification lock"),
+        Some(43),
+        "the verify field completes through its own, different provider"
+    );
+
+    consumer.stop()?;
+    if let Some(mut runner) = first {
+        runner.stop()?;
+    }
+    if let Some(mut runner) = second {
+        runner.stop()?;
+    }
+    owner.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn five_hundred_rounds_of_two_field_calls_drain_the_retained_mailbox() -> crate::Result<()> {
+    // A one-shot counter never reaches a retained-storage leak: this drain
+    // cycles both call fields through the real exchange and retained
+    // mailbox 512 times, so a consumed result that failed to release its
+    // item or byte charge exhausts the mailbox visibly.
+    const ROUNDS: usize = 512;
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("drain-graph")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let consumer_manifest = local_requirement_manifest();
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let mut input = ExecutionInputAdapter::<LocalRequirementRuntime>::unbound()
+        .with_generated_calls(
+            Arc::clone(&generated_correlations),
+            Arc::clone(&generated_completions),
+        );
+    input.bind(bus.clone(), &consumer_manifest).await?;
+    let mut output = ExecutionOutputAdapter::<LocalRequirementRuntime>::unbound()
+        .with_generated_calls(generated_correlations, generated_completions);
+    output
+        .bind(
+            bus.clone(),
+            &consumer_manifest.instance_id,
+            &consumer_manifest,
+        )
+        .await?;
+    let response = Arc::new(Mutex::new(None));
+    let verification = Arc::new(Mutex::new(None));
+    let mut consumer = RuntimeRunner::new(
+        LocalRequirementRuntime {
+            response: Arc::clone(&response),
+            verification: Arc::clone(&verification),
+        },
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+
+    let ask_handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let verify_handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut providers = Vec::new();
+    for (instance, handled, offset) in [
+        ("countdown", Arc::clone(&ask_handled), 1),
+        ("countdown2", Arc::clone(&verify_handled), 2),
+    ] {
+        let mut manifest = consumer_manifest.clone();
+        manifest.instance_id = instance.to_owned();
+        let mut provider_input = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+        let mut provider_output = ExecutionOutputAdapter::<CountingProviderRuntime>::unbound();
+        provider_input.bind(bus.clone(), &manifest).await?;
+        provider_output
+            .bind(bus.clone(), &manifest.instance_id, &manifest)
+            .await?;
+        providers.push(RuntimeRunner::new(
+            CountingProviderRuntime { handled, offset },
+            ExecutionTime::default(),
+            (),
+            provider_input,
+            provider_output,
+        )?);
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut tick = 0_u64;
+    loop {
+        tick = tick.saturating_add(1);
+        for provider in &mut providers {
+            provider.poll(ExecutionTime::from_nanos(tick * 1_000_000))?;
+        }
+        consumer.poll(ExecutionTime::from_nanos(tick * 1_000_000 + 500_000))?;
+        let ask = ask_handled.load(std::sync::atomic::Ordering::Relaxed);
+        let verify = verify_handled.load(std::sync::atomic::Ordering::Relaxed);
+        if ask >= ROUNDS && verify >= ROUNDS {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the drain stalled after ask {ask}/{ROUNDS} and verify {verify}/{ROUNDS}"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // Every consumed result released its retained item and byte charge:
+    // the mailbox is empty and the drain never exhausted a bound.
+    consumer.stop()?;
+    for provider in providers {
+        let mut provider = provider;
+        provider.stop()?;
+    }
+    owner.close().await;
+    crate::Result::Ok(())
+}
+
+#[crate::runtime::inputs]
 struct OutstandingCallInputs {
     completions: crate::runtime::Completions,
 }
@@ -4139,4 +4569,924 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         "stop joins the worker without publishing its retired result"
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Authored-runtime lifecycle over the real transport adapters: bootstrap
+// publication before any step, no setpoint authority at initialization, and
+// reset republication under a fresh fence. The fixture is authored through
+// the inherent macro, like every new authoring-model runtime.
+// ---------------------------------------------------------------------------
+
+#[phoxal::messages(package = "phoxal.tests.runner.lifecycle.v1")]
+mod lifecycle {
+    use phoxal::contracts::{Latest, Queue, State};
+
+    pub struct TickEvent {
+        #[phoxal(tag = 1)]
+        pub sequence: u64,
+    }
+
+    pub struct MeterState {
+        #[phoxal(tag = 1)]
+        pub steps: u64,
+        #[phoxal(tag = 2)]
+        pub consumed: u64,
+    }
+
+    pub struct FlowSetpoint {
+        #[phoxal(tag = 1)]
+        pub rate: u64,
+    }
+
+    /// The meter's endpoint contract.
+    #[phoxal::endpoints]
+    pub struct MeterApi {
+        #[phoxal::input(max_items = 4, max_bytes = 256)]
+        ticks: Queue<TickEvent>,
+
+        #[phoxal::output]
+        status: State<MeterState>,
+
+        #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 256)]
+        target: Latest<FlowSetpoint>,
+    }
+}
+
+use lifecycle::{FlowSetpoint, MeterState, TickEvent};
+
+/// One authored meter: every accepted invocation advances `steps`, every
+/// admitted tick advances `consumed`, and the leased projection always
+/// carries a real value, so initialization and ordinary invocations produce
+/// distinguishable publications.
+pub(crate) struct Meter {
+    steps: u64,
+    consumed: u64,
+}
+
+#[phoxal::runtime(contract = lifecycle::MeterApi, period_ms = 10)]
+impl Meter {
+    #[init]
+    fn init(_config: ()) -> phoxal::Result<Self> {
+        Ok(Self {
+            steps: 0,
+            consumed: 0,
+        })
+    }
+
+    #[handle(ticks)]
+    fn on_tick(
+        &mut self,
+        _ctx: &mut crate::runtime::Context<'_, Self>,
+        _tick: TickEvent,
+    ) -> phoxal::Result<()> {
+        self.consumed = self.consumed.saturating_add(1);
+        Ok(())
+    }
+
+    #[step]
+    fn advance(&mut self, _ctx: &mut crate::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+        self.steps = self.steps.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(status)]
+    fn status(&self) -> MeterState {
+        MeterState {
+            steps: self.steps,
+            consumed: self.consumed,
+        }
+    }
+
+    #[publish(target)]
+    fn target(&self) -> Option<FlowSetpoint> {
+        Some(FlowSetpoint { rate: 7 })
+    }
+}
+
+const LIFECYCLE_TICKS: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
+    "ticks",
+    "phoxal.tests.runner.lifecycle.v1",
+    "Ticks",
+    crate::port::PortKind::Event,
+    "google.protobuf.Empty",
+    "phoxal.tests.runner.lifecycle.v1.TickEvent",
+    &[],
+);
+
+/// Binds the meter's input and output adapters over one bus whose manifest
+/// routes the queued tick input from a connected producer. The test
+/// subscribes on the same bus before constructing the runner, so bootstrap
+/// publications are observed from the very first record.
+async fn lifecycle_adapters() -> crate::Result<(
+    ExecutionInputAdapter<phoxal_runtime_meter::Adapter>,
+    ExecutionOutputAdapter<phoxal_runtime_meter::Adapter>,
+    crate::runtime::connection::ConnectionOwner,
+    crate::runtime::connection::Connection,
+)> {
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("lifecycle-meter")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let signature = SourceMethodSignature {
+        endpoint: LIFECYCLE_TICKS.name.to_owned(),
+        service: LIFECYCLE_TICKS.service.to_owned(),
+        method: LIFECYCLE_TICKS.method.to_owned(),
+        shape: crate::artifact::MethodShape::Observation,
+        request: LIFECYCLE_TICKS.request.to_owned(),
+        response: LIFECYCLE_TICKS.response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
+    };
+    let mut connections = BTreeMap::new();
+    connections.insert("meter.ticks".to_owned(), vec!["producer.ticks".to_owned()]);
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert(
+        "producer".to_owned(),
+        SourceRuntimeRecord {
+            period_ms: Some(10),
+            timeout_ms: Some(100),
+            init_timeout_ms: Some(100),
+            inputs: Vec::new(),
+            transient_outputs: vec![SourceOutputRecord {
+                name: "ticks".to_owned(),
+                role: "method".to_owned(),
+                port: Some("ticks".to_owned()),
+                signature: Some(signature),
+                input: None,
+                max_items: Some(4),
+                max_bytes: Some(256),
+                max_request_bytes: None,
+            }],
+            service_outputs: Vec::new(),
+        },
+    );
+    let manifest = RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "lifecycle-test".to_owned(),
+        instance_id: "meter".to_owned(),
+        executable: PathBuf::from("lifecycle-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections,
+        requirement_destinations: BTreeMap::new(),
+        artifacts,
+        scenario_producers: BTreeMap::new(),
+        observation_providers: BTreeMap::new(),
+    };
+    let mut input = ExecutionInputAdapter::<phoxal_runtime_meter::Adapter>::unbound();
+    input.bind(bus.clone(), &manifest).await?;
+    let mut output = ExecutionOutputAdapter::<phoxal_runtime_meter::Adapter>::unbound();
+    output.bind_direct(bus.clone(), "meter");
+    Ok((input, output, owner, bus))
+}
+
+/// Receives and decodes the next retained status publication.
+async fn next_meter_status(
+    statuses: &mut zenoh::pubsub::Subscriber<
+        zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+    >,
+) -> crate::Result<MeterState> {
+    use prost::Message as _;
+
+    let sample = tokio::time::timeout(Duration::from_secs(2), statuses.recv_async())
+        .await?
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let wire = crate::runtime::transport::WireSample::from_zenoh(sample)?;
+    MeterState::decode(wire.payload()).map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+/// Publishes one tick event from the connected producer.
+fn publish_tick(bus: &crate::runtime::connection::Connection, sequence: u64) -> crate::Result<()> {
+    let prepared = PreparedOutput::response(
+        LIFECYCLE_TICKS,
+        &TickEvent { sequence },
+        256,
+        crate::runtime::transport::publication_metadata(
+            "producer",
+            StepContext::first(ExecutionTime::default(), ExecutionDuration::from_millis(10)),
+            sequence,
+        ),
+    )?;
+    crate::runtime::transport::publish_batch(bus, "producer", &[prepared])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authored_bootstrap_publishes_initial_state_and_no_setpoint_before_any_step()
+-> crate::Result<()> {
+    use prost::Message as _;
+    use zenoh::handlers::FifoChannel;
+    use zenoh::key_expr::OwnedKeyExpr;
+
+    let (input, output, owner, bus) = lifecycle_adapters().await?;
+    let session = bus.session()?;
+    let status_key = bus.full_key(&crate::runtime::transport::port_key(
+        "meter", "status", "publish",
+    ));
+    let mut statuses = session
+        .declare_subscriber(OwnedKeyExpr::new(status_key).expect("status key"))
+        .with(FifoChannel::new(16))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let target_key = bus.full_key(&crate::runtime::transport::port_key(
+        "meter", "target", "publish",
+    ));
+    let targets = session
+        .declare_subscriber(OwnedKeyExpr::new(target_key).expect("target key"))
+        .with(FifoChannel::new(16))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    // `RuntimeRunner::new` runs initialization and its bootstrap phase; no
+    // invocation has been polled yet. The initial retained status must
+    // arrive before any step ran — it carries the initializer's values,
+    // which no ordinary invocation produces (the first step advances
+    // `steps` past zero).
+    let mut runner = RuntimeRunner::new(
+        phoxal_runtime_meter::Adapter::new(),
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+    let initial = next_meter_status(&mut statuses).await?;
+    assert_eq!(
+        (initial.steps, initial.consumed),
+        (0, 0),
+        "bootstrap publishes the initializer's state before any step"
+    );
+
+    // The leased projection returns a real value from the initialized
+    // state, yet bootstrap must not publish it: no setpoint value (and no
+    // lease renewal) may appear on the target port before the first
+    // invocation.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), targets.recv_async())
+            .await
+            .is_err(),
+        "bootstrap publishes no setpoint on the leased target port"
+    );
+
+    // The projection itself is live: the first accepted invocation
+    // publishes both the advanced status and the real setpoint value.
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(10_000_000)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 0
+        })
+    ));
+    let advanced = next_meter_status(&mut statuses).await?;
+    assert_eq!((advanced.steps, advanced.consumed), (1, 0));
+    let sample = tokio::time::timeout(Duration::from_secs(2), targets.recv_async())
+        .await?
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let wire = crate::runtime::transport::WireSample::from_zenoh(sample)?;
+    assert_eq!(FlowSetpoint::decode(wire.payload())?.rate, 7);
+
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authored_reset_republishes_initial_state_before_the_next_step() -> crate::Result<()> {
+    use zenoh::handlers::FifoChannel;
+    use zenoh::key_expr::OwnedKeyExpr;
+
+    let (input, output, owner, bus) = lifecycle_adapters().await?;
+    let session = bus.session()?;
+    let status_key = bus.full_key(&crate::runtime::transport::port_key(
+        "meter", "status", "publish",
+    ));
+    let mut statuses = session
+        .declare_subscriber(OwnedKeyExpr::new(status_key).expect("status key"))
+        .with(FifoChannel::new(16))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    let mut runner = RuntimeRunner::new(
+        phoxal_runtime_meter::Adapter::new(),
+        ExecutionTime::default(),
+        (),
+        input,
+        output,
+    )?;
+    let _initial = next_meter_status(&mut statuses).await?;
+
+    // One admitted tick reaches the handler through the connected graph
+    // edge; the resulting status records it. Admission into the receiver's
+    // bounded queue is awaited deterministically on the queue itself
+    // rather than a fixed sleep.
+    publish_tick(&bus, 1)?;
+    wait_for_queued_ticks(&runner, 1).await?;
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(10_000_000)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 0
+        })
+    ));
+    let consumed = next_meter_status(&mut statuses).await?;
+    assert_eq!((consumed.steps, consumed.consumed), (1, 1));
+
+    // A second tick is admitted but left UNCONSUMED: no invocation runs
+    // before the reset, so the item sits in the receiver's bounded queue.
+    publish_tick(&bus, 2)?;
+    wait_for_queued_ticks(&runner, 1).await?;
+
+    // Reset reconstructs the initialized runner state, clears the input
+    // adapters, restarts the invocation index, and republishes the initial
+    // state BEFORE the next invocation: the reconstructed publication again
+    // carries the initializer's values, which no post-step state can
+    // produce. This drives runner state/input reset on one bus execution
+    // identity; it does not verify a new transport execution or simulation
+    // timeline fence, which process-tier simulation reset owns.
+    runner.reset(ExecutionTime::from_nanos(20_000_000), ())?;
+    assert_eq!(
+        queued_ticks(&runner),
+        0,
+        "reset clears the admitted-but-unconsumed tick from the receiver queue"
+    );
+    let reconstructed = next_meter_status(&mut statuses).await?;
+    assert_eq!(
+        (reconstructed.steps, reconstructed.consumed),
+        (0, 0),
+        "reset republishes the reconstructed initial state before the next step"
+    );
+
+    // The admitted-but-unconsumed tick does not survive reset: the next
+    // invocation advances only the step counter.
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(30_000_000)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 0
+        })
+    ));
+    let after = next_meter_status(&mut statuses).await?;
+    assert_eq!(
+        (after.steps, after.consumed),
+        (1, 0),
+        "the admitted-but-unconsumed tick does not resume after reset"
+    );
+
+    // A newly admitted tick still reaches the handler after the reset.
+    publish_tick(&bus, 3)?;
+    wait_for_queued_ticks(&runner, 1).await?;
+    assert!(matches!(
+        runner.poll(ExecutionTime::from_nanos(40_000_000)),
+        Ok(PollOutcome::Accepted {
+            invocation_index: 1
+        })
+    ));
+    let resumed = next_meter_status(&mut statuses).await?;
+    assert_eq!(
+        (resumed.steps, resumed.consumed),
+        (2, 1),
+        "a newly admitted tick still reaches the handler after reset"
+    );
+
+    runner.stop()?;
+    owner.close().await;
+    Ok(())
+}
+
+/// The number of ticks currently admitted in the meter's receiver queue.
+fn queued_ticks(
+    runner: &RuntimeRunner<
+        phoxal_runtime_meter::Adapter,
+        ExecutionInputAdapter<phoxal_runtime_meter::Adapter>,
+        ExecutionOutputAdapter<phoxal_runtime_meter::Adapter>,
+    >,
+) -> usize {
+    runner
+        .inputs
+        .subscriptions
+        .iter()
+        .find(|subscription| subscription.field == "ticks")
+        .and_then(|subscription| subscription.delivery.as_ref())
+        .map(|delivery| delivery.queue.lock().expect("tick queue lock").items.len())
+        .unwrap_or(0)
+}
+
+/// Waits, bounded, until the meter's receiver queue holds the expected
+/// number of admitted ticks.
+async fn wait_for_queued_ticks(
+    runner: &RuntimeRunner<
+        phoxal_runtime_meter::Adapter,
+        ExecutionInputAdapter<phoxal_runtime_meter::Adapter>,
+        ExecutionOutputAdapter<phoxal_runtime_meter::Adapter>,
+    >,
+    expected: usize,
+) -> crate::Result<()> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while queued_ticks(runner) < expected {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("tick admission timed out"))
+}
+
+// ---------------------------------------------------------------------------
+// Reverse graph delivery: a brain's state export feeding a provider's
+// observation input through a real graph connection.
+// ---------------------------------------------------------------------------
+
+#[phoxal::messages(package = "phoxal.runtime.reverse.v1")]
+mod reverse {
+    use phoxal::contracts::Latest;
+
+    pub struct Report {
+        #[phoxal(tag = 1)]
+        pub value: u64,
+    }
+
+    /// The brain-side contract: only the export.
+    #[phoxal::endpoints]
+    pub struct ExporterApi {
+        #[phoxal::output]
+        report: phoxal::contracts::State<Report>,
+    }
+
+    /// The provider-side contract: only the observation import.
+    #[phoxal::endpoints]
+    pub struct ConsumerApi {
+        #[phoxal::input(max_age_ms = 500)]
+        report: Latest<Report>,
+    }
+}
+
+pub(crate) struct Exporter {
+    value: u64,
+}
+
+#[phoxal::runtime(contract = reverse::ExporterApi, period_ms = 10)]
+impl Exporter {
+    #[init]
+    fn new(_config: ()) -> crate::Result<Self> {
+        Ok(Self { value: 40 })
+    }
+
+    #[step]
+    fn advance(&mut self, _ctx: &mut crate::runtime::Context<'_, Self>) -> crate::Result<()> {
+        self.value = self.value.saturating_add(1);
+        Ok(())
+    }
+
+    #[publish(report)]
+    pub(crate) fn report(&self) -> reverse::Report {
+        reverse::Report { value: self.value }
+    }
+}
+
+/// What the provider-side runtime last observed from the brain's export;
+/// shared with the test through a static because runtime configuration
+/// must stay deserializable.
+static REVERSE_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) struct Importer;
+
+#[phoxal::runtime(contract = reverse::ConsumerApi, period_ms = 10)]
+impl Importer {
+    #[init]
+    fn new(_config: ()) -> crate::Result<Self> {
+        Ok(Self)
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut crate::runtime::Context<'_, Self>) -> crate::Result<()> {
+        if let Some(report) = ctx.report().fresh() {
+            REVERSE_SEEN.store(report.value, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
+fn reverse_graph_manifest() -> RuntimeLaunchManifest {
+    let report_signature = SourceMethodSignature {
+        endpoint: "report".to_owned(),
+        service: "phoxal.runtime.reverse.v1.Report".to_owned(),
+        method: "report".to_owned(),
+        shape: crate::artifact::MethodShape::Observation,
+        request: "google.protobuf.Empty".to_owned(),
+        response: "phoxal.runtime.reverse.v1.Report".to_owned(),
+        retained_latest: true,
+        lease_valid_for_ms: None,
+    };
+    let exporter = SourceRuntimeRecord {
+        period_ms: Some(10),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![],
+        transient_outputs: vec![SourceOutputRecord {
+            name: "report".to_owned(),
+            role: "method".to_owned(),
+            port: Some("report".to_owned()),
+            signature: Some(report_signature),
+            input: None,
+            max_items: None,
+            max_bytes: Some(4096),
+            max_request_bytes: None,
+        }],
+        service_outputs: vec![],
+    };
+    let importer = SourceRuntimeRecord {
+        period_ms: Some(10),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![SourceInputRecord {
+            name: "report".to_owned(),
+            role: "observation_latest".to_owned(),
+            max_items: None,
+            max_bytes: Some(4096),
+            port: Some("report".to_owned()),
+            signature: None,
+        }],
+        transient_outputs: vec![],
+        service_outputs: vec![],
+    };
+    RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "reverse-graph-test".to_owned(),
+        instance_id: "importer".to_owned(),
+        executable: PathBuf::from("reverse-graph-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections: BTreeMap::from([(
+            "importer.report".to_owned(),
+            vec!["exporter.report".to_owned()],
+        )]),
+        requirement_destinations: BTreeMap::new(),
+        observation_providers: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
+        artifacts: BTreeMap::from([
+            ("exporter".to_owned(), exporter),
+            ("importer".to_owned(), importer),
+        ]),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn brain_export_feeds_a_provider_input_through_the_graph() -> crate::Result<()> {
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("reverse-graph")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    REVERSE_SEEN.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut importer_input = ExecutionInputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_importer::Adapter,
+    >::unbound();
+    let mut importer_output = ExecutionOutputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_importer::Adapter,
+    >::unbound();
+    let mut exporter_input = ExecutionInputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_exporter::Adapter,
+    >::unbound();
+    let mut exporter_output = ExecutionOutputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_exporter::Adapter,
+    >::unbound();
+    let mut manifest = reverse_graph_manifest();
+    importer_input.bind(bus.clone(), &manifest).await?;
+    importer_output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    manifest.instance_id = "exporter".to_owned();
+    exporter_input.bind(bus.clone(), &manifest).await?;
+    exporter_output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let mut importer = RuntimeRunner::new(
+        crate::runtime::runner::tests::phoxal_runtime_importer::Adapter::new(),
+        ExecutionTime::default(),
+        (),
+        importer_input,
+        importer_output,
+    )?;
+    let mut exporter = RuntimeRunner::new(
+        crate::runtime::runner::tests::phoxal_runtime_exporter::Adapter::new(),
+        ExecutionTime::default(),
+        (),
+        exporter_input,
+        exporter_output,
+    )?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut tick = 0_u64;
+    loop {
+        tick = tick.saturating_add(1);
+        exporter.poll(ExecutionTime::from_nanos(tick * 10_000_000))?;
+        importer.poll(ExecutionTime::from_nanos(tick * 10_000_000 + 5_000_000))?;
+        let observed = REVERSE_SEEN.load(std::sync::atomic::Ordering::Relaxed);
+        if (41..=50).contains(&observed) {
+            assert!(
+                observed >= 41,
+                "the provider observed the brain's export: {observed}"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the brain export never reached the provider's input"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    importer.stop()?;
+    exporter.stop()?;
+    owner.close().await;
+    crate::Result::Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation followed by late results, drained at scale: retired calls'
+// replies must be dropped with their charges released, never retained.
+// ---------------------------------------------------------------------------
+
+#[phoxal::messages(package = "phoxal.runtime.cycle.v1")]
+mod cycle {
+    pub struct AskRequest {
+        #[phoxal(tag = 1)]
+        pub value: u64,
+    }
+
+    pub struct AskResponse {
+        #[phoxal(tag = 1)]
+        pub value: u64,
+    }
+
+    #[phoxal::endpoints]
+    pub struct CycleApi {
+        #[phoxal::call]
+        ask: crate::runtime::runner::tests::CycleAsk,
+    }
+}
+
+pub(crate) struct CycleAsk;
+
+impl phoxal::contracts::Operation for CycleAsk {
+    type Request = cycle::AskRequest;
+    type Response = cycle::AskResponse;
+
+    const METHOD: phoxal::contracts::CallMethod<Self::Request, Self::Response> =
+        phoxal::contracts::CallMethod::new(
+            "phoxal.runtime.cycle.v1.Ask",
+            "Ask",
+            "ask",
+            "phoxal.runtime.cycle.v1.AskRequest",
+            "phoxal.runtime.cycle.v1.AskResponse",
+            None,
+            &[],
+        );
+}
+
+/// Drives alternating stage/cancel rounds: even invocations let a fresh
+/// tree stage one call, odd invocations cancel it — withdrawing the
+/// not-yet-accepted submission — so the provider's replies to earlier
+/// accepted calls always arrive for retired tickets.
+pub(crate) struct CycleBrain {
+    rounds: u64,
+    tree: crate::runtime::behavior::Tree<CycleBrain>,
+}
+
+impl CycleBrain {
+    fn fresh_tree() -> crate::Result<crate::runtime::behavior::Tree<CycleBrain>> {
+        use crate::runtime::behavior::Sequence;
+        Sequence::<Self>::new()
+            .call(cycle::cycle_api::calls::ask(cycle::AskRequest { value: 1 }))
+            .expect_response(|response: &cycle::AskResponse| response.value == 1)
+            .build()
+    }
+}
+
+#[phoxal::runtime(contract = cycle::CycleApi, period_ms = 10)]
+impl CycleBrain {
+    #[init]
+    fn new(_config: ()) -> crate::Result<Self> {
+        Ok(Self {
+            rounds: 0,
+            tree: Self::fresh_tree()?,
+        })
+    }
+
+    #[step]
+    fn advance(&mut self, ctx: &mut crate::runtime::Context<'_, Self>) -> crate::Result<()> {
+        if self.rounds.is_multiple_of(2) {
+            self.tree.tick(ctx)?;
+        } else {
+            // Cancel withdraws this round's staged submission and retires
+            // the tree generation's accepted calls; their late replies
+            // must be refused and dropped later.
+            self.tree.cancel(ctx)?;
+            self.tree = Self::fresh_tree()?;
+        }
+        self.rounds = self.rounds.saturating_add(1);
+        Ok(())
+    }
+}
+
+/// Six hundred alternating stage/cancel rounds produce **three hundred**
+/// accepted-then-cancelled calls in one execution — more late replies than
+/// the retained mailbox's 256-item bound — so a broken release faults
+/// visibly instead of hiding under the bound. This is runner-level
+/// ownership evidence only; process reset is proven separately below.
+#[allow(
+    clippy::type_complexity,
+    reason = "one assembled two-runner cycle graph"
+)]
+async fn cycle_graph() -> crate::Result<(
+    crate::runtime::connection::ConnectionOwner,
+    RuntimeRunner<
+        crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter,
+        ExecutionInputAdapter<crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter>,
+        ExecutionOutputAdapter<crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter>,
+    >,
+    RuntimeRunner<
+        CountingProviderRuntime,
+        ExecutionInputAdapter<CountingProviderRuntime>,
+        ExecutionOutputAdapter<CountingProviderRuntime>,
+    >,
+    Arc<std::sync::atomic::AtomicUsize>,
+)> {
+    let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
+        crate::runtime::connection::ConnectionConfig::for_participant(
+            crate::identity::ExecutionId::mint(),
+            crate::identity::ParticipantId::new("cycle-graph")?,
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let signature = SourceMethodSignature {
+        endpoint: TRANSPORT_PORT.name.to_owned(),
+        service: TRANSPORT_PORT.service.to_owned(),
+        method: TRANSPORT_PORT.method.to_owned(),
+        shape: crate::artifact::MethodShape::Call,
+        request: TRANSPORT_PORT.request.to_owned(),
+        response: TRANSPORT_PORT.response.to_owned(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
+    };
+    let consumer_record = SourceRuntimeRecord {
+        period_ms: Some(10),
+        timeout_ms: Some(100),
+        init_timeout_ms: Some(100),
+        inputs: vec![SourceInputRecord {
+            name: "ask".to_owned(),
+            role: "call_completions".to_owned(),
+            max_items: None,
+            max_bytes: None,
+            port: Some(TRANSPORT_PORT.name.to_owned()),
+            signature: Some(signature),
+        }],
+        transient_outputs: vec![],
+        service_outputs: vec![],
+    };
+    let mut manifest = RuntimeLaunchManifest {
+        root: PathBuf::from("."),
+        robot_id: "cycle-graph-test".to_owned(),
+        instance_id: "cycle".to_owned(),
+        executable: PathBuf::from("cycle-graph-test"),
+        executable_sha256: "00".repeat(32),
+        config: Value::Object(serde_json::Map::new()),
+        connections: BTreeMap::from([(
+            "cycle.ask".to_owned(),
+            vec![format!("countdown.{}", TRANSPORT_PORT.name)],
+        )]),
+        requirement_destinations: BTreeMap::from([(
+            "ask".to_owned(),
+            ("countdown".to_owned(), TRANSPORT_PORT),
+        )]),
+        observation_providers: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
+        artifacts: BTreeMap::from([("cycle".to_owned(), consumer_record)]),
+    };
+    let server_record = generated_call_manifest()
+        .artifacts
+        .remove("server")
+        .expect("the shared server record exists");
+    manifest
+        .artifacts
+        .insert("countdown".to_owned(), server_record.clone());
+    let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let generated_completions = Arc::new(Mutex::new(Vec::new()));
+    let mut consumer_input = ExecutionInputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter,
+    >::unbound()
+    .with_generated_calls(
+        Arc::clone(&generated_correlations),
+        Arc::clone(&generated_completions),
+    );
+    let mut consumer_output = ExecutionOutputAdapter::<
+        crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter,
+    >::unbound()
+    .with_generated_calls(generated_correlations, generated_completions);
+    consumer_input.bind(bus.clone(), &manifest).await?;
+    consumer_output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let consumer = RuntimeRunner::new(
+        crate::runtime::runner::tests::phoxal_runtime_cycle_brain::Adapter::new(),
+        ExecutionTime::default(),
+        (),
+        consumer_input,
+        consumer_output,
+    )?;
+
+    manifest.instance_id = "countdown".to_owned();
+    manifest
+        .artifacts
+        .insert("countdown".to_owned(), server_record);
+    let mut provider_input = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
+    let mut provider_output = ExecutionOutputAdapter::<CountingProviderRuntime>::unbound();
+    provider_input.bind(bus.clone(), &manifest).await?;
+    provider_output
+        .bind(bus.clone(), &manifest.instance_id, &manifest)
+        .await?;
+    let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = RuntimeRunner::new(
+        CountingProviderRuntime {
+            handled: Arc::clone(&handled),
+            offset: 1,
+        },
+        ExecutionTime::default(),
+        (),
+        provider_input,
+        provider_output,
+    )?;
+    Ok((owner, consumer, provider, handled))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_call_late_replies_drain_beyond_mailbox_capacity() -> crate::Result<()> {
+    const ROUNDS: u64 = 600;
+    const EXPECTED_ACCEPTED: usize = 300;
+    let (owner, mut consumer, mut provider, handled) = cycle_graph().await?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut tick = 0_u64;
+    loop {
+        tick = tick.saturating_add(1);
+        provider.poll(ExecutionTime::from_nanos(tick * 10_000_000))?;
+        consumer.poll(ExecutionTime::from_nanos(tick * 10_000_000 + 5_000_000))?;
+        if tick >= ROUNDS {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cancellation drain stalled at tick {tick}/{ROUNDS}"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    // Every accepted submission was served exactly once, and their three
+    // hundred late replies — more than the mailbox's 256-item bound — were
+    // each dropped with their charges released: nothing exhausted.
+    assert_eq!(
+        handled.load(std::sync::atomic::Ordering::Relaxed),
+        EXPECTED_ACCEPTED,
+        "exactly the accepted stage-round submissions were served"
+    );
+    consumer.stop()?;
+    provider.stop()?;
+    owner.close().await;
+    crate::Result::Ok(())
+}
+
+/// Runner-level reset in one process: the fresh execution draws a fresh
+/// epoch, fences every retired ticket of the old one, and tree-driven
+/// cancellation cycles continue on both sides of the boundary. This is
+/// `RuntimeRunner::reset` evidence, not a supervisor/process reset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runner_reset_fences_retired_calls_across_the_boundary() -> crate::Result<()> {
+    const ROUNDS: u64 = 64;
+    let (owner, mut consumer, mut provider, _handled) = cycle_graph().await?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut tick = 0_u64;
+    loop {
+        tick = tick.saturating_add(1);
+        provider.poll(ExecutionTime::from_nanos(tick * 10_000_000))?;
+        consumer.poll(ExecutionTime::from_nanos(tick * 10_000_000 + 5_000_000))?;
+        if tick == ROUNDS / 2 {
+            // The boundary under test: reinitialize the consumer's
+            // execution mid-cycling and keep draining.
+            consumer.reset(ExecutionTime::from_nanos(tick * 10_000_000), ())?;
+        }
+        if tick >= ROUNDS {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reset drain stalled at tick {tick}/{ROUNDS}"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    consumer.stop()?;
+    provider.stop()?;
+    owner.close().await;
+    crate::Result::Ok(())
 }

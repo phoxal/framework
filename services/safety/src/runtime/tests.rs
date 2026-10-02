@@ -1,8 +1,24 @@
 use phoxal::runtime::{
-    ExecutionDuration, ExecutionTime, ObservationStamp, RuntimeOwner, Sample, StepContext,
+    ExecutionDuration, ExecutionTime, ObservationStamp, RuntimeOwner, Sample, StepContext, invoke,
 };
 
+use super::phoxal_runtime_safety;
 use super::*;
+
+fn new_service(config: SafetyConfig) -> Safety {
+    Safety::new(config).expect("valid configuration")
+}
+
+fn step(service: Safety, context: &StepContext, inputs: &SafetyInputs) -> Safety {
+    let (service, _) = invoke(
+        &phoxal_runtime_safety::Adapter::new(),
+        context,
+        service,
+        inputs,
+    )
+    .expect("the safety step accepts the inputs");
+    service
+}
 
 fn context(index: u64, now_ms: u64, previous_ms: Option<u64>) -> StepContext {
     StepContext::from_previous(
@@ -81,46 +97,46 @@ fn clear_inputs(at_ms: u64) -> SafetyInputs {
 
 #[test]
 fn fresh_evidence_produces_clear_expiring_constraints() {
-    let state = SafetyState::new(SafetyConfig {
+    let state = new_service(SafetyConfig {
         ranges: vec![required_range("front")],
         ..SafetyConfig::default()
     });
-    let (state, _) = Safety
-        .step(&context(0, 20, None), state, &clear_inputs(20))
-        .expect("fresh evidence");
-    assert_eq!(state.constraints.permission, Permission::Clear);
-    assert_eq!(state.status.sequence, 1);
-    assert!(state.constraints.expires_at_nanos > state.constraints.valid_from_nanos);
+    let service = step(state, &context(0, 20, None), &clear_inputs(20));
+    assert_eq!(service.state.constraints.permission, Permission::Clear);
+    assert_eq!(service.state.status.sequence, 1);
+    assert!(
+        service.state.constraints.expires_at_nanos > service.state.constraints.valid_from_nanos
+    );
 }
 
 #[test]
 fn missing_world_or_motion_fails_closed() {
-    let state = SafetyState::new(SafetyConfig {
+    let state = new_service(SafetyConfig {
         ranges: vec![required_range("front")],
         ..SafetyConfig::default()
     });
-    let (state, _) = Safety
-        .step(
-            &context(0, 20, None),
-            state,
-            &SafetyInputs {
-                world: Latest::unavailable(),
-                world_revision: Latest::unavailable(),
-                motion: Latest::unavailable(),
-                ranges: Samples::default(),
-            },
-        )
-        .expect("missing evidence is a valid protective transition");
-    assert_eq!(state.constraints.permission, Permission::Stopped);
-    assert!(!state.status.protective_state_clear);
+    let service = step(
+        state,
+        &context(0, 20, None),
+        &SafetyInputs {
+            world: Latest::unavailable(),
+            world_revision: Latest::unavailable(),
+            motion: Latest::unavailable(),
+            ranges: Samples::default(),
+        },
+    );
+    assert_eq!(service.state.constraints.permission, Permission::Stopped);
+    assert!(!service.state.status.protective_state_clear);
     assert!(
-        state
+        service
+            .state
             .status
             .reasons
             .contains(&ConstraintReason::WorldUnavailable)
     );
     assert!(
-        state
+        service
+            .state
             .status
             .reasons
             .contains(&ConstraintReason::MotionUnavailable)
@@ -129,59 +145,53 @@ fn missing_world_or_motion_fails_closed() {
 
 #[test]
 fn close_range_stops_and_midrange_limits() {
-    let state = SafetyState::new(SafetyConfig {
+    let state = new_service(SafetyConfig {
         ranges: vec![required_range("front")],
         ..SafetyConfig::default()
     });
-    let (state, _) = Safety
-        .step(
-            &context(0, 20, None),
-            state,
-            &SafetyInputs {
-                world: world(20),
-                world_revision: world_revision(20),
-                motion: motion(20),
-                ranges: Samples::new(vec![range("front", 0.2, 20)]),
-            },
-        )
-        .expect("close range");
-    assert_eq!(state.constraints.permission, Permission::Stopped);
+    let service = step(
+        state,
+        &context(0, 20, None),
+        &SafetyInputs {
+            world: world(20),
+            world_revision: world_revision(20),
+            motion: motion(20),
+            ranges: Samples::new(vec![range("front", 0.2, 20)]),
+        },
+    );
+    assert_eq!(service.state.constraints.permission, Permission::Stopped);
 
-    let (state, _) = Safety
-        .step(
-            &context(1, 40, Some(20)),
-            state,
-            &SafetyInputs {
-                world: world(40),
-                world_revision: world_revision(40),
-                motion: motion(40),
-                ranges: Samples::new(vec![range("front", 0.5, 40)]),
-            },
-        )
-        .expect("midrange range");
-    assert_eq!(state.constraints.permission, Permission::Limited);
+    let service = step(
+        service,
+        &context(1, 40, Some(20)),
+        &SafetyInputs {
+            world: world(40),
+            world_revision: world_revision(40),
+            motion: motion(40),
+            ranges: Samples::new(vec![range("front", 0.5, 40)]),
+        },
+    );
+    assert_eq!(service.state.constraints.permission, Permission::Limited);
     assert_eq!(
-        state.constraints.constraints[0].max_linear_speed_mps,
+        service.state.constraints.constraints[0].max_linear_speed_mps,
         Some(SafetyConfig::default().proximity_linear_limit_mps)
     );
 }
 
 #[test]
 fn a_slow_range_capture_does_not_clear_a_stop_between_samples() {
-    let state = SafetyState::new(SafetyConfig {
+    let state = new_service(SafetyConfig {
         ranges: vec![required_range("front")],
         ..SafetyConfig::default()
     });
     let mut inputs = clear_inputs(20);
     inputs.ranges = Samples::new(vec![range("front", 0.2, 20)]);
-    let (state, _) = Safety.step(&context(0, 20, None), state, &inputs).unwrap();
-    assert_eq!(state.constraints.permission, Permission::Stopped);
+    let service = step(state, &context(0, 20, None), &inputs);
+    assert_eq!(service.state.constraints.permission, Permission::Stopped);
     let mut inputs = clear_inputs(40);
     inputs.ranges = Samples::default();
-    let (state, _) = Safety
-        .step(&context(1, 40, Some(20)), state, &inputs)
-        .unwrap();
-    assert_eq!(state.constraints.permission, Permission::Stopped);
+    let service = step(service, &context(1, 40, Some(20)), &inputs);
+    assert_eq!(service.state.constraints.permission, Permission::Stopped);
 }
 
 #[test]
@@ -190,7 +200,7 @@ fn every_configured_range_source_must_remain_fresh_and_valid() {
         ranges: vec![required_range("front"), required_range("rear")],
         ..SafetyConfig::default()
     };
-    let mut state = SafetyState::new(config.clone());
+    let mut state = new_service(config.clone());
     for (index, now, ranges, expected) in [
         (0, 0, vec![range("front", 2.0, 0)], Permission::Stopped),
         (1, 20, vec![range("rear", 2.0, 20)], Permission::Clear),
@@ -208,11 +218,9 @@ fn every_configured_range_source_must_remain_fresh_and_valid() {
     ] {
         let mut inputs = clear_inputs(now);
         inputs.ranges = Samples::new(ranges);
-        (state, _) = Safety
-            .step(&context(index, now, now.checked_sub(20)), state, &inputs)
-            .unwrap();
-        assert_eq!(state.constraints.permission, expected, "at {now}ms");
-        assert!(state.ranges.len() <= config.ranges.len());
+        state = step(state, &context(index, now, now.checked_sub(20)), &inputs);
+        assert_eq!(state.state.constraints.permission, expected, "at {now}ms");
+        assert!(state.state.ranges.len() <= config.ranges.len());
     }
     let reset = SafetyState::new(config);
     assert!(reset.ranges.is_empty());
@@ -226,7 +234,14 @@ fn invalid_config_is_rejected_before_initialization() {
         ..SafetyConfig::default()
     };
     config.ranges[0].protective_stop_distance_m = 2.0;
-    assert!(RuntimeOwner::new(Safety, ExecutionTime::from_nanos(0), config).is_err());
+    assert!(
+        RuntimeOwner::new(
+            phoxal_runtime_safety::Adapter::new(),
+            ExecutionTime::from_nanos(0),
+            config
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -245,16 +260,10 @@ fn derived_world_capture_age_and_retained_ranges_bound_the_constraint_expiry() {
         ObservationStamp::new("world", ExecutionTime::from_nanos(90_000_000), None),
     ));
     input.ranges = Samples::new(vec![range("front", 2.0, 10)]);
-    let (state, _) = Safety
-        .step(
-            &context(0, 90, None),
-            SafetyState::new(config.clone()),
-            &input,
-        )
-        .unwrap();
-    assert_eq!(state.constraints.permission, Permission::Clear);
-    assert_eq!(state.constraints.oldest_capture_time_nanos, Some(0));
-    assert_eq!(state.constraints.expires_at_nanos, 100_000_000);
+    let service = step(new_service(config.clone()), &context(0, 90, None), &input);
+    assert_eq!(service.state.constraints.permission, Permission::Clear);
+    assert_eq!(service.state.constraints.oldest_capture_time_nanos, Some(0));
+    assert_eq!(service.state.constraints.expires_at_nanos, 100_000_000);
     for stale_revision in [false, true] {
         let mut input = clear_inputs(200);
         let stamp = ObservationStamp::new("world", ExecutionTime::from_nanos(200_000_000), None);
@@ -267,15 +276,9 @@ fn derived_world_capture_age_and_retained_ranges_bound_the_constraint_expiry() {
             value.oldest_capture_time_nanos = Some(0);
             input.world = Latest::from_sample(Sample::new(value, stamp));
         }
-        let (state, _) = Safety
-            .step(
-                &context(0, 200, None),
-                SafetyState::new(config.clone()),
-                &input,
-            )
-            .unwrap();
-        assert_eq!(state.constraints.permission, Permission::Stopped);
-        assert_eq!(state.constraints.expires_at_nanos, 200_000_000);
+        let service = step(new_service(config.clone()), &context(0, 200, None), &input);
+        assert_eq!(service.state.constraints.permission, Permission::Stopped);
+        assert_eq!(service.state.constraints.expires_at_nanos, 200_000_000);
     }
 }
 
@@ -308,15 +311,9 @@ fn downward_range_requires_ground_inside_its_authored_distance_envelope() {
     ] {
         let mut input = clear_inputs(20);
         input.ranges = Samples::new(vec![range("ground", distance, 20)]);
-        let (state, _) = Safety
-            .step(
-                &context(0, 20, None),
-                SafetyState::new(config.clone()),
-                &input,
-            )
-            .unwrap();
+        let service = step(new_service(config.clone()), &context(0, 20, None), &input);
         assert_eq!(
-            state.constraints.permission, permission,
+            service.state.constraints.permission, permission,
             "ground distance {distance}"
         );
     }

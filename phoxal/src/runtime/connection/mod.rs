@@ -233,6 +233,9 @@ impl Connection {
 
     /// Allocate one producer-local sequence for a generated transport record.
     #[allow(dead_code, reason = "kept for the runtime delivery boundary")]
+    // `fetch_update` is only renamed as of Rust 1.99; the replacement
+    // `try_update` is not stable at the workspace's 1.88 MSRV.
+    #[allow(deprecated)]
     pub fn next_sequence(&self) -> Result<u64> {
         let inner = self.live()?;
         inner

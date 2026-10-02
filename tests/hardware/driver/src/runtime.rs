@@ -1,25 +1,31 @@
 use crate::config::HardwareFixtureConfig;
-use crate::contract::FixtureObservation;
 use anyhow::Result;
 use phoxal::contracts::component::actuator::Control;
 use phoxal::contracts::component::encoder::EncoderSample;
-use phoxal::runtime::{InitContext, Runtime, StepContext};
-use std::sync::Arc;
+use phoxal::runtime::Context;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// State retained by the fixture Runtime.
-#[derive(Debug, Default)]
-pub struct HardwareFixtureState {
-    accepted_steps: u64,
-    applied_velocity_radps: f64,
-}
-
-#[derive(Default)]
 struct RuntimeControl {
     stalled: AtomicBool,
     stop_requested: AtomicBool,
 }
+
+impl RuntimeControl {
+    const fn new() -> Self {
+        Self {
+            stalled: AtomicBool::new(false),
+            stop_requested: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Registry of live fixture controls: the authored runtime owns its state
+/// privately inside the generated adapter, so each initialization records
+/// its control here and the test harness claims the one belonging to the
+/// runner it just constructed.
+static CONTROLS: std::sync::Mutex<Vec<std::sync::Arc<RuntimeControl>>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// A Runtime driver backed by the acceptance fixture's injected I/O.
 ///
@@ -27,37 +33,33 @@ struct RuntimeControl {
 /// clone the driver and use the private control handle to inject a stalled
 /// computation or request a terminal stop; no production hardware behavior is
 /// implied by those controls.
-#[derive(Clone, Default)]
 pub struct HardwareFixtureDriver {
-    control: Arc<RuntimeControl>,
-}
-
-impl HardwareFixtureDriver {
-    /// Creates a fixture driver with no injected fault.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    control: std::sync::Arc<RuntimeControl>,
+    accepted_steps: u64,
+    applied_velocity_radps: f64,
 }
 
 #[phoxal::runtime(contract = crate::contract::DriverApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1_000)]
-impl Runtime for HardwareFixtureDriver {
-    type Config = HardwareFixtureConfig;
-    type State = HardwareFixtureState;
-
-    fn init(&self, _ctx: &InitContext, config: Self::Config) -> Result<Self::State> {
+impl HardwareFixtureDriver {
+    #[init]
+    fn start(config: HardwareFixtureConfig) -> Result<Self> {
         if config.device_id.trim().is_empty() {
             anyhow::bail!("fixture device_id must not be empty");
         }
-        Ok(HardwareFixtureState::default())
+        let control = std::sync::Arc::new(RuntimeControl::new());
+        CONTROLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(std::sync::Arc::clone(&control));
+        Ok(Self {
+            control,
+            accepted_steps: 0,
+            applied_velocity_radps: 0.0,
+        })
     }
 
-    fn step(
-        &self,
-        ctx: &StepContext,
-        mut state: Self::State,
-        inputs: &Self::Inputs,
-    ) -> Result<(Self::State, Self::Outputs)> {
+    #[step]
+    fn advance(&mut self, ctx: &mut Context<'_, Self>) -> Result<()> {
         while self.control.stalled.load(Ordering::Acquire) {
             if self.control.stop_requested.load(Ordering::Acquire) {
                 anyhow::bail!("fixture computation stopped while stalled");
@@ -68,11 +70,10 @@ impl Runtime for HardwareFixtureDriver {
             anyhow::bail!("fixture computation stop requested");
         }
 
-        state.accepted_steps = state.accepted_steps.saturating_add(1);
-        state.applied_velocity_radps = inputs
-            .actuator
-            .value()
-            .filter(|_| inputs.actuator.is_valid_at(ctx.now()))
+        self.accepted_steps = self.accepted_steps.saturating_add(1);
+        self.applied_velocity_radps = ctx
+            .actuator()
+            .valid()
             .and_then(|setpoint| {
                 setpoint
                     .targets
@@ -84,26 +85,33 @@ impl Runtime for HardwareFixtureDriver {
                     })
             })
             .unwrap_or(0.0);
-        let measurements: Vec<FixtureObservation> = inputs
-            .acquired
-            .items()
-            .iter()
-            .map(|sample| *sample.payload())
-            .collect();
-        let mut outputs = Self::Outputs::default();
-        outputs.encoder(
-            measurements
-                .iter()
-                .map(|sample| EncoderSample {
-                    position_rad: Some(sample.position_rad),
-                    velocity_radps: None,
-                })
-                .collect(),
-        )?;
-        outputs.observations(measurements)?;
-        Ok((state, outputs))
+        for sample in ctx.acquired().items() {
+            let observation = *sample.payload();
+            ctx.emit_encoder(EncoderSample {
+                position_rad: Some(observation.position_rad),
+                velocity_radps: None,
+            })?;
+            ctx.emit_observations(observation)?;
+        }
+        Ok(())
     }
 }
+
+/// Claims the control of the most recently initialized fixture runtime.
+#[cfg(test)]
+fn latest_control() -> std::sync::Arc<RuntimeControl> {
+    CONTROLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .last()
+        .cloned()
+        .expect("a fixture runtime initialized first")
+}
+
+/// Serializes runner construction against the control claim so concurrent
+/// tests always pair with their own runtime's control.
+#[cfg(test)]
+static HANDOFF: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests;

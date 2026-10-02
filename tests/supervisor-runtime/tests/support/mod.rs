@@ -1,4 +1,10 @@
 //! Owned process group for supervisor executable acceptance.
+//!
+//! Each test target includes this module separately, so a helper is dead
+//! code in every target that does not call it; the allow keeps the shared
+//! module compilable for every consumer.
+
+#![allow(dead_code)]
 
 use std::{path::Path, path::PathBuf, time::Duration};
 

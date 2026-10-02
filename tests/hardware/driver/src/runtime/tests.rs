@@ -231,7 +231,9 @@ struct FixtureInputSource {
     device: Arc<FixtureDevice>,
 }
 
-impl InputSource<HardwareFixtureDriver> for FixtureInputSource {
+type FixtureRuntime = super::phoxal_runtime_hardware_fixture_driver::Adapter;
+
+impl InputSource<FixtureRuntime> for FixtureInputSource {
     fn freeze(
         &mut self,
         _candidate: &HardwareInvocation,
@@ -253,14 +255,12 @@ struct FixtureOutputSink {
     stopped: bool,
 }
 
-impl OutputAdmission<<HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs>
-    for FixtureOutputSink
-{
+impl OutputAdmission<<FixtureRuntime as phoxal::runtime::Runtime>::Outputs> for FixtureOutputSink {
     type Reservation = usize;
 
     fn reserve(
         &mut self,
-        outputs: &<HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs,
+        outputs: &<FixtureRuntime as phoxal::runtime::Runtime>::Outputs,
     ) -> phoxal::Result<Self::Reservation> {
         if outputs.observations.len() > 16 {
             anyhow::bail!("fixture output capacity exhausted");
@@ -270,11 +270,11 @@ impl OutputAdmission<<HardwareFixtureDriver as phoxal::runtime::Runtime>::Output
     }
 }
 
-impl OutputSink<HardwareFixtureDriver> for FixtureOutputSink {
+impl OutputSink<FixtureRuntime> for FixtureOutputSink {
     fn publish(
         &mut self,
         accepted: AcceptedInvocation<
-            <HardwareFixtureDriver as phoxal::runtime::Runtime>::Outputs,
+            <FixtureRuntime as phoxal::runtime::Runtime>::Outputs,
             Self::Reservation,
         >,
     ) -> phoxal::Result<()> {
@@ -293,11 +293,16 @@ impl OutputSink<HardwareFixtureDriver> for FixtureOutputSink {
 }
 
 fn runner(
-    driver: HardwareFixtureDriver,
     device: Arc<FixtureDevice>,
-) -> RuntimeRunner<HardwareFixtureDriver, FixtureInputSource, FixtureOutputSink> {
-    RuntimeRunner::new(
-        driver,
+) -> (
+    RuntimeRunner<FixtureRuntime, FixtureInputSource, FixtureOutputSink>,
+    Arc<RuntimeControl>,
+) {
+    let _handoff = HANDOFF
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let runner = RuntimeRunner::new(
+        FixtureRuntime::new(),
         ExecutionTime::default(),
         HardwareFixtureConfig {
             device_id: "fixture-0".to_owned(),
@@ -310,7 +315,8 @@ fn runner(
             stopped: false,
         },
     )
-    .expect("fixture Runtime initializes")
+    .expect("fixture Runtime initializes");
+    (runner, latest_control())
 }
 
 #[test]
@@ -360,9 +366,8 @@ fn generated_contract_owns_the_fixture_methods() {
 fn hardware_acquisition_and_transport_continue_during_stalled_compute() {
     let device = FixtureDevice::new();
     device.start();
-    let driver = HardwareFixtureDriver::new();
-    driver.control.stalled.store(true, Ordering::Release);
-    let mut runner = runner(driver.clone(), Arc::clone(&device));
+    let (mut runner, control) = runner(Arc::clone(&device));
+    control.stalled.store(true, Ordering::Release);
     let task = thread::spawn(move || runner.poll(ExecutionTime::default()));
 
     thread::sleep(Duration::from_millis(60));
@@ -381,7 +386,7 @@ fn hardware_acquisition_and_transport_continue_during_stalled_compute() {
         "the fixture queue never reached its explicit bounded limit"
     );
 
-    driver.control.stalled.store(false, Ordering::Release);
+    control.stalled.store(false, Ordering::Release);
     let outcome = task.join().expect("fixture poll thread joins");
     assert!(matches!(outcome, Ok(PollOutcome::Accepted { .. })));
     assert!(device.acquisition_count() >= acquired);
@@ -400,9 +405,8 @@ fn actuator_expiry_is_independent_of_stalled_compute() {
         ExecutionTime::from(Duration::from_millis(SETPOINT_VALID_FOR_MS)),
         Duration::from_millis(SETPOINT_VALID_FOR_MS / 2),
     );
-    let driver = HardwareFixtureDriver::new();
-    driver.control.stalled.store(true, Ordering::Release);
-    let mut runner = runner(driver.clone(), Arc::clone(&device));
+    let (mut runner, control) = runner(Arc::clone(&device));
+    control.stalled.store(true, Ordering::Release);
     let task = thread::spawn(move || runner.poll(ExecutionTime::default()));
 
     thread::sleep(Duration::from_millis(70));
@@ -414,7 +418,7 @@ fn actuator_expiry_is_independent_of_stalled_compute() {
     assert!(device.acquisition_count() >= 20);
     assert!(device.transport_polls() >= 40);
 
-    driver.control.stalled.store(false, Ordering::Release);
+    control.stalled.store(false, Ordering::Release);
     let outcome = task.join().expect("fixture poll thread joins");
     assert!(matches!(outcome, Ok(PollOutcome::Accepted { .. })));
     device.stop();
@@ -432,14 +436,13 @@ fn stalled_runtime_stop_is_bounded_and_does_not_rearm_actuation() {
         ExecutionTime::from(Duration::from_millis(50)),
         Duration::from_secs(1),
     );
-    let driver = HardwareFixtureDriver::new();
-    driver.control.stalled.store(true, Ordering::Release);
-    let mut runner = runner(driver.clone(), Arc::clone(&device));
+    let (mut runner, control) = runner(Arc::clone(&device));
+    control.stalled.store(true, Ordering::Release);
     let task = thread::spawn(move || runner.poll(ExecutionTime::default()));
 
     thread::sleep(Duration::from_millis(25));
     let started = Instant::now();
-    driver.control.stop_requested.store(true, Ordering::Release);
+    control.stop_requested.store(true, Ordering::Release);
     let result = task.join().expect("stalled fixture poll thread joins");
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(
@@ -453,13 +456,15 @@ fn stalled_runtime_stop_is_bounded_and_does_not_rearm_actuation() {
 
 #[test]
 fn invalid_fixture_configuration_fails_before_runtime_ready() {
-    let error = phoxal::runtime::initialize(
-        &HardwareFixtureDriver::new(),
+    let error = match phoxal::runtime::initialize(
+        &FixtureRuntime::new(),
         ExecutionTime::default(),
         HardwareFixtureConfig {
             device_id: "".to_owned(),
         },
-    )
-    .expect_err("missing configured fixture device must reject initialization");
+    ) {
+        Ok(_) => panic!("missing configured fixture device must reject initialization"),
+        Err(error) => error,
+    };
     assert!(error.to_string().contains("device_id"));
 }

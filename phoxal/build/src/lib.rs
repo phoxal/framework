@@ -14,7 +14,6 @@ mod api;
 pub mod conversions;
 mod manifest;
 mod prepared;
-mod provider;
 mod schema_impls;
 mod typed;
 
