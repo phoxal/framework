@@ -1147,6 +1147,29 @@ where
     }
 }
 
+/// Sender-side flow control for generated calls: outstanding counts the
+/// provider's still-unreplied requests for one endpoint — the live
+/// correlation map — plus everything staged earlier in this same
+/// reservation. A caller that outpaces its receiver's completions fails
+/// visibly at its own reservation instead of overflowing the receiver's
+/// declared ingress bound in a distant process.
+pub(super) fn outstanding_generated_calls(
+    correlations: &super::exchange::GeneratedCorrelationMap,
+    staged: &[(u64, super::exchange::GeneratedCorrelation)],
+    endpoint: &str,
+) -> usize {
+    correlations
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .values()
+        .filter(|pending| pending.endpoint == endpoint)
+        .count()
+        + staged
+            .iter()
+            .filter(|(_, pending)| pending.endpoint == endpoint)
+            .count()
+}
+
 /// Conflicting staged writes to one leased output are refused atomically
 /// before acceptance: traversal order is not a last-write-wins motion
 /// policy, and no implicit domain arbiter picks a single effect. An
@@ -1263,20 +1286,13 @@ where
                 // Sender-side flow control: a caller that outpaces its
                 // receiver's completions fails visibly here, at its own
                 // reservation, instead of overflowing the receiver's declared
-                // ingress bound in a distant process.  Outstanding counts the
-                // provider's still-unreplied requests plus everything staged
-                // earlier in this same reservation.
+                // ingress bound in a distant process.
                 if let Some(correlations) = &self.generated_correlations {
-                    let outstanding = correlations
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .values()
-                        .filter(|pending| pending.endpoint == signature.name)
-                        .count()
-                        + generated_correlations
-                            .iter()
-                            .filter(|(_, pending)| pending.endpoint == signature.name)
-                            .count();
+                    let outstanding = outstanding_generated_calls(
+                        correlations,
+                        &generated_correlations,
+                        signature.name,
+                    );
                     if outstanding as u64 >= route.max_outstanding {
                         return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
                             port: signature.name.to_owned(),
