@@ -4,9 +4,11 @@ name: ci
 # deterministic workspace tests with locked dependency resolution.
 #
 # Compiling any Phoxal composition requires its prepared contracts, so
-# the build job first builds cargo-phoxal and prepares the three
-# workspace fixture compositions (tests/robot, tests/contracts/robot,
-# tests/contracts/client). The excluded-by-tests packages:
+# the build job first builds cargo-phoxal and prepares the workspace
+# fixture compositions (tests/robot, tests/contracts/robot,
+# tests/contracts/client, tests/runtime-authoring/consumer — whose
+# robot.yaml supplies the countdown contracts it consumes). The
+# excluded-by-tests packages:
 #
 # - tests/robot's native MuJoCo scenario needs a simulator installation;
 #   it is compiled here and runs as the recorded native acceptance
@@ -54,7 +56,7 @@ jobs:
       - name: Prepare the fixture compositions
         run: |
           set -euo pipefail
-          for fixture in tests/robot tests/contracts/robot tests/contracts/client; do
+          for fixture in tests/robot tests/contracts/robot tests/contracts/client tests/runtime-authoring/consumer; do
             (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
           done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
