@@ -15,8 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use prost::Message;
 
 use super::{ExecutionTime, ObservationStamp, StepContext};
+use crate::communication::execution::RuntimeWireMetadata;
 use crate::contracts::ProstPayload;
-use crate::port::{PortKind, PortSignature};
+use crate::contracts::{MethodShape, MethodSignature};
 
 /// Encode one endpoint payload through its Prost wire form.
 pub fn encode_prost<T: ProstPayload>(value: &T) -> Result<Vec<u8>, prost::EncodeError> {
@@ -77,70 +78,6 @@ impl WireControl {
             }),
         }
     }
-}
-
-/// Delivery facts attached to one exact generated payload.
-///
-/// This is metadata, not a second payload envelope.  Decoders hand the body
-/// directly to the generated descriptor codec after validating the attachment.
-#[derive(Clone, PartialEq, Message)]
-pub struct RuntimeWireMetadata {
-    /// Per-producer publication sequence, when one exists.
-    #[prost(uint64, optional, tag = "1")]
-    pub sequence: Option<u64>,
-    /// Logical execution time associated with the record.
-    #[prost(uint64, optional, tag = "2")]
-    pub logical_time_nanos: Option<u64>,
-    /// Original source identity for measured/forwarded observations.
-    #[prost(string, optional, tag = "3")]
-    pub source: Option<String>,
-    /// Immediate graph publisher, distinct from an observation's original source.
-    #[prost(string, optional, tag = "17")]
-    pub producer: Option<String>,
-    /// Original observation revision, when the source exposes one.
-    #[prost(uint64, optional, tag = "4")]
-    pub revision: Option<u64>,
-    /// Target command correlation, present for commands and replies.
-    #[prost(uint64, optional, tag = "5")]
-    pub command_id: Option<u64>,
-    /// Deterministic command eligibility boundary.
-    #[prost(uint64, optional, tag = "6")]
-    pub eligible_boundary: Option<u64>,
-    /// Deterministic caller rank used to merge controlled commands.
-    #[prost(uint64, optional, tag = "7")]
-    pub caller_rank: Option<u64>,
-    /// Stream control value.  Zero is ordinary data.
-    #[prost(uint32, tag = "8")]
-    pub control: u32,
-    /// Setpoint expiry in logical execution time, when this is a setpoint
-    /// renewal or withdrawal.
-    #[prost(uint64, optional, tag = "9")]
-    pub expires_at_nanos: Option<u64>,
-    /// Stable graph identity of the caller for a Commands request, in the
-    /// form `{runtime-instance}.{input-field}`.
-    #[prost(string, optional, tag = "10")]
-    pub caller: Option<String>,
-    /// Target refusal or source failure detail, when supplied.
-    #[prost(string, optional, tag = "11")]
-    pub reason: Option<String>,
-    /// Supervisor ingress sequence for an external command.
-    #[prost(uint64, optional, tag = "12")]
-    pub ingress_sequence: Option<u64>,
-    /// Execution identity for a required controlled-delivery record.
-    #[prost(string, optional, tag = "13")]
-    pub(crate) execution_id: Option<String>,
-    /// Timeline identity for a required controlled-delivery record.
-    #[prost(string, optional, tag = "14")]
-    pub(crate) timeline_id: Option<String>,
-    /// Controlled boundary at which this record was produced.
-    #[prost(uint64, optional, tag = "15")]
-    pub(crate) boundary: Option<u64>,
-    /// Zero-based item index within the output port/direction cut.
-    #[prost(uint32, optional, tag = "16")]
-    pub(crate) item: Option<u32>,
-    /// Selected host-monotonic transfer budget for this managed request.
-    #[prost(uint64, optional, tag = "18")]
-    pub(crate) request_timeout_ms: Option<u64>,
 }
 
 impl RuntimeWireMetadata {
@@ -327,42 +264,8 @@ pub struct WireSample {
     key: String,
 }
 
-/// Owned descriptor identity admitted from a compiled source bundle.
-///
-/// Generated consumers do not invent a port name for an unserved input.  The
-/// launcher resolves its authored connection to this exact identity and the
-/// generated Prost type is checked against the request/response FQNs before a
-/// sample can enter an input cut.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PortBinding {
-    /// Public endpoint name.
-    pub name: String,
-    /// Owning generated Protobuf service FQN.
-    pub service: String,
-    /// Protobuf method name.
-    pub method: String,
-    /// Public endpoint kind.
-    pub kind: PortKind,
-    /// Fully-qualified request message name.
-    pub request: String,
-    /// Fully-qualified response message name.
-    pub response: String,
-}
-
-impl PortBinding {
-    /// Copies an inert generated descriptor into an owned launch binding.
-    #[must_use]
-    pub fn from_signature(signature: PortSignature) -> Self {
-        Self {
-            name: signature.name.to_owned(),
-            service: signature.service.to_owned(),
-            method: signature.method.to_owned(),
-            kind: signature.kind,
-            request: signature.request.to_owned(),
-            response: signature.response.to_owned(),
-        }
-    }
-}
+/// The canonical owned method contract admitted from a resolved bundle.
+pub use crate::contracts::OwnedMethodSignature as MethodBinding;
 
 impl WireSample {
     #[cfg(test)]
@@ -420,9 +323,9 @@ impl WireSample {
 #[derive(Clone, Debug)]
 enum PreparedEndpoint {
     /// A generated descriptor with a compile-time endpoint identity.
-    Signature(PortSignature),
+    Signature(MethodSignature),
     /// A graph-resolved endpoint whose identity came from the launch bundle.
-    Binding(PortBinding),
+    Binding(MethodBinding),
 }
 
 /// A type-erased semantic value used by `on_change` output gating.
@@ -510,17 +413,10 @@ impl std::fmt::Debug for ChangeToken {
 }
 
 impl PreparedEndpoint {
-    fn kind(&self) -> PortKind {
-        match self {
-            Self::Signature(signature) => signature.kind,
-            Self::Binding(binding) => binding.kind,
-        }
-    }
-
     fn name(&self) -> &str {
         match self {
-            Self::Signature(signature) => signature.name,
-            Self::Binding(binding) => &binding.name,
+            Self::Signature(signature) => signature.endpoint,
+            Self::Binding(binding) => &binding.endpoint,
         }
     }
 }
@@ -535,6 +431,7 @@ pub struct PreparedOutput {
     control: WireControl,
     request: bool,
     reply: bool,
+    immutable_read: bool,
     field: Option<&'static str>,
     change_token: Option<ChangeToken>,
     /// The complete 128-bit ticket of one generated operation, when this
@@ -548,7 +445,7 @@ pub struct PreparedOutput {
 impl PreparedOutput {
     /// Stage an already encoded ordinary publication.
     pub fn encoded_response(
-        signature: PortSignature,
+        signature: MethodSignature,
         payload: Vec<u8>,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -558,7 +455,7 @@ impl PreparedOutput {
 
     /// Stage an already encoded request.
     pub fn encoded_request(
-        signature: PortSignature,
+        signature: MethodSignature,
         payload: Vec<u8>,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -567,7 +464,7 @@ impl PreparedOutput {
     }
 
     fn encoded(
-        signature: PortSignature,
+        signature: MethodSignature,
         payload: Vec<u8>,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -575,7 +472,7 @@ impl PreparedOutput {
     ) -> Result<Self, TransportError> {
         if payload.len() as u64 > max_bytes {
             return Err(TransportError::BodyTooLarge {
-                port: signature.name.to_owned(),
+                port: signature.endpoint.to_owned(),
                 bytes: payload.len(),
                 maximum: max_bytes,
             });
@@ -590,6 +487,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         })
     }
@@ -597,7 +495,7 @@ impl PreparedOutput {
     /// Encode one ordinary response/publication body with its generated
     /// Protobuf message implementation.
     pub fn response<T: ProstPayload>(
-        signature: PortSignature,
+        signature: MethodSignature,
         value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -613,6 +511,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         })
     }
@@ -620,7 +519,7 @@ impl PreparedOutput {
     /// Encode one correlated command response with its generated Protobuf
     /// message implementation.
     pub fn reply<T: ProstPayload>(
-        signature: PortSignature,
+        signature: MethodSignature,
         value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -636,6 +535,7 @@ impl PreparedOutput {
             reply: true,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         })
     }
@@ -643,7 +543,7 @@ impl PreparedOutput {
     /// Encode one managed Read or Request activation body under its declared
     /// request bound.
     pub fn request<T: ProstPayload>(
-        signature: PortSignature,
+        signature: MethodSignature,
         value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
@@ -659,6 +559,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         })
     }
@@ -667,14 +568,14 @@ impl PreparedOutput {
     /// route.  Encoding happens at the generated call site, where the exact
     /// Prost request type is available.
     pub fn request_binding(
-        binding: PortBinding,
+        binding: MethodBinding,
         payload: Vec<u8>,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
     ) -> Result<Self, TransportError> {
         if payload.len() as u64 > max_bytes {
             return Err(TransportError::BodyTooLarge {
-                port: binding.name.clone(),
+                port: binding.endpoint.clone(),
                 bytes: payload.len(),
                 maximum: max_bytes,
             });
@@ -689,13 +590,14 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         })
     }
 
     /// Create a stream control record with no service payload body.
     pub fn control(
-        signature: PortSignature,
+        signature: MethodSignature,
         control: WireControl,
         metadata: RuntimeWireMetadata,
     ) -> Self {
@@ -709,17 +611,19 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         }
     }
 
     pub(crate) fn read_refusal(
-        signature: PortSignature,
+        signature: MethodSignature,
         control: WireControl,
         metadata: RuntimeWireMetadata,
     ) -> Self {
         let mut output = Self::control(signature, control, metadata);
         output.reply = true;
+        output.immutable_read = true;
         output
     }
 
@@ -744,7 +648,7 @@ impl PreparedOutput {
     }
 
     /// Create an explicit setpoint withdrawal without inventing a payload.
-    pub fn withdrawal(signature: PortSignature, metadata: RuntimeWireMetadata) -> Self {
+    pub fn withdrawal(signature: MethodSignature, metadata: RuntimeWireMetadata) -> Self {
         Self {
             endpoint: PreparedEndpoint::Signature(signature),
             target_instance: None,
@@ -755,6 +659,7 @@ impl PreparedOutput {
             reply: false,
             field: None,
             change_token: None,
+            immutable_read: false,
             generated_ticket: None,
         }
     }
@@ -763,6 +668,13 @@ impl PreparedOutput {
     #[must_use]
     pub fn for_field(mut self, field: &'static str) -> Self {
         self.field = Some(field);
+        self
+    }
+
+    /// Selects immutable-read delivery for work owned by the private read collector.
+    #[must_use]
+    pub fn for_immutable_read(mut self, enabled: bool) -> Self {
+        self.immutable_read = enabled;
         self
     }
 
@@ -807,13 +719,13 @@ impl PreparedOutput {
     /// Re-sign a locally staged generated operation with the provider's
     /// served endpoint identity when composition selected an endpoint whose
     /// local spelling differs from the consumer's requirement.
-    pub(crate) fn retarget_signature(&mut self, signature: PortSignature) {
-        if let PreparedEndpoint::Signature(current) = &mut self.endpoint {
-            *current = signature;
-        }
+    pub(crate) fn retarget_binding(&mut self, binding: MethodBinding) {
+        self.endpoint = PreparedEndpoint::Binding(binding);
     }
 
-    pub(crate) fn generated_identity(&self) -> Option<(String, PortSignature, u128, usize, bool)> {
+    pub(crate) fn generated_identity(
+        &self,
+    ) -> Option<(String, MethodSignature, u128, usize, bool)> {
         let ticket = self.generated_ticket?;
         let PreparedEndpoint::Signature(signature) = self.endpoint else {
             return None;
@@ -872,7 +784,7 @@ impl PreparedOutput {
     }
 
     /// The record's port signature, when it carries a compile-time one.
-    pub(crate) fn port_signature(&self) -> Option<&crate::port::PortSignature> {
+    pub(crate) fn port_signature(&self) -> Option<&crate::contracts::MethodSignature> {
         match &self.endpoint {
             PreparedEndpoint::Signature(signature) => Some(signature),
             PreparedEndpoint::Binding(_) => None,
@@ -887,7 +799,7 @@ impl PreparedOutput {
 
     /// Public port signature used to construct the execution-scoped key.
     #[must_use]
-    pub fn signature(&self) -> Option<PortSignature> {
+    pub fn signature(&self) -> Option<MethodSignature> {
         match self.endpoint {
             PreparedEndpoint::Signature(signature) => Some(signature),
             PreparedEndpoint::Binding(_) => None,
@@ -910,18 +822,7 @@ impl PreparedOutput {
     /// Requests are transport work rather than products, and stream controls
     /// carry lifecycle evidence without a product body.
     pub(crate) fn product_receipt(&self) -> Option<(String, u64, u64)> {
-        if self.request
-            || self.control != WireControl::Data
-            || matches!(
-                &self.endpoint,
-                PreparedEndpoint::Signature(signature)
-                    if signature.kind == PortKind::Read
-            )
-            || matches!(
-                &self.endpoint,
-                PreparedEndpoint::Binding(binding) if binding.kind == PortKind::Read
-            )
-        {
+        if self.request || self.control != WireControl::Data || self.immutable_read {
             return None;
         }
         Some((
@@ -1063,8 +964,8 @@ impl PreparedOutput {
             return None;
         }
         let setpoint = match &self.endpoint {
-            PreparedEndpoint::Signature(signature) => signature.kind == PortKind::Setpoint,
-            PreparedEndpoint::Binding(binding) => binding.kind == PortKind::Setpoint,
+            PreparedEndpoint::Signature(signature) => signature.lease.is_some(),
+            PreparedEndpoint::Binding(binding) => binding.lease_valid_for_ms.is_some(),
         };
         if !setpoint {
             return None;
@@ -1078,7 +979,7 @@ impl PreparedOutput {
 
     fn relative_key(&self, instance: &str) -> String {
         let direction = if self.request {
-            if self.endpoint.kind() == PortKind::Read {
+            if self.immutable_read {
                 "read-request"
             } else {
                 "request"
@@ -1124,7 +1025,7 @@ pub struct InputTransportField {
     pub kind: crate::runtime::input::InputKind,
     /// Generated public descriptor identity, when the field is explicitly
     /// bound by its Rust declaration.
-    pub signature: Option<PortSignature>,
+    pub signature: Option<MethodSignature>,
     /// Optional latest-value age bound.
     pub max_age_ms: Option<u64>,
     /// Maximum retained item count, when this form is batched.
@@ -1184,17 +1085,17 @@ pub enum TransportError {
 
 /// Encode one generated response/publication payload exactly once.
 pub fn encode_response<T: ProstPayload>(
-    signature: PortSignature,
+    signature: MethodSignature,
     value: &T,
     max_bytes: u64,
 ) -> Result<Vec<u8>, TransportError> {
     let payload = encode_prost(value).map_err(|error| TransportError::PayloadEncode {
-        port: signature.name.to_owned(),
+        port: signature.endpoint.to_owned(),
         detail: error.to_string(),
     })?;
     if payload.len() as u64 > max_bytes {
         return Err(TransportError::BodyTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             bytes: payload.len(),
             maximum: max_bytes,
         });
@@ -1204,13 +1105,13 @@ pub fn encode_response<T: ProstPayload>(
 
 /// Decode one generated command request into the exact Rust request type.
 pub fn decode_request<T: ProstPayload>(
-    signature: PortSignature,
+    signature: MethodSignature,
     sample: &WireSample,
     max_bytes: u64,
 ) -> Result<T, TransportError> {
     validate_request(signature, sample, max_bytes)?;
     decode_prost(sample.payload()).map_err(|error| TransportError::PayloadDecode {
-        port: signature.name.to_owned(),
+        port: signature.endpoint.to_owned(),
         detail: error.to_string(),
     })
 }
@@ -1222,13 +1123,13 @@ pub fn decode_request<T: ProstPayload>(
 /// it can validate size and lifecycle metadata here without restoring a
 /// process-wide payload codec registry.
 pub fn validate_request(
-    signature: PortSignature,
+    signature: MethodSignature,
     sample: &WireSample,
     max_bytes: u64,
 ) -> Result<(), TransportError> {
     if sample.payload().len() as u64 > max_bytes {
         return Err(TransportError::BodyTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             bytes: sample.payload().len(),
             maximum: max_bytes,
         });
@@ -1244,7 +1145,7 @@ pub fn validate_request(
 /// Decode one generated Prost message body after checking the exact source
 /// descriptor and bounded body size.
 pub fn decode_message<T>(
-    binding: &PortBinding,
+    binding: &MethodBinding,
     sample: &WireSample,
     max_bytes: u64,
 ) -> Result<T, TransportError>
@@ -1253,7 +1154,7 @@ where
 {
     if sample.payload().len() as u64 > max_bytes {
         return Err(TransportError::BodyTooLarge {
-            port: binding.name.clone(),
+            port: binding.endpoint.clone(),
             bytes: sample.payload().len(),
             maximum: max_bytes,
         });
@@ -1262,32 +1163,33 @@ where
         return Err(TransportError::InvalidMetadata {
             detail: format!(
                 "port `{}` carried a control record where data was required",
-                binding.name
+                binding.endpoint
             ),
         });
     }
     decode_prost(sample.payload()).map_err(|error| TransportError::PayloadDecode {
-        port: binding.name.clone(),
+        port: binding.endpoint.clone(),
         detail: error.to_string(),
     })
 }
 
 /// Validate a publication binding against one generated Prost payload type.
-pub fn validate_publication_binding<T>(
-    binding: &PortBinding,
-    expected_kind: PortKind,
-) -> Result<(), TransportError>
+pub fn validate_publication_binding<T>(binding: &MethodBinding) -> Result<(), TransportError>
 where
     T: ProstPayload,
 {
     let response = <T as crate::schema::MessageSchema>::WIRE_NAME;
-    validate_binding(binding, expected_kind, "google.protobuf.Empty", response)
+    validate_binding(
+        binding,
+        MethodShape::Observation,
+        "google.protobuf.Empty",
+        response,
+    )
 }
 
 /// Validate a request/response binding against generated Prost payload types.
 pub fn validate_exchange_binding<Request, Response>(
-    binding: &PortBinding,
-    expected_kind: PortKind,
+    binding: &MethodBinding,
 ) -> Result<(), TransportError>
 where
     Request: ProstPayload,
@@ -1295,21 +1197,21 @@ where
 {
     let request = <Request as crate::schema::MessageSchema>::WIRE_NAME;
     let response = <Response as crate::schema::MessageSchema>::WIRE_NAME;
-    validate_binding(binding, expected_kind, request, response)
+    validate_binding(binding, MethodShape::Call, request, response)
 }
 
 /// Validate that an input route retained the exact generated descriptor that
 /// its local Commands field explicitly selected.
 pub fn validate_binding_identity(
-    binding: &PortBinding,
-    expected: PortSignature,
+    binding: &MethodBinding,
+    expected: MethodSignature,
 ) -> Result<(), TransportError> {
-    let expected = PortBinding::from_signature(expected);
+    let expected = MethodBinding::from_method(expected);
     if binding != &expected {
         return Err(TransportError::InvalidMetadata {
             detail: format!(
                 "port `{}` descriptor does not match the generated local binding",
-                binding.name
+                binding.endpoint
             ),
         });
     }
@@ -1317,23 +1219,20 @@ pub fn validate_binding_identity(
 }
 
 fn validate_binding(
-    binding: &PortBinding,
-    expected_kind: PortKind,
+    binding: &MethodBinding,
+    expected_shape: MethodShape,
     expected_request: &str,
     expected_response: &str,
 ) -> Result<(), TransportError> {
-    if binding.kind != expected_kind
+    if binding.shape != expected_shape
         || binding.request != expected_request
         || binding.response != expected_response
+        || binding.lease_valid_for_ms == Some(0)
     {
         return Err(TransportError::InvalidMetadata {
             detail: format!(
-                "port `{}` descriptor mismatch: expected kind `{}`, request `{expected_request}`, response `{expected_response}`, got kind `{}`, request `{}`, response `{}`",
-                binding.name,
-                expected_kind.as_str(),
-                binding.kind.as_str(),
-                binding.request,
-                binding.response,
+                "port `{}` descriptor mismatch: expected shape `{expected_shape:?}`, request `{expected_request}`, response `{expected_response}`, got shape `{:?}`, request `{}`, response `{}`",
+                binding.endpoint, binding.shape, binding.request, binding.response,
             ),
         });
     }
@@ -1505,7 +1404,7 @@ pub fn observation_stamp(
 /// Resolve the generated port bound to one Commands input field.
 pub fn input_port_signature<S: crate::runtime::input::InputSet>(
     field: &str,
-) -> Option<PortSignature> {
+) -> Option<MethodSignature> {
     S::FIELDS
         .iter()
         .find(|candidate| candidate.name == field)
@@ -1514,7 +1413,7 @@ pub fn input_port_signature<S: crate::runtime::input::InputSet>(
 
 /// Validate and sum one output batch against count/byte bounds.
 pub fn check_batch(
-    signature: PortSignature,
+    signature: MethodSignature,
     count: usize,
     bytes: usize,
     max_items: u64,
@@ -1522,7 +1421,7 @@ pub fn check_batch(
 ) -> Result<(), TransportError> {
     if count as u64 > max_items {
         return Err(TransportError::BatchTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             what: "item count",
             actual: count as u64,
             maximum: max_items,
@@ -1530,7 +1429,7 @@ pub fn check_batch(
     }
     if bytes as u64 > max_bytes {
         return Err(TransportError::BatchTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             what: "encoded bytes",
             actual: bytes as u64,
             maximum: max_bytes,
@@ -1542,7 +1441,7 @@ pub fn check_batch(
 /// Add one encoded item to a bounded batch without allowing arithmetic
 /// overflow or a temporary over-capacity reservation.
 pub fn checked_add_batch_bytes(
-    signature: PortSignature,
+    signature: MethodSignature,
     current: usize,
     additional: usize,
     maximum: u64,
@@ -1550,14 +1449,14 @@ pub fn checked_add_batch_bytes(
     let actual = current
         .checked_add(additional)
         .ok_or_else(|| TransportError::BatchTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             what: "encoded bytes",
             actual: u64::MAX,
             maximum,
         })?;
     if actual as u64 > maximum {
         return Err(TransportError::BatchTooLarge {
-            port: signature.name.to_owned(),
+            port: signature.endpoint.to_owned(),
             what: "encoded bytes",
             actual: actual as u64,
             maximum,

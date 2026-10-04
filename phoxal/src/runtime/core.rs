@@ -474,14 +474,6 @@ pub struct RuntimeSpec {
     pub timeout: ExecutionDuration,
     /// Host-monotonic initialization deadline.
     pub init_timeout: ExecutionDuration,
-    /// Whether admitted input arrivals may advance the next hardware
-    /// release instead of waiting for the nominal period. Off for every
-    /// ordinary runtime: releases stay strictly periodic. A hosted
-    /// conversion runtime turns it on so a converted observation is
-    /// published on arrival rather than at the next tick; the invocation
-    /// rate never exceeds the nominal period, and controlled execution
-    /// ignores arrivals entirely so controlled input cuts stay exact.
-    pub arrival_releases: bool,
 }
 
 impl RuntimeSpec {
@@ -492,15 +484,7 @@ impl RuntimeSpec {
             period: ExecutionDuration::from_millis(period_ms),
             timeout: ExecutionDuration::from_millis(timeout_ms),
             init_timeout: ExecutionDuration::from_millis(init_timeout_ms),
-            arrival_releases: false,
         }
-    }
-
-    /// Enables arrival-aligned hardware releases for this spec.
-    #[must_use]
-    pub const fn with_arrival_releases(mut self) -> Self {
-        self.arrival_releases = true;
-        self
     }
 
     /// Validates the hard lower bound shared by every runtime registration.
@@ -1053,6 +1037,11 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
 /// registered-runtime path. Authored application code never constructs a
 /// runtime value or references the adapter.
 pub trait LaunchedRuntime {
+    /// The timing contract retained by this runtime's generated binding.
+    const SPEC: RuntimeSpec;
+    /// The exact retained contract record of this authored runtime.
+    fn artifact_metadata() -> &'static super::artifact::ArtifactRecord;
+
     /// Runs the process from the supervisor's explicit launch contract
     /// until SIGINT or SIGTERM.
     fn launch() -> crate::Result<()>;
@@ -1075,9 +1064,8 @@ where
 /// Run one registered runtime value from the supervisor's explicit launch
 /// contract.
 ///
-/// The internal launch entrypoint for generated launch glue (the hosted
-/// conversion role and `LaunchedRuntime`): the caller supplies the
-/// constructed adapter value. Authored runtimes launch through [`run`].
+/// Generated `LaunchedRuntime` glue supplies the private engine binding.
+/// Authored runtimes launch through [`run`].
 ///
 /// The process entrypoint owns its Tokio runtime, parses `RuntimeLaunch`,
 /// attaches a bus session scoped to the admitted execution, and drives the

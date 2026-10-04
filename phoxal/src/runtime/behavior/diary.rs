@@ -7,8 +7,7 @@
 //! candidate each keep their own record, while re-ticking or cancelling one
 //! tree replaces only that tree's snapshot. The whole candidate collection
 //! commits at the owning boundary's acceptance (the adapter's `accepted`
-//! hook driven by the runtime owner, with the next invocation as the
-//! equivalent fallback for raw-invoke drivers) and is discarded wholesale
+//! hook driven by the runtime owner) and is discarded wholesale
 //! with a rejected, errored, or panicking candidate.
 //!
 //! # Bounds and loss

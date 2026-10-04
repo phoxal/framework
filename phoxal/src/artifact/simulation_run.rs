@@ -115,20 +115,12 @@ pub struct SimulationApplicationReference {
     pub version: String,
     /// Binary target name.
     pub binary: String,
-    /// Verified executable SHA-256.
-    pub executable_sha256: String,
 }
 
 /// Canonical finite program embedded in the run specification.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulationProgram {
-    /// Ordinary Rust test identity.
-    pub test_identity: String,
-    /// Exact canonical program byte length.
-    pub byte_length: u32,
-    /// SHA-256 of the canonical program bytes.
-    pub sha256: String,
     /// Canonical program bytes.
     pub bytes: Vec<u8>,
 }
@@ -223,12 +215,8 @@ mod tests {
                 package: "phoxal-simulator".to_owned(),
                 version: "1.0.0".to_owned(),
                 binary: "phoxal-simulator".to_owned(),
-                executable_sha256: "b".repeat(64),
             },
             program: SimulationProgram {
-                test_identity: "fixture::moves".to_owned(),
-                byte_length: 3,
-                sha256: "c".repeat(64),
                 bytes: vec![1, 2, 3],
             },
             bindings: vec![SimulationBinding {

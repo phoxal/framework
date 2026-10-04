@@ -207,10 +207,7 @@ pub fn validate_state_initial_record(
     limits: &PublicTransportLimits,
 ) -> Result<(), PublicTransportError> {
     validate_subscription_record(record, request, limits, true)?;
-    let kind = RecordKind::try_from(record.kind).map_err(|_| PublicTransportError::Malformed {
-        operation: "subscription".to_owned(),
-        detail: "subscription admission initial kind is unknown".to_owned(),
-    })?;
+    let kind = record.kind;
     if !matches!(kind, RecordKind::InitialAbsent | RecordKind::Value) {
         return Err(PublicTransportError::Malformed {
             operation: "subscription".to_owned(),
@@ -245,10 +242,7 @@ pub fn validate_subscription_record(
             maximum: limits.max_response_bytes(),
         });
     }
-    let kind = RecordKind::try_from(record.kind).map_err(|_| PublicTransportError::Malformed {
-        operation: "subscription".to_owned(),
-        detail: "subscription record kind is unspecified or unknown".to_owned(),
-    })?;
+    let kind = record.kind;
     if kind == RecordKind::Unspecified {
         return Err(PublicTransportError::Malformed {
             operation: "subscription".to_owned(),

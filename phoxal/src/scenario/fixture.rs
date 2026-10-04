@@ -8,7 +8,7 @@ use std::time::Duration;
 use prost::Message;
 
 use super::{Action, CapturePolicy, CaptureRecord, CommandReply, NativeBodySample, Step, Validity};
-use crate::port::{PortKind, PortSignature};
+use crate::contracts::OwnedMethodSignature;
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -230,7 +230,7 @@ fn expand_lease_renewals(
             return Err(crate::anyhow!(
                 "scenario lease for {}.{} is shorter than one native quantum",
                 target_instance,
-                consumer_signature.name,
+                consumer_signature.endpoint,
             ));
         }
         let lease_steps = lease_ns / quantum_ns;
@@ -256,7 +256,7 @@ fn expand_lease_renewals(
                 boundary,
                 Action::Setpoint {
                     target_instance: target_instance.clone(),
-                    consumer_signature: *consumer_signature,
+                    consumer_signature: consumer_signature.clone(),
                     encoded_payload: encoded_payload.clone(),
                     validity: Validity::Lease {
                         valid_for_ms: *valid_for_ms,
@@ -277,7 +277,7 @@ fn expand_lease_renewals(
 fn action_replaces_lease(
     action: &Action,
     target_instance: &str,
-    signature: &PortSignature,
+    signature: &OwnedMethodSignature,
 ) -> bool {
     match action {
         Action::Setpoint {
@@ -323,7 +323,7 @@ where
         if let Some(lease) = signature.lease {
             Action::setpoint(
                 instance,
-                contract_port_signature(signature, PortKind::Setpoint),
+                OwnedMethodSignature::from_method(signature),
                 request.encode_to_vec(),
                 Validity::Lease {
                     valid_for_ms: lease.valid_for_ms(),
@@ -333,7 +333,7 @@ where
         } else {
             Action::command(
                 instance,
-                contract_port_signature(signature, PortKind::Commands),
+                OwnedMethodSignature::from_method(signature),
                 request.encode_to_vec(),
                 label,
                 Duration::from_secs(5),
@@ -350,7 +350,7 @@ impl<Request, Response> SendOperation for crate::contracts::Withdraw<Request, Re
     fn into_action(self, _label: &str) -> crate::Result<Action> {
         Action::withdraw(
             self.instance(),
-            contract_port_signature(self.signature(), PortKind::Setpoint),
+            OwnedMethodSignature::from_method(self.signature()),
         )
         .map_err(|error| crate::anyhow!("withdrawal operation: {error}"))
     }
@@ -364,15 +364,8 @@ where
 
     fn into_capture(self, _name: &str, policy: CapturePolicy) -> crate::Result<super::Capture> {
         let signature = self.signature();
-        let port = contract_port_signature(
-            signature,
-            if signature.retained_latest {
-                PortKind::State
-            } else {
-                PortKind::Sample
-            },
-        );
-        let name = format!("{}/{}", self.instance(), port.name);
+        let port = OwnedMethodSignature::from_method(signature);
+        let name = format!("{}/{}", self.instance(), port.endpoint);
         if signature.retained_latest {
             super::Capture::state_with_policy(name, port, policy)
         } else {
@@ -380,13 +373,6 @@ where
         }
         .map_err(|error| crate::anyhow!("observation operation: {error}"))
     }
-}
-
-fn contract_port_signature(
-    signature: crate::contracts::MethodSignature,
-    kind: PortKind,
-) -> PortSignature {
-    PortSignature::from_method(signature, kind)
 }
 
 /// Value that can be decoded from completed simulation evidence.
@@ -733,15 +719,18 @@ mod tests {
         }
     }
 
-    fn signature() -> PortSignature {
-        PortSignature::new(
-            "motion/manual",
+    fn signature() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion.v1.Motion",
             "Manual",
-            PortKind::Setpoint,
+            "motion/manual",
+            crate::contracts::MethodShape::Call,
             "phoxal.motion.v1.MotionIntent",
-            "phoxal.Empty",
-        )
+            "google.protobuf.Empty",
+            false,
+            Some(100),
+            &[],
+        ))
     }
 
     fn leased_step(label: &str, boundary: u32, byte: u8, valid_for_ms: u64) -> Step {

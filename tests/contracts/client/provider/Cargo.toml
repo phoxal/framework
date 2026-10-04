@@ -1,0 +1,16 @@
+[package]
+name = "phoxal-sdk-client-provider-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+
+[lints]
+workspace = true

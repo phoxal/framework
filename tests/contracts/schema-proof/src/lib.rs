@@ -6,6 +6,9 @@
 //! standard descriptors, and that the complete schema closure is extractable
 //! from this binary without executing it.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
 use phoxal::contracts::component::battery::BatterySample;
 use phoxal::contracts::component::encoder::EncoderSample;
 use phoxal::contracts::component::lidar::LaserScan;

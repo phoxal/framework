@@ -1,0 +1,34 @@
+[package]
+name = "phoxal-build"
+version = "0.0.0-dev.8"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Build-time Protobuf contract and typed port generation for Phoxal."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+include = ["src/**", "Cargo.toml", "README.md"]
+
+[dependencies]
+fs4 = { workspace = true }
+heck = { workspace = true }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+prost-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+prettyplease = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

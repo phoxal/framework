@@ -1,4 +1,0 @@
-schema: phoxal/component/v0
-capabilities:
-  caster:
-    kind: passive

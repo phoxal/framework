@@ -2,6 +2,8 @@ schema: phoxal/robot/v0
 robot:
   id: contract-client
 services:
-  consumer:
+  provider:
     source:
-      path: ../consumer
+      path: provider
+supervisor:
+  source: { package: {name: phoxal-supervisor, version: 0.0.0-dev.8} }

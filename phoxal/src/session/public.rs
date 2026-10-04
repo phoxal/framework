@@ -727,7 +727,7 @@ impl Execution {
 
     /// Current advertised execution state at selection.
     #[must_use]
-    pub fn state(&self) -> i32 {
+    pub fn state(&self) -> crate::communication::session::ExecutionState {
         self.summary.state
     }
 
@@ -979,14 +979,7 @@ impl<T: ProstPayload> ObservationSubscription<T> {
                 detail: "subscription record context does not match its binding".to_owned(),
             }));
         }
-        let kind = match RecordKind::try_from(record.kind) {
-            Ok(kind) => kind,
-            Err(_) => {
-                return Some(Err(SessionError::InvalidPublicRequest {
-                    detail: "subscription record kind is unknown".to_owned(),
-                }));
-            }
-        };
+        let kind = record.kind;
         let item = match kind {
             RecordKind::InitialAbsent => ObservationItem::InitialAbsent {
                 revision: record.revision,
@@ -1122,11 +1115,7 @@ impl MethodHandleCore {
             Ok(response) => response,
             Err(error) => return Ok(map_operation_error(error)),
         };
-        let outcome = OperationOutcome::try_from(response.outcome).map_err(|_| {
-            SessionError::InvalidPublicRequest {
-                detail: "operation response outcome is unknown".to_owned(),
-            }
-        })?;
+        let outcome = response.outcome;
         let reason = || OutcomeReason::new(response.detail.clone().unwrap_or_default());
         Ok(match outcome {
             OperationOutcome::Received => {
@@ -1188,7 +1177,7 @@ fn validate_method(
         MethodShape::Call => SessionMethodShape::Call,
         MethodShape::Observation => SessionMethodShape::Observation,
     };
-    if metadata.shape != shape as i32
+    if metadata.shape != shape
         || metadata.input_fqn != signature.request
         || metadata.output_fqn != signature.response
         || metadata.retained_latest != signature.retained_latest
@@ -1196,7 +1185,7 @@ fn validate_method(
     {
         return Err(SessionError::MethodNotAdmitted {
             detail: format!(
-                "endpoint `{}` descriptor mismatch: expected shape `{shape:?}`, request `{}`, response `{}`, got shape `{}`, request `{}`, response `{}`",
+                "endpoint `{}` descriptor mismatch: expected shape `{shape:?}`, request `{}`, response `{}`, got shape `{:?}`, request `{}`, response `{}`",
                 signature.endpoint,
                 signature.request,
                 signature.response,
@@ -1287,7 +1276,7 @@ fn validate_simulation_receipt(
         });
     };
     if transition.is_none()
-        || receipt.status != expected_status as i32
+        || receipt.status != expected_status
         || receipt.transition_key.as_ref() != transition
         || receipt.correlation_id != correlation_id
         || receipt.membership_digest.len() != 32

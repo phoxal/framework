@@ -4,10 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use phoxal::runtime::{
-    AcceptedInvocation, ExecutionTime, HardwareInvocation, InputSource, ObservationStamp,
-    OutputAdmission, OutputSink, PollOutcome, RuntimeRunner,
-};
+use phoxal::runtime::{ExecutionTime, Harness, ObservationStamp};
 
 use super::*;
 use crate::contract::FixtureObservation;
@@ -227,96 +224,49 @@ impl Drop for FixtureDevice {
     }
 }
 
-struct FixtureInputSource {
+/// The test's I/O workers remain independent of its canonical runtime owner.
+struct FixtureHost {
+    runtime: Harness<HardwareFixtureDriver>,
     device: Arc<FixtureDevice>,
 }
 
-type FixtureRuntime = super::phoxal_runtime_hardware_fixture_driver::Adapter;
-
-impl InputSource<FixtureRuntime> for FixtureInputSource {
-    fn freeze(
-        &mut self,
-        _candidate: &HardwareInvocation,
-    ) -> phoxal::Result<crate::contract::driver_api::Inputs> {
-        Ok(crate::contract::driver_api::Inputs {
-            acquired: self.device.drain_observations(),
-            actuator: self.device.input_setpoint(),
-        })
-    }
-
-    fn stop(&mut self) -> phoxal::Result<()> {
-        self.device.stop();
-        Ok(())
-    }
-}
-
-struct FixtureOutputSink {
-    device: Arc<FixtureDevice>,
-    stopped: bool,
-}
-
-impl OutputAdmission<<FixtureRuntime as phoxal::runtime::Runtime>::Outputs> for FixtureOutputSink {
-    type Reservation = usize;
-
-    fn reserve(
-        &mut self,
-        outputs: &<FixtureRuntime as phoxal::runtime::Runtime>::Outputs,
-    ) -> phoxal::Result<Self::Reservation> {
-        if outputs.observations.len() > 16 {
-            anyhow::bail!("fixture output capacity exhausted");
+impl FixtureHost {
+    fn poll(&mut self, now: ExecutionTime) -> phoxal::Result<u64> {
+        for sample in self.device.drain_observations().items() {
+            self.runtime
+                .inject_acquired(Sample::new(*sample.payload(), sample.stamp().clone()))?;
         }
-        assert_eq!(outputs.encoder.len(), outputs.observations.len());
-        Ok(outputs.observations.len())
+        self.runtime.inject_actuator(self.device.input_setpoint())?;
+        let result = self
+            .runtime
+            .advance_to(Duration::from_nanos(now.as_nanos()));
+        match result {
+            Ok(releases) => {
+                let observations = self.runtime.observations();
+                assert!(observations.len() <= MAX_PENDING_OBSERVATIONS);
+                assert_eq!(self.runtime.encoder().len(), observations.len());
+                self.device
+                    .published_observations
+                    .fetch_add(observations.len() as u64, Ordering::AcqRel);
+                Ok(releases)
+            }
+            Err(error) => {
+                self.device.stop();
+                Err(error.into())
+            }
+        }
     }
 }
 
-impl OutputSink<FixtureRuntime> for FixtureOutputSink {
-    fn publish(
-        &mut self,
-        accepted: AcceptedInvocation<
-            <FixtureRuntime as phoxal::runtime::Runtime>::Outputs,
-            Self::Reservation,
-        >,
-    ) -> phoxal::Result<()> {
-        self.device.published_observations.fetch_add(
-            accepted.outputs().observations.len() as u64,
-            Ordering::AcqRel,
-        );
-        Ok(())
-    }
-
-    fn stop(&mut self) -> phoxal::Result<()> {
-        self.stopped = true;
-        self.device.stop();
-        Ok(())
-    }
-}
-
-fn runner(
-    device: Arc<FixtureDevice>,
-) -> (
-    RuntimeRunner<FixtureRuntime, FixtureInputSource, FixtureOutputSink>,
-    Arc<RuntimeControl>,
-) {
+fn runner(device: Arc<FixtureDevice>) -> (FixtureHost, Arc<RuntimeControl>) {
     let _handoff = HANDOFF
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let runner = RuntimeRunner::new(
-        FixtureRuntime::new(),
-        ExecutionTime::default(),
-        HardwareFixtureConfig {
-            device_id: "fixture-0".to_owned(),
-        },
-        FixtureInputSource {
-            device: Arc::clone(&device),
-        },
-        FixtureOutputSink {
-            device,
-            stopped: false,
-        },
-    )
-    .expect("fixture Runtime initializes");
-    (runner, latest_control())
+    let runtime = Harness::new(HardwareFixtureConfig {
+        device_id: "fixture-0".to_owned(),
+    })
+    .expect("canonical fixture runtime initializes");
+    (FixtureHost { runtime, device }, latest_control())
 }
 
 #[test]
@@ -388,7 +338,7 @@ fn hardware_acquisition_and_transport_continue_during_stalled_compute() {
 
     control.stalled.store(false, Ordering::Release);
     let outcome = task.join().expect("fixture poll thread joins");
-    assert!(matches!(outcome, Ok(PollOutcome::Accepted { .. })));
+    assert!(matches!(outcome, Ok(1)));
     assert!(device.acquisition_count() >= acquired);
     device.stop();
 }
@@ -420,7 +370,7 @@ fn actuator_expiry_is_independent_of_stalled_compute() {
 
     control.stalled.store(false, Ordering::Release);
     let outcome = task.join().expect("fixture poll thread joins");
-    assert!(matches!(outcome, Ok(PollOutcome::Accepted { .. })));
+    assert!(matches!(outcome, Ok(1)));
     device.stop();
 }
 
@@ -456,13 +406,9 @@ fn stalled_runtime_stop_is_bounded_and_does_not_rearm_actuation() {
 
 #[test]
 fn invalid_fixture_configuration_fails_before_runtime_ready() {
-    let error = match phoxal::runtime::initialize(
-        &FixtureRuntime::new(),
-        ExecutionTime::default(),
-        HardwareFixtureConfig {
-            device_id: "".to_owned(),
-        },
-    ) {
+    let error = match Harness::<HardwareFixtureDriver>::new(HardwareFixtureConfig {
+        device_id: "".to_owned(),
+    }) {
         Ok(_) => panic!("missing configured fixture device must reject initialization"),
         Err(error) => error,
     };

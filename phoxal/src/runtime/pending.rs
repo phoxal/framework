@@ -103,9 +103,7 @@ impl PendingCalls {
     }
 
     /// Promotes every staged record to committed: the owning boundary
-    /// accepted the candidate that staged them. Reaching the next
-    /// invocation of the same execution is the equivalent proof for
-    /// directly driven adapters.
+    /// accepted the complete candidate that staged them.
     pub fn promote_staged(&self) {
         let mut table = self.lock();
         let staged = std::mem::take(&mut table.staged);

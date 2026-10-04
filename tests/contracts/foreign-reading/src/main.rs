@@ -2,6 +2,9 @@
 //! encoder contract under different names and wire numbers, plus a harmless
 //! diagnostics field the receiver-side mapping deliberately omits.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
 use phoxal::contracts::Latest;
 use phoxal::runtime::Context;
 

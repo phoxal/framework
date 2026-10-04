@@ -13,6 +13,9 @@
 // inside this crate's own modules; the self-alias keeps those paths valid
 // for every consumer profile. Profiles without macro-generated paths leave
 // the alias unused, which is expected.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
 #[allow(unused_extern_crates)]
 extern crate self as phoxal;
 
@@ -75,21 +78,6 @@ macro_rules! api {
     };
 }
 
-/// Attaches the generated conversion hosting glue once at the crate root.
-///
-/// A robot executable whose composition needs cross-service conversions
-/// hosts the conversion runtime in-process: `cargo phoxal prepare`
-/// persists the discovered edges, the build helper emits this file, and
-/// the generated `run_hosted_roles` entry dispatches the `brain` and
-/// `phoxal-adapter` launch instances of the same executable. Robots with
-/// no conversions attach a compiled no-op stub from the same path.
-#[macro_export]
-macro_rules! conversions {
-    () => {
-        include!(concat!(env!("OUT_DIR"), "/phoxal-conversions.rs"));
-    };
-}
-
 /// Implementation dependencies used by generated API code.
 ///
 /// Generated bindings reference this module for their Protobuf runtime and
@@ -113,16 +101,6 @@ pub mod generated {
     // this SDK with the generator emitting the consumer bindings.
     pub const API_GENERATOR_MARKER: u64 = version_marker(env!("PHOXAL_API_GENERATOR_VERSION"));
 }
-
-// Private compatibility descriptors used only by runtime and scenario
-// implementation adapters during the direct generated-method cutover.
-#[cfg(any(feature = "runtime", feature = "scenario"))]
-mod port;
-
-/// Runtime provider adapters of the inert contract method descriptors.
-/// Inherent impls, so the methods exist exactly when the module compiles.
-#[cfg(feature = "runtime")]
-mod method_ports;
 
 /// Generates bindings from local prepared contracts and component capabilities.
 ///
@@ -152,126 +130,47 @@ pub use phoxal_macros::scenario;
 #[cfg(feature = "runtime")]
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
-/// Macro- and generator-support surface: port descriptors, shared error
-/// plumbing, and the compile-time checks emitted by `#[phoxal::runtime]`
-/// expansions.  Not application API.
+/// Type checks used by generated endpoint collectors.
 #[cfg(any(feature = "runtime", feature = "scenario"))]
 pub mod macro_support {
-    pub use crate::port::*;
+    pub use crate::contracts::{MethodDescriptor, MethodSignature};
     #[cfg(feature = "runtime")]
     pub use anyhow;
 
+    /// A publication's Rust projection matches its canonical observation payload.
+    pub trait ObservationValue<Value>: MethodDescriptor {}
+    impl<T: 'static> ObservationValue<T> for crate::contracts::ObservationMethod<T> {}
     #[cfg(feature = "runtime")]
-    pub trait StatePortValue<Value>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait SamplePortValue<Value>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait EventPortValue<Value>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait StreamPortValue<Value>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait SetpointPortValue<Value>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait ReadPortValue<Request, Response>: PortDescriptor {}
-    #[cfg(feature = "runtime")]
-    pub trait CommandsPortValue<Request, Response>: PortDescriptor {}
-
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> StatePortValue<T> for crate::port::State<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> StatePortValue<crate::runtime::Sample<T>> for crate::port::State<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> SamplePortValue<T> for crate::port::Sample<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> EventPortValue<T> for crate::port::Event<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> StreamPortValue<T> for crate::port::Stream<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> SetpointPortValue<T> for crate::port::Setpoint<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> SetpointPortValue<Option<&T>> for crate::port::Setpoint<T> {}
-    #[cfg(feature = "runtime")]
-    impl<T: 'static> SetpointPortValue<Option<T>> for crate::port::Setpoint<T> {}
-    #[cfg(feature = "runtime")]
-    impl<Request: 'static, Response: 'static> ReadPortValue<Request, Response>
-        for crate::port::Read<Request, Response>
-    {
-    }
-    #[cfg(feature = "runtime")]
-    impl<Request: 'static, Response: 'static> CommandsPortValue<Request, Response>
-        for crate::port::Commands<Request, Response>
+    impl<T: 'static> ObservationValue<crate::runtime::Sample<T>>
+        for crate::contracts::ObservationMethod<T>
     {
     }
 
-    #[cfg(feature = "runtime")]
-    pub fn assert_state_port<P, Value>(port: P)
-    where
-        P: StatePortValue<Value>,
+    /// A leased projection or ingress uses the declared canonical payload.
+    pub trait LeasedValue<Value>: MethodDescriptor {}
+    impl<T: 'static> LeasedValue<T> for crate::contracts::ObservationMethod<T> {}
+    impl<T: 'static> LeasedValue<Option<T>> for crate::contracts::ObservationMethod<T> {}
+    impl<T: 'static> LeasedValue<Option<&T>> for crate::contracts::ObservationMethod<T> {}
+    impl<T: 'static> LeasedValue<T> for crate::contracts::CallMethod<T, crate::contracts::Empty> {}
+
+    /// A call handler exchanges the canonical request and response types.
+    pub trait CallValue<Request, Response>: MethodDescriptor {}
+    impl<Request: 'static, Response: 'static> CallValue<Request, Response>
+        for crate::contracts::CallMethod<Request, Response>
     {
-        let _ = port;
-        assert_kind::<P>(PortKind::State);
     }
 
-    #[cfg(feature = "runtime")]
-    pub fn assert_sample_port<P, Value>(port: P)
-    where
-        P: SamplePortValue<Value>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Sample);
+    pub fn assert_retained_observation<P: ObservationValue<Value>, Value>(method: P) {
+        assert!(method.signature().retained_latest);
     }
-
-    #[cfg(feature = "runtime")]
-    pub fn assert_event_port<P, Value>(port: P)
-    where
-        P: EventPortValue<Value>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Event);
+    pub fn assert_queued_observation<P: ObservationValue<Value>, Value>(method: P) {
+        assert!(!method.signature().retained_latest);
     }
-
-    #[cfg(feature = "runtime")]
-    pub fn assert_stream_port<P, Value>(port: P)
-    where
-        P: StreamPortValue<Value>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Stream);
+    pub fn assert_leased_method<P: LeasedValue<Value>, Value>(method: P) {
+        assert!(method.signature().lease.is_some());
     }
-
-    #[cfg(feature = "runtime")]
-    pub fn assert_setpoint_port<P, Value>(port: P)
-    where
-        P: SetpointPortValue<Value>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Setpoint);
-    }
-
-    #[cfg(feature = "runtime")]
-    pub fn assert_read_port<P, Request, Response>(port: P)
-    where
-        P: ReadPortValue<Request, Response>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Read);
-    }
-
-    #[cfg(feature = "runtime")]
-    pub fn assert_commands_port<P, Request, Response>(port: P)
-    where
-        P: CommandsPortValue<Request, Response>,
-    {
-        let _ = port;
-        assert_kind::<P>(PortKind::Commands);
-    }
-
-    #[cfg(feature = "runtime")]
-    fn assert_kind<P: PortDescriptor>(expected: PortKind) {
-        assert!(
-            P::KIND == expected,
-            "port descriptor kind does not match runtime role"
-        );
+    pub fn assert_call_method<P: CallValue<Request, Response>, Request, Response>(method: P) {
+        assert!(method.signature().lease.is_none());
     }
 }
 

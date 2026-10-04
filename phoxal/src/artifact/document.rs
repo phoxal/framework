@@ -25,6 +25,8 @@ pub enum RobotDocument {
         /// Optional explicit binary selection for a multi-binary root package.
         #[serde(default)]
         brain: Option<BrainSelection>,
+        /// The supervisor application selection.
+        supervisor: SupervisorSelection,
         /// Explicit behavioral service instances.
         #[serde(default)]
         services: BTreeMap<String, ServiceSelection>,
@@ -189,6 +191,21 @@ pub struct ServiceSelection {
     /// Service-owned configuration object.
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub config: Option<serde_json::Value>,
+}
+
+/// The robot's supervisor application selection.
+///
+/// The supervisor shares the participants' source-selection type and
+/// acquisition facilities while remaining an application, never a service
+/// instance or connection participant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorSelection {
+    /// Source of the supervisor application package.
+    pub source: Source,
+    /// Binary target when the package exposes more than one executable.
+    #[serde(default)]
+    pub binary: Option<String>,
 }
 
 /// One authored participant source. Each variant carries its own selection identity.
@@ -379,6 +396,8 @@ services:
     source: { package: { name: navigation-package, version: 1.0.0 } }
     config:
       gain: 1.5
+supervisor:
+  source: { package: { name: phoxal-supervisor, version: 1.0.0 } }
 connections:
   navigation.imu: imu.sample
 "#;
@@ -398,6 +417,8 @@ robot:
     imu:
       source: { path: ../imu }
       mount_site: imu_mount
+supervisor:
+  source: { path: ../supervisor }
 services:
   navigation:
     source: { path: ../navigation }
@@ -436,6 +457,34 @@ services:
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn supervisor_selection_is_required_and_shares_the_source_type() {
+        let package = "source: { package: { name: phoxal-supervisor, version: 1.2.3 } }\n";
+        let selected: SupervisorSelection =
+            serde_yaml::from_str(package).expect("package source parses");
+        assert!(matches!(
+            selected.source,
+            Source::Package(PackageSourceSelection { ref name, ref version, .. })
+                if name == "phoxal-supervisor" && version == "1.2.3"
+        ));
+
+        let git = "source:\n  git:\n    name: phoxal-supervisor\n    url: https://example.test/supervisor.git\n    rev: 0123456789abcdef0123456789abcdef01234567\n";
+        let selected: SupervisorSelection = serde_yaml::from_str(git).expect("git source parses");
+        assert!(matches!(selected.source, Source::Git(_)));
+
+        let path = "source: { path: ../supervisor }\n";
+        let selected: SupervisorSelection = serde_yaml::from_str(path).expect("path source parses");
+        assert_eq!(selected.source, Source::Path("../supervisor".to_owned()));
+
+        // A robot document without the selection is an authoring error.
+        let missing = r#"
+schema: phoxal/robot/v0
+robot:
+  id: rover
+"#;
+        assert!(serde_yaml::from_str::<RobotDocument>(missing).is_err());
     }
 
     #[test]

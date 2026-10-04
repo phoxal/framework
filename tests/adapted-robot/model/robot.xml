@@ -1,7 +1,0 @@
-<mujoco model="phoxal-adapted-robot">
-  <worldbody>
-    <body name="mount" pos="0 0 0.1">
-      <geom type="sphere" size="0.01"/>
-    </body>
-  </worldbody>
-</mujoco>

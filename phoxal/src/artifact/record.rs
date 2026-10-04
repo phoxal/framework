@@ -47,15 +47,6 @@ pub enum RuntimeRecord {
     V0 {
         /// Runtime record discriminator.
         record: String,
-        /// Named hosted role when this record is not the executable's
-        /// primary runtime (`None` for every ordinary single-role
-        /// participant). One binary may host additional runtimes — a robot
-        /// executable hosting its conversion runtime — and each hosted
-        /// record carries its launch instance id here so inspection,
-        /// assembly, and dispatch all select the same record explicitly
-        /// instead of by position.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        role: Option<String>,
         /// Logical runtime period in milliseconds.
         period_ms: u64,
         /// Complete invocation deadline in milliseconds.
@@ -66,21 +57,36 @@ pub enum RuntimeRecord {
         config_schema: serde_json::Value,
         /// Runtime input bindings in source order.
         inputs: Vec<InputRecord>,
-        /// Transient per-invocation outputs in source order.
-        transient_outputs: Vec<OutputRecord>,
-        /// Service projection and handler bindings in source order.
-        service_outputs: Vec<OutputRecord>,
+        /// Compiled robot conversion routes, using the actual generated endpoints.
+        #[serde(default)]
+        conversions: Vec<ConversionRoute>,
+        /// Public provided endpoint contracts and publication bounds.
+        outputs: Vec<OutputRecord>,
     },
+}
+
+/// A compiled conversion executed by the robot runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversionRoute {
+    /// Authored source endpoint, including its instance.
+    pub producer: String,
+    /// Authored consuming endpoint, including its instance.
+    pub consumer: String,
+    /// Actual input endpoint generated on the brain.
+    pub input_endpoint: String,
+    /// Actual output endpoint generated on the brain.
+    pub output_endpoint: String,
 }
 
 /// One checked runtime input binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputRecord {
-    /// Private Rust input field name.
+    /// Public consumer endpoint key.
     pub name: String,
-    /// Private runtime storage or delivery role.
-    pub role: InputRole,
+    /// Required endpoint delivery semantics.
+    pub delivery: InputDelivery,
     /// Optional latest-value age bound.
     pub max_age_ms: Option<u64>,
     /// Optional item-count bound.
@@ -95,24 +101,22 @@ pub struct InputRecord {
     pub request_fqn: Option<String>,
     /// Expected generated Protobuf publication or response identity.
     pub response_fqn: Option<String>,
+    /// Resolved response byte bound for a provided call ingress.
+    pub response_max_bytes: Option<u64>,
+    /// Resolved response item bound for a provided call ingress.
+    pub response_max_items: Option<u64>,
 }
 
 /// One checked runtime output binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputRecord {
-    /// Private Rust field or method name.
+    /// Public provided endpoint key.
     pub name: String,
-    /// Private runtime production role.
-    pub role: OutputRole,
     /// Public served port name.
     pub port: Option<String>,
     /// Complete generated port identity when one is served.
     pub signature: Option<MethodSignature>,
-    /// Input field selected by a reply, activation, or worker.
-    pub input: Option<String>,
-    /// Projection method selected by an offered read.
-    pub project: Option<String>,
     /// Item-count bound.
     pub max_items: Option<u64>,
     /// Encoded-byte bound.
@@ -121,35 +125,20 @@ pub struct OutputRecord {
     pub max_request_bytes: Option<u64>,
     /// Periodic projection cadence.
     pub every_steps: Option<u64>,
-    /// Change-gated publication marker.
-    pub on_change: bool,
     /// Bootstrap publication marker.
     pub bootstrap: bool,
-    /// Setpoint validity duration.
-    pub valid_for_ms: Option<u64>,
     /// Handler deadline.
     pub timeout_ms: Option<u64>,
-    /// Operation retirement grace.
-    pub cancel_grace_ms: Option<u64>,
 }
 
-/// Public Protobuf method shape.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MethodShape {
-    /// Unary request and response.
-    Call,
-    /// Server-streamed observation.
-    Observation,
-}
+#[cfg(test)]
+use crate::contracts::MethodShape;
 
-/// Private execution role for one runtime input.
+/// Delivery requirements of a public consuming endpoint.
 ///
-/// Public service semantics live in [`MethodSignature`]. These roles describe
-/// only how the owning runtime stores or drains admitted data and deliberately
-/// do not reproduce the retired public port taxonomy.
+/// Method identity and call/observation shape live in [`MethodSignature`].
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub enum InputRole {
+pub enum InputDelivery {
     /// One coalesced observation value.
     #[serde(rename = "observation_latest")]
     ObservationLatest,
@@ -168,49 +157,12 @@ pub enum InputRole {
     /// Binding from an outgoing call to its admitted receiver.
     #[serde(rename = "call_target")]
     CallTarget,
-    /// Local operation completion.
-    #[serde(rename = "operation_result")]
-    OperationResult,
     /// Generated service-call completions.
     #[serde(rename = "call_completions")]
     CallCompletions,
 }
 
-/// Private execution role for one runtime output.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputRole {
-    /// A generated service method. Its public shape and modifiers are in its signature.
-    Method,
-    /// Command reply.
-    Reply,
-    /// Activation selector.
-    Activation,
-    /// Operation worker.
-    Operation,
-}
-
-/// Complete method identity for one generated public port.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MethodSignature {
-    /// Stable endpoint name.
-    pub endpoint: String,
-    /// Fully-qualified Protobuf service name.
-    pub service: String,
-    /// Protobuf method name.
-    pub method: String,
-    /// Cardinality-derived public method shape.
-    pub shape: MethodShape,
-    /// Fully-qualified request message name.
-    pub request: String,
-    /// Fully-qualified response message name.
-    pub response: String,
-    /// Whether observation admission replays the latest accepted value.
-    pub retained_latest: bool,
-    /// Optional contract-owned validity interval.
-    pub lease_valid_for_ms: Option<u64>,
-}
+pub use crate::contracts::OwnedMethodSignature as MethodSignature;
 
 #[cfg(test)]
 mod tests {
@@ -224,14 +176,14 @@ mod tests {
     fn sample_runtime() -> RuntimeRecord {
         RuntimeRecord::V0 {
             record: RUNTIME_RECORD.to_owned(),
-            role: None,
+            conversions: Vec::new(),
             period_ms: 20,
             timeout_ms: 100,
             init_timeout_ms: 1_000,
             config_schema: serde_json::json!({"type": "object"}),
             inputs: vec![InputRecord {
                 name: "input".to_owned(),
-                role: InputRole::ObservationLatest,
+                delivery: InputDelivery::ObservationLatest,
                 max_age_ms: None,
                 max_items: None,
                 max_bytes: None,
@@ -239,11 +191,11 @@ mod tests {
                 signature: None,
                 request_fqn: None,
                 response_fqn: None,
+                response_max_bytes: None,
+                response_max_items: None,
             }],
-            transient_outputs: Vec::new(),
-            service_outputs: vec![OutputRecord {
+            outputs: vec![OutputRecord {
                 name: "output".to_owned(),
-                role: OutputRole::Method,
                 port: Some("output".to_owned()),
                 signature: Some(MethodSignature {
                     endpoint: "output".to_owned(),
@@ -255,17 +207,12 @@ mod tests {
                     retained_latest: true,
                     lease_valid_for_ms: None,
                 }),
-                input: None,
-                project: None,
                 max_items: None,
                 max_bytes: Some(1024),
                 max_request_bytes: None,
                 every_steps: None,
-                on_change: false,
                 bootstrap: false,
-                valid_for_ms: None,
                 timeout_ms: None,
-                cancel_grace_ms: None,
             }],
         }
     }

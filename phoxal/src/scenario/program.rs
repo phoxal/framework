@@ -434,16 +434,10 @@ impl Program {
 }
 
 fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
-    Ok(match action {
+    let action = match action {
         WireAction::Setpoint {
             target_instance,
-            consumer_name,
-            consumer_service,
-            consumer_method,
-            consumer_kind,
-            consumer_request,
-            consumer_response,
-            consumer_lease_valid_for_ms,
+            signature,
             encoded_payload_b64,
             validity,
         } => {
@@ -468,186 +462,60 @@ fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
                     )));
                 }
             };
-            let mut consumer_signature = port_signature(
-                &consumer_name,
-                &consumer_service,
-                &consumer_method,
-                &consumer_kind,
-                &consumer_request,
-                &consumer_response,
-            )?;
-            consumer_signature.lease_valid_for_ms = consumer_lease_valid_for_ms;
-            Action::Setpoint {
+            Action::setpoint(
                 target_instance,
-                consumer_signature,
-                encoded_payload: BASE64_ENGINE
-                    .decode(&encoded_payload_b64)
+                signature,
+                BASE64_ENGINE
+                    .decode(encoded_payload_b64)
                     .map_err(|error| ProgramError::Other(format!("setpoint payload: {error}")))?,
                 validity,
-            }
+            )
         }
         WireAction::Withdraw {
             target_instance,
-            producer_name,
-            producer_service,
-            producer_method,
-            producer_kind,
-            producer_request,
-            producer_response,
-            producer_lease_valid_for_ms,
-        } => Action::Withdraw {
-            target_instance,
-            producer_signature: {
-                let mut signature = port_signature(
-                    &producer_name,
-                    &producer_service,
-                    &producer_method,
-                    &producer_kind,
-                    &producer_request,
-                    &producer_response,
-                )?;
-                signature.lease_valid_for_ms = producer_lease_valid_for_ms;
-                signature
-            },
-        },
+            signature,
+        } => Action::withdraw(target_instance, signature),
         WireAction::Command {
             target_instance,
-            service_name,
-            service_service,
-            service_method,
-            service_kind,
-            service_request,
-            service_response,
+            signature,
             request_encoded_b64,
             label,
             simulated_deadline_micros,
             host_deadline_micros,
-        } => Action::Command {
+        } => Action::command(
             target_instance,
-            service_signature: port_signature(
-                &service_name,
-                &service_service,
-                &service_method,
-                &service_kind,
-                &service_request,
-                &service_response,
-            )?,
-            request_encoded: BASE64_ENGINE
-                .decode(&request_encoded_b64)
+            signature,
+            BASE64_ENGINE
+                .decode(request_encoded_b64)
                 .map_err(|error| ProgramError::Other(format!("command request: {error}")))?,
             label,
-            simulated_deadline: Duration::from_micros(simulated_deadline_micros),
-            host_deadline: Duration::from_micros(host_deadline_micros),
-        },
-    })
+            Duration::from_micros(simulated_deadline_micros),
+            Duration::from_micros(host_deadline_micros),
+        ),
+    };
+    action.map_err(|error| ProgramError::Other(error.to_string()))
 }
 
-fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture, ProgramError> {
-    Ok(match capture {
+fn decode_capture(capture: WireCapture) -> Result<Capture, ProgramError> {
+    let capture = match capture {
         WireCapture::State {
             name,
+            signature,
             policy,
-            signature_name,
-            signature_service,
-            signature_method,
-            signature_kind,
-            signature_request,
-            signature_response,
-        } => crate::scenario::plan::Capture::State {
-            name,
-            policy,
-            signature: port_signature(
-                &signature_name,
-                &signature_service,
-                &signature_method,
-                &signature_kind,
-                &signature_request,
-                &signature_response,
-            )?,
-        },
+        } => Capture::state_with_policy(name, signature, policy),
         WireCapture::Sample {
             name,
+            signature,
             policy,
-            signature_name,
-            signature_service,
-            signature_method,
-            signature_kind,
-            signature_request,
-            signature_response,
-        } => crate::scenario::plan::Capture::Sample {
-            name,
-            policy,
-            signature: port_signature(
-                &signature_name,
-                &signature_service,
-                &signature_method,
-                &signature_kind,
-                &signature_request,
-                &signature_response,
-            )?,
-        },
+        } => Capture::sample_with_policy(name, signature, policy),
         WireCapture::Event {
             name,
+            signature,
             policy,
-            signature_name,
-            signature_service,
-            signature_method,
-            signature_kind,
-            signature_request,
-            signature_response,
-        } => crate::scenario::plan::Capture::Event {
-            name,
-            policy,
-            signature: port_signature(
-                &signature_name,
-                &signature_service,
-                &signature_method,
-                &signature_kind,
-                &signature_request,
-                &signature_response,
-            )?,
-        },
-        WireCapture::NativeBody { name, units, frame } => {
-            crate::scenario::plan::Capture::native_body(name, units, frame)
-                .map_err(|error| ProgramError::Other(format!("native body capture: {error}")))?
-        }
-    })
-}
-
-fn port_signature(
-    name: &str,
-    service: &str,
-    method: &str,
-    kind: &str,
-    request: &str,
-    response: &str,
-) -> Result<crate::port::PortSignature, ProgramError> {
-    // `PortSignature::new_owned` owns the borrowed wire metadata and
-    // delegates the lifetime promotion to the port crate. The decoder
-    // does not reach for `Box::leak` directly.
-    Ok(crate::port::PortSignature::new_owned(
-        name,
-        service,
-        method,
-        decode_port_kind(kind)?,
-        request,
-        response,
-    ))
-}
-
-fn decode_port_kind(kind: &str) -> Result<crate::port::PortKind, ProgramError> {
-    match kind {
-        "state" => Ok(crate::port::PortKind::State),
-        "sample" => Ok(crate::port::PortKind::Sample),
-        "event" => Ok(crate::port::PortKind::Event),
-        "stream" => Ok(crate::port::PortKind::Stream),
-        "setpoint" => Ok(crate::port::PortKind::Setpoint),
-        "read" => Ok(crate::port::PortKind::Read),
-        "commands" => Ok(crate::port::PortKind::Commands),
-        other => Err(ProgramError::Other(format!(
-            "decoded program declares unknown port kind `{other}`"
-        ))),
-    }
+        } => Capture::event_with_policy(name, signature, policy),
+        WireCapture::NativeBody { name, units, frame } => Capture::native_body(name, units, frame),
+    };
+    capture.map_err(|error| ProgramError::Other(error.to_string()))
 }
 
 fn check_payload_size(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
@@ -669,19 +537,8 @@ fn check_target_instance(step_label: &str, target_instance: &str) -> Result<(), 
     Ok(())
 }
 
-fn port_kind_label(kind: crate::port::PortKind) -> &'static str {
-    match kind {
-        crate::port::PortKind::State => "state",
-        crate::port::PortKind::Sample => "sample",
-        crate::port::PortKind::Event => "event",
-        crate::port::PortKind::Stream => "stream",
-        crate::port::PortKind::Setpoint => "setpoint",
-        crate::port::PortKind::Read => "read",
-        crate::port::PortKind::Commands => "commands",
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireProgram {
     schema_version: u32,
     scenario_name: String,
@@ -691,11 +548,8 @@ struct WireProgram {
     captures: Vec<WireCapture>,
 }
 
-/// Wire-friendly mirror of [`Step`] that does not depend on
-/// `phoxal-port` types being `Serialize`. The signature fields are
-/// captured as plain strings so the on-disk JSON is stable across
-/// downstream refactors of the port module.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireStep {
     label: String,
     boundary: u32,
@@ -703,39 +557,21 @@ struct WireStep {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 enum WireAction {
     Setpoint {
         target_instance: String,
-        consumer_name: String,
-        consumer_service: String,
-        consumer_method: String,
-        consumer_kind: String,
-        consumer_request: String,
-        consumer_response: String,
-        #[serde(default)]
-        consumer_lease_valid_for_ms: Option<u64>,
+        signature: crate::contracts::OwnedMethodSignature,
         encoded_payload_b64: String,
         validity: String,
     },
     Withdraw {
         target_instance: String,
-        producer_name: String,
-        producer_service: String,
-        producer_method: String,
-        producer_kind: String,
-        producer_request: String,
-        producer_response: String,
-        #[serde(default)]
-        producer_lease_valid_for_ms: Option<u64>,
+        signature: crate::contracts::OwnedMethodSignature,
     },
     Command {
         target_instance: String,
-        service_name: String,
-        service_service: String,
-        service_method: String,
-        service_kind: String,
-        service_request: String,
-        service_response: String,
+        signature: crate::contracts::OwnedMethodSignature,
         request_encoded_b64: String,
         label: String,
         simulated_deadline_micros: u64,
@@ -744,36 +580,22 @@ enum WireAction {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 enum WireCapture {
     State {
         name: String,
         policy: crate::scenario::plan::CapturePolicy,
-        signature_name: String,
-        signature_service: String,
-        signature_method: String,
-        signature_kind: String,
-        signature_request: String,
-        signature_response: String,
+        signature: crate::contracts::OwnedMethodSignature,
     },
     Sample {
         name: String,
         policy: crate::scenario::plan::CapturePolicy,
-        signature_name: String,
-        signature_service: String,
-        signature_method: String,
-        signature_kind: String,
-        signature_request: String,
-        signature_response: String,
+        signature: crate::contracts::OwnedMethodSignature,
     },
     Event {
         name: String,
         policy: crate::scenario::plan::CapturePolicy,
-        signature_name: String,
-        signature_service: String,
-        signature_method: String,
-        signature_kind: String,
-        signature_request: String,
-        signature_response: String,
+        signature: crate::contracts::OwnedMethodSignature,
     },
     NativeBody {
         name: String,
@@ -792,39 +614,19 @@ fn wire_step(step: &Step) -> WireStep {
                 consumer_signature,
                 encoded_payload,
                 validity,
-            } => {
-                let (name, service, method, kind, request, response) =
-                    sig_strings(consumer_signature);
-                WireAction::Setpoint {
-                    target_instance: target_instance.clone(),
-                    consumer_name: name.to_owned(),
-                    consumer_service: service.to_owned(),
-                    consumer_method: method.to_owned(),
-                    consumer_kind: kind,
-                    consumer_request: request.to_owned(),
-                    consumer_response: response.to_owned(),
-                    consumer_lease_valid_for_ms: consumer_signature.lease_valid_for_ms,
-                    encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
-                    validity: validity.wire_label(),
-                }
-            }
+            } => WireAction::Setpoint {
+                target_instance: target_instance.clone(),
+                signature: consumer_signature.clone(),
+                encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
+                validity: validity.wire_label(),
+            },
             Action::Withdraw {
                 target_instance,
                 producer_signature,
-            } => {
-                let (name, service, method, kind, request, response) =
-                    sig_strings(producer_signature);
-                WireAction::Withdraw {
-                    target_instance: target_instance.clone(),
-                    producer_name: name.to_owned(),
-                    producer_service: service.to_owned(),
-                    producer_method: method.to_owned(),
-                    producer_kind: kind,
-                    producer_request: request.to_owned(),
-                    producer_response: response.to_owned(),
-                    producer_lease_valid_for_ms: producer_signature.lease_valid_for_ms,
-                }
-            }
+            } => WireAction::Withdraw {
+                target_instance: target_instance.clone(),
+                signature: producer_signature.clone(),
+            },
             Action::Command {
                 target_instance,
                 service_signature,
@@ -832,24 +634,15 @@ fn wire_step(step: &Step) -> WireStep {
                 label,
                 simulated_deadline,
                 host_deadline,
-            } => {
-                let (name, service, method, kind, request, response) =
-                    sig_strings(service_signature);
-                WireAction::Command {
-                    target_instance: target_instance.clone(),
-                    service_name: name.to_owned(),
-                    service_service: service.to_owned(),
-                    service_method: method.to_owned(),
-                    service_kind: kind,
-                    service_request: request.to_owned(),
-                    service_response: response.to_owned(),
-                    request_encoded_b64: BASE64_ENGINE.encode(request_encoded),
-                    label: label.clone(),
-                    simulated_deadline_micros: u64::try_from(simulated_deadline.as_micros())
-                        .unwrap_or(0),
-                    host_deadline_micros: u64::try_from(host_deadline.as_micros()).unwrap_or(0),
-                }
-            }
+            } => WireAction::Command {
+                target_instance: target_instance.clone(),
+                signature: service_signature.clone(),
+                request_encoded_b64: BASE64_ENGINE.encode(request_encoded),
+                label: label.clone(),
+                simulated_deadline_micros: u64::try_from(simulated_deadline.as_micros())
+                    .unwrap_or(0),
+                host_deadline_micros: u64::try_from(host_deadline.as_micros()).unwrap_or(0),
+            },
         },
     }
 }
@@ -860,79 +653,35 @@ fn wire_capture(capture: &Capture) -> WireCapture {
             name,
             signature,
             policy,
-        } => {
-            let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
-            WireCapture::State {
-                name: name.clone(),
-                policy: *policy,
-                signature_name: sname.to_owned(),
-                signature_service: ssvc.to_owned(),
-                signature_method: smethod.to_owned(),
-                signature_kind: skind,
-                signature_request: sreq.to_owned(),
-                signature_response: sresp.to_owned(),
-            }
-        }
+        } => WireCapture::State {
+            name: name.clone(),
+            signature: signature.clone(),
+            policy: *policy,
+        },
         Capture::Sample {
             name,
             signature,
             policy,
-        } => {
-            let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
-            WireCapture::Sample {
-                name: name.clone(),
-                policy: *policy,
-                signature_name: sname.to_owned(),
-                signature_service: ssvc.to_owned(),
-                signature_method: smethod.to_owned(),
-                signature_kind: skind,
-                signature_request: sreq.to_owned(),
-                signature_response: sresp.to_owned(),
-            }
-        }
+        } => WireCapture::Sample {
+            name: name.clone(),
+            signature: signature.clone(),
+            policy: *policy,
+        },
         Capture::Event {
             name,
             signature,
             policy,
-        } => {
-            let (sname, ssvc, smethod, skind, sreq, sresp) = sig_strings(signature);
-            WireCapture::Event {
-                name: name.clone(),
-                policy: *policy,
-                signature_name: sname.to_owned(),
-                signature_service: ssvc.to_owned(),
-                signature_method: smethod.to_owned(),
-                signature_kind: skind,
-                signature_request: sreq.to_owned(),
-                signature_response: sresp.to_owned(),
-            }
-        }
+        } => WireCapture::Event {
+            name: name.clone(),
+            signature: signature.clone(),
+            policy: *policy,
+        },
         Capture::NativeBody { name, units, frame } => WireCapture::NativeBody {
             name: name.clone(),
             units: units.clone(),
             frame: frame.clone(),
         },
     }
-}
-
-fn sig_strings(
-    sig: &crate::port::PortSignature,
-) -> (
-    &'static str,
-    &'static str,
-    &'static str,
-    String,
-    &'static str,
-    &'static str,
-) {
-    (
-        sig.name,
-        sig.service,
-        sig.method,
-        port_kind_label(sig.kind).to_owned(),
-        sig.request,
-        sig.response,
-    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -952,15 +701,18 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn setpoint_sig() -> crate::port::PortSignature {
-        crate::port::PortSignature::new(
-            "motion/cmd",
-            "phoxal.motion",
-            "Set",
-            crate::port::PortKind::Setpoint,
-            "SetpointRequest",
-            "SetpointReply",
-        )
+    fn setpoint_sig() -> crate::contracts::OwnedMethodSignature {
+        crate::contracts::OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
+            "phoxal.motion.v1.MotionService",
+            "ManualIntent",
+            "manual",
+            crate::contracts::MethodShape::Call,
+            "phoxal.motion.v1.MotionIntent",
+            "google.protobuf.Empty",
+            false,
+            Some(100),
+            &[],
+        ))
     }
 
     fn make_setpoint(byte: u8) -> Action {
@@ -1177,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_unknown_port_kind() {
+    fn decode_rejects_unknown_method_shape() {
         let quantum = Quantum::from_micros(2_000).expect("quantum");
         let action = Action::Setpoint {
             target_instance: "motion_target".to_owned(),
@@ -1197,7 +949,8 @@ mod tests {
         let text = std::str::from_utf8(&bytes)
             .expect("utf-8 envelope")
             .to_owned();
-        let tampered = text.replace("\"setpoint\"", "\"nonsense\"");
+        assert!(text.contains("\"shape\":\"call\""));
+        let tampered = text.replace("\"shape\":\"call\"", "\"shape\":\"nonsense\"");
         bytes = tampered.into_bytes();
         assert!(Program::decode(&bytes).is_err());
     }

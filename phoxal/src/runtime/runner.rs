@@ -23,18 +23,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use super::core::{AcceptedInvocation, Config, OutputAdmission, RegisteredRuntime, RuntimeOwner};
-use super::execution_protocol::{self, wire as execution_wire};
+use super::execution_protocol;
 use super::input::{InputSnapshot, TransportInputSet};
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 use super::transport::{self, TransportError, WireSample};
 use super::{ExecutionTime, RuntimeStatus, StepContext};
+use crate::communication::execution as execution_wire;
 use crate::identity::{ExecutionId, ParticipantId};
 
 /// One required output product accepted and published by a runtime boundary.
@@ -160,20 +159,26 @@ pub struct RuntimeLaunchManifest {
     robot_id: String,
     instance_id: String,
     executable: PathBuf,
-    executable_sha256: String,
     config: Value,
-    connections: BTreeMap<String, Vec<String>>,
+    /// The execution-local connection graph with typed endpoint references.
+    /// Scenario producers are admitted as a checked overlay on exactly this
+    /// graph; the immutable manifest is never modified.
+    connections: BTreeMap<
+        crate::artifact::bundle::EndpointReference,
+        Vec<crate::artifact::bundle::EndpointReference>,
+    >,
     /// Composition-bound destinations for this runtime's declared call
     /// requirements, resolved once at admission: requirement endpoint name to
     /// the provider instance and its served endpoint signature.
-    requirement_destinations: BTreeMap<String, (String, crate::port::PortSignature)>,
-    artifacts: BTreeMap<String, SourceRuntimeRecord>,
-    observation_providers: BTreeMap<(String, String), SourceObservationProvider>,
+    requirement_destinations: BTreeMap<String, (String, super::transport::MethodBinding)>,
+    artifacts: BTreeMap<String, crate::artifact::RuntimeRecord>,
+    observation_providers:
+        BTreeMap<(String, String), crate::artifact::bundle::BundleSimulationProvider>,
     scenario_producers: BTreeMap<(String, String), SourceScenarioProducer>,
 }
 
 impl RuntimeLaunchManifest {
-    /// Open and admit one source-side `phoxal/bundle/v0` entry.
+    /// Open and admit one resolved `phoxal/bundle/v0` entry.
     pub fn open(root: impl AsRef<Path>, instance_id: &str) -> crate::Result<Self> {
         Self::open_with_simulation_run(root, instance_id, None)
     }
@@ -207,49 +212,48 @@ impl RuntimeLaunchManifest {
             }));
         }
         let bytes = read_bounded(&manifest_path, 16 * 1024 * 1024)?;
-        let manifest =
-            serde_json::from_slice::<SourceBundleManifest>(&bytes).map_err(|source| {
+        let manifest = serde_json::from_slice::<crate::artifact::bundle::BundleManifest>(&bytes)
+            .map_err(|source| {
                 anyhow::anyhow!(RunnerError::BundleJson {
                     path: manifest_path.clone(),
                     source,
                 })
             })?;
-        let SourceBundleManifest::V0 {
-            robot_id: bundle_robot_id,
-            executables: bundle_executables,
-            simulation: bundle_simulation,
-            ..
-        } = manifest;
-        let document_path = root.join("robot.yaml");
-        let document_metadata = fs::symlink_metadata(&document_path).map_err(|source| {
-            anyhow::anyhow!(RunnerError::BundleIo {
-                path: document_path.clone(),
-                source,
-            })
-        })?;
-        if !document_metadata.is_file() || document_metadata.file_type().is_symlink() {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: "robot.yaml is not a regular file".to_owned(),
-            }));
-        }
-        let document_bytes = read_bounded(&document_path, 16 * 1024 * 1024)?;
-        let bundle_document: SourceDocument =
-            serde_yaml::from_slice(&document_bytes).map_err(|error| {
-                anyhow::anyhow!(RunnerError::BundleInvalid {
-                    message: format!("cannot decode compiled robot.yaml: {error}"),
-                })
-            })?;
         parse_identifier(instance_id)
             .map_err(|message| anyhow::anyhow!(RunnerError::BundleInvalid { message }))?;
-        let executable = bundle_executables
-            .iter()
-            .find(|entry| entry.instance == instance_id)
+        let admitted =
+            crate::artifact::bundle::AdmittedBundle::validate(manifest).map_err(|message| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!("invalid runtime bundle: {message}"),
+                })
+            })?;
+        let host = crate::artifact::bundle::host_execution_target();
+        if admitted.target != host {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "bundle targets {} but this executable runs on {host}",
+                    admitted.target
+                ),
+            }));
+        }
+        let instance = admitted
+            .instances
+            .get(instance_id)
             .ok_or_else(|| {
                 anyhow::anyhow!(RunnerError::UnknownInstance {
                     instance: instance_id.to_owned(),
                 })
-            })?;
-        let relative = safe_relative_path(&executable.path)?;
+            })?
+            .clone();
+        let artifact = admitted.artifacts.get(&instance.artifact).ok_or_else(|| {
+            anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "instance `{instance_id}` references unknown artifact {}",
+                    instance.artifact
+                ),
+            })
+        })?;
+        let relative = safe_relative_path(&artifact.path)?;
         let executable_path = root.join(relative);
         let path_metadata = fs::symlink_metadata(&executable_path).map_err(|source| {
             anyhow::anyhow!(RunnerError::BundleIo {
@@ -284,68 +288,33 @@ impl RuntimeLaunchManifest {
                 message: format!("executable for `{instance_id}` is not a regular file"),
             }));
         }
-        let executable_sha256 = executable_digest(&canonical_executable)?;
-
-        let config = if instance_id == "brain" {
-            Value::Object(serde_json::Map::new())
-        } else if let Some(service) = bundle_document.services.get(instance_id) {
-            service
-                .config
-                .clone()
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
-        } else if let Some(component) = bundle_document.robot.components.get(instance_id) {
-            let driver = component
-                .driver
-                .as_ref()
-                .and_then(Value::as_object)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(RunnerError::BundleInvalid {
-                        message: format!(
-                            "executable `{instance_id}` has no configured component driver binding"
-                        ),
-                    })
-                })?;
-            driver
-                .get("config")
-                .cloned()
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
-        } else {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "executable `{instance_id}` has no matching service or component driver entry"
-                ),
-            }));
-        };
-        if config.is_null() {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!("configuration for `{instance_id}` is explicit null"),
-            }));
-        }
-        let mut connections: BTreeMap<String, Vec<String>> = bundle_document
-            .connections
-            .iter()
-            .map(|(consumer, sources)| (consumer.clone(), sources.as_slice().to_vec()))
-            .collect();
+        let config = instance
+            .config
+            .value()
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let mut connections = admitted.execution_connections.clone();
         let scenario_producers = load_simulation_bindings(simulation_run)?;
         for producer in scenario_producers.values() {
             connections.insert(
-                format!(
-                    "{}.{}",
-                    producer.target_instance, producer.signature.endpoint
-                ),
-                vec![format!(
-                    "{}.{}",
-                    producer.source_instance, producer.signature.endpoint
-                )],
+                crate::artifact::bundle::EndpointReference {
+                    instance: producer.target_instance.clone(),
+                    endpoint: producer.signature.endpoint.clone(),
+                },
+                vec![crate::artifact::bundle::EndpointReference {
+                    instance: producer.source_instance.clone(),
+                    endpoint: producer.signature.endpoint.clone(),
+                }],
             );
         }
-        let artifacts = bundle_executables
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .artifact
-                    .as_ref()
-                    .map(|artifact| (entry.instance.clone(), artifact.runtime.clone()))
+        let artifacts = admitted
+            .instances
+            .keys()
+            .filter_map(|id| {
+                admitted
+                    .instance_runtime(id)
+                    .cloned()
+                    .map(|runtime| (id.clone(), runtime))
             })
             .collect();
         // Resolve every declared call requirement's provider endpoint once at
@@ -355,17 +324,18 @@ impl RuntimeLaunchManifest {
             precompute_requirement_destinations(instance_id, &connections, &artifacts)?;
         Ok(Self {
             root,
-            robot_id: bundle_robot_id,
+            robot_id: admitted.robot_id.clone(),
             instance_id: instance_id.to_owned(),
             executable: canonical_executable,
-            executable_sha256,
             config,
             connections,
             artifacts,
             requirement_destinations,
-            observation_providers: bundle_simulation
+            observation_providers: admitted
+                .simulation
+                .as_ref()
                 .into_iter()
-                .flat_map(|simulation| simulation.providers)
+                .flat_map(|simulation| simulation.providers.iter().cloned())
                 .map(|provider| {
                     (
                         (provider.service_instance.clone(), provider.port.clone()),
@@ -401,12 +371,6 @@ impl RuntimeLaunchManifest {
         &self.executable
     }
 
-    /// The verified SHA-256 digest recorded for the selected executable.
-    #[must_use]
-    pub fn executable_sha256(&self) -> &str {
-        &self.executable_sha256
-    }
-
     /// Owned authored configuration value for typed decoding.
     #[must_use]
     pub fn config(&self) -> &Value {
@@ -423,30 +387,20 @@ impl RuntimeLaunchManifest {
     ) -> crate::Result<BTreeMap<(String, String), u64>> {
         let mut callers: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
         for (consumer, sources) in &self.connections {
-            let (caller_instance, request_field) =
-                parse_graph_endpoint(consumer).map_err(|error| {
-                    anyhow::anyhow!(RunnerError::BundleInvalid {
-                        message: format!("connection consumer `{consumer}` is invalid: {error}"),
-                    })
-                })?;
+            let caller_instance = &consumer.instance;
+            let request_field = &consumer.endpoint;
             for source in sources {
-                let (source_instance, source_port) =
-                    parse_graph_endpoint(source).map_err(|error| {
-                        anyhow::anyhow!(RunnerError::BundleInvalid {
-                            message: format!("connection source `{source}` is invalid: {error}"),
-                        })
-                    })?;
-                if source_instance == target_instance {
+                if source.instance == target_instance {
                     callers
-                        .entry(source_port)
+                        .entry(source.endpoint.clone())
                         .or_default()
                         .insert((caller_instance.clone(), request_field.clone()));
                 }
             }
         }
         if let Some(target) = self.artifacts.get(target_instance) {
-            for input in &target.inputs {
-                if input.role != "call_ingress" {
+            for input in record_parts(target).0 {
+                if input.delivery != crate::artifact::InputDelivery::CallIngress {
                     continue;
                 }
                 let Some(port) = input.port.as_ref() else {
@@ -495,7 +449,17 @@ impl RuntimeLaunchManifest {
         &self,
         field: &super::transport::InputTransportField,
     ) -> crate::Result<Vec<ResolvedInputRoute>> {
-        let consumer = format!("{}.{}", self.instance_id, field.name);
+        let consumer = crate::artifact::bundle::EndpointReference {
+            instance: self.instance_id.clone(),
+            endpoint: match (field.kind, field.signature) {
+                (
+                    super::input::InputKind::Commands | super::input::InputKind::Setpoint,
+                    Some(signature),
+                ) => signature.endpoint,
+                _ => field.name,
+            }
+            .to_owned(),
+        };
         if field.kind == super::input::InputKind::Completions {
             // A generated-call requirement declares its contract identity on
             // the completion field; its connection is validated here, but the
@@ -535,18 +499,12 @@ impl RuntimeLaunchManifest {
                 }));
             }
             let direction = InputDirection::for_kind(field.kind)?;
-            let expected_kind = direction.expected_kind(field.kind);
+            let expected_shape = direction.expected_shape(field.kind);
             let mut routes = Vec::with_capacity(sources.len());
-            let mut first_binding = None;
+            let mut first_binding: Option<super::transport::MethodBinding> = None;
             for source in sources {
-                let (source_instance, source_port) =
-                    parse_graph_endpoint(source).map_err(|message| {
-                        anyhow::anyhow!(RunnerError::BundleInvalid {
-                            message: format!(
-                                "connection `{consumer} <- {source}` is invalid: {message}"
-                            ),
-                        })
-                    })?;
+                let source_instance = &source.instance;
+                let source_port = &source.endpoint;
                 let virtual_provider = self
                     .observation_providers
                     .get(&(source_instance.clone(), source_port.clone()));
@@ -569,13 +527,13 @@ impl RuntimeLaunchManifest {
                             anyhow::bail!("simulation provider `{source}` cannot serve requests");
                         }
                         (
-                            provider.binding()?,
+                            provider_binding(provider)?,
                             Some(u64::from(provider.max_message_bytes)),
                             Some(u64::from(provider.max_buffered_items)),
                             None,
                         )
                     } else {
-                        let runtime = self.artifacts.get(&source_instance).ok_or_else(|| {
+                        let runtime = self.artifacts.get(source_instance).ok_or_else(|| {
                     anyhow::anyhow!(RunnerError::BundleInvalid {
                         message: format!(
                             "connection `{consumer} <- {source}` has no admitted producer artifact"
@@ -583,11 +541,11 @@ impl RuntimeLaunchManifest {
                     })
                 })?;
                         let (binding, source_max_bytes, source_max_items, source_request_max_bytes) =
-                            if expected_kind == crate::port::PortKind::Commands
+                            if field.kind == super::input::InputKind::Request
                                 && direction == InputDirection::Reply
                             {
-                                let input = runtime
-                        .inputs
+                                let input = record_parts(runtime)
+                        .0
                         .iter()
                         .find(|candidate| candidate.port.as_deref() == Some(source_port.as_str()))
                         .ok_or_else(|| {
@@ -604,31 +562,15 @@ impl RuntimeLaunchManifest {
                             ),
                         })
                     })?;
-                                let reply = runtime
-                        .transient_outputs
-                        .iter()
-                        .find(|candidate| {
-                            candidate.role == "reply"
-                                && candidate.input.as_deref() == Some(input.name.as_str())
-                        })
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(RunnerError::BundleInvalid {
-                                message: format!(
-                                    "connection `{consumer} <- {source}` Commands target has no reply binding"
-                                ),
-                            })
-                        })?;
                                 (
-                                    binding.to_binding(crate::port::PortKind::Commands)?,
-                                    reply.max_bytes,
-                                    reply.max_items,
+                                    method_binding(binding, crate::contracts::MethodShape::Call)?,
+                                    input.response_max_bytes,
+                                    input.response_max_items,
                                     input.max_bytes,
                                 )
                             } else {
-                                let output = runtime
-                        .service_outputs
-                        .iter()
-                        .chain(runtime.transient_outputs.iter())
+                                let (_, outputs) = record_parts(runtime);
+                                let output = outputs.iter()
                         .find(|candidate| candidate.port.as_deref() == Some(source_port.as_str()))
                         .ok_or_else(|| {
                             anyhow::anyhow!(RunnerError::BundleInvalid {
@@ -644,16 +586,14 @@ impl RuntimeLaunchManifest {
                                 ),
                             })
                         })?;
-                                if output.role != "method" {
-                                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                                        message: format!(
-                                            "connection `{consumer} <- {source}` targets private output role `{}`",
-                                            output.role
-                                        ),
-                                    }));
-                                }
                                 (
-                                    binding.to_binding(expected_kind)?,
+                                    if direction == InputDirection::Publication
+                                        && field.kind == super::input::InputKind::Setpoint
+                                    {
+                                        leased_setpoint_source_binding(binding)?
+                                    } else {
+                                        method_binding(binding, expected_shape)?
+                                    },
                                     output.max_bytes,
                                     output.max_items,
                                     output.max_request_bytes,
@@ -666,26 +606,32 @@ impl RuntimeLaunchManifest {
                             source_request_max_bytes,
                         )
                     };
-                if binding.kind != expected_kind {
+                if binding.shape != direction.expected_shape(field.kind) {
                     return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
                         message: format!(
-                            "connection `{consumer} <- {source}` expects `{}` but source provides `{}`",
-                            expected_kind.as_str(),
-                            binding.kind.as_str()
+                            "connection `{consumer} <- {source}` expects `{expected_shape:?}` but source provides `{:?}`",
+                            binding.shape
                         ),
                     }));
                 }
-                if let Some(signature) = field.signature
-                    && binding != super::transport::PortBinding::from_signature(signature)
-                {
-                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                        message: format!(
-                            "connection `{consumer} <- {source}` does not match the input's generated descriptor"
-                        ),
-                    }));
+                if let Some(signature) = field.signature {
+                    // The authored graph may map differently named endpoints,
+                    // so only the wire contract must match: the payload
+                    // service and its request and response types.
+                    let descriptor = super::transport::MethodBinding::from_method(signature);
+                    if !binding.same_wire_contract(&descriptor) {
+                        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                            message: format!(
+                                "connection `{consumer} <- {source}` does not match the input's generated descriptor"
+                            ),
+                        }));
+                    }
                 }
+                // Legitimate fan-in may name differently authored endpoints;
+                // every source of one consumer must still agree on the wire
+                // contract, while each route keeps its own endpoint identity.
                 if let Some(previous) = &first_binding
-                    && previous != &binding
+                    && !previous.same_wire_contract(&binding)
                 {
                     return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
                         message: format!(
@@ -723,17 +669,19 @@ impl RuntimeLaunchManifest {
                 let (caller_identity, caller_rank) = if direction == InputDirection::Reply {
                     let caller_identity = format!("{}.{}", self.instance_id, field.name);
                     let caller_rank =
-                        self.caller_rank_for(&source_instance, &source_port, &caller_identity)?;
+                        self.caller_rank_for(source_instance, source_port, &caller_identity)?;
                     (Some(caller_identity), Some(caller_rank))
                 } else {
                     (None, None)
                 };
                 routes.push(ResolvedInputRoute {
+                    input_kind: field.kind,
                     field: field.name,
+                    target_endpoint: consumer.endpoint.clone(),
                     binding,
                     admitted_sources: BTreeSet::from([source_instance.clone()]),
-                    source_instance,
-                    source_port,
+                    source_instance: source_instance.clone(),
+                    source_port: source_port.clone(),
                     direction,
                     max_items,
                     max_bytes,
@@ -772,10 +720,12 @@ impl RuntimeLaunchManifest {
             }));
         }
         Ok(vec![ResolvedInputRoute {
+            input_kind: field.kind,
             field: field.name,
-            binding: super::transport::PortBinding::from_signature(signature),
+            target_endpoint: consumer.endpoint.clone(),
+            binding: super::transport::MethodBinding::from_method(signature),
             source_instance: self.instance_id.clone(),
-            source_port: signature.name.to_owned(),
+            source_port: signature.endpoint.to_owned(),
             direction: if field.kind == super::input::InputKind::Commands {
                 InputDirection::Request
             } else {
@@ -793,7 +743,7 @@ impl RuntimeLaunchManifest {
     fn generated_call_route(
         &self,
         target_instance: &str,
-        signature: crate::port::PortSignature,
+        signature: &super::transport::MethodBinding,
     ) -> crate::Result<GeneratedCallRoute> {
         let target = self.artifacts.get(target_instance).ok_or_else(|| {
             anyhow::anyhow!(RunnerError::BundleInvalid {
@@ -802,26 +752,30 @@ impl RuntimeLaunchManifest {
                 ),
             })
         })?;
-        let expected_role = match signature.kind {
-            crate::port::PortKind::Setpoint => "leased_value",
-            crate::port::PortKind::Commands => "call_ingress",
-            kind => {
-                return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                    message: format!(
-                        "generated call `{}.{}` uses incompatible internal kind `{}`",
-                        signature.service,
-                        signature.method,
-                        kind.as_str(),
-                    ),
-                }));
-            }
+        if signature.shape != crate::contracts::MethodShape::Call {
+            anyhow::bail!(
+                "generated call {}.{} is not a call",
+                signature.service,
+                signature.method
+            );
+        }
+        let expected_role = if signature.lease_valid_for_ms.is_some_and(|lease| lease > 0) {
+            crate::artifact::InputDelivery::LeasedValue
+        } else if signature.lease_valid_for_ms.is_none() {
+            crate::artifact::InputDelivery::CallIngress
+        } else {
+            anyhow::bail!(
+                "generated call {}.{} carries no positive lease",
+                signature.service,
+                signature.method
+            );
         };
-        let input = target
-            .inputs
+        let input = record_parts(target)
+            .0
             .iter()
             .find(|input| {
-                input.role == expected_role
-                    && input.port.as_deref() == Some(signature.name)
+                input.delivery == expected_role
+                    && input.port.as_deref() == Some(signature.endpoint.as_str())
                     && input.signature.as_ref().is_some_and(|candidate| {
                         candidate.service == signature.service
                             && candidate.method == signature.method
@@ -847,28 +801,20 @@ impl RuntimeLaunchManifest {
         })?;
         let max_outstanding = input.max_items.unwrap_or(1);
         let caller = format!("{}.generated_call", self.instance_id);
-        let caller_rank = if signature.kind == crate::port::PortKind::Commands {
-            Some(self.caller_rank_for(target_instance, signature.name, &caller)?)
+        let caller_rank = if signature.lease_valid_for_ms.is_none() {
+            Some(self.caller_rank_for(target_instance, &signature.endpoint, &caller)?)
         } else {
             None
         };
-        let response_max_bytes = if signature.kind == crate::port::PortKind::Commands {
-            target
-                .transient_outputs
-                .iter()
-                .chain(&target.service_outputs)
-                .find(|output| {
-                    output.role == "reply" && output.input.as_deref() == Some(input.name.as_str())
+        let response_max_bytes = if signature.lease_valid_for_ms.is_none() {
+            input.response_max_bytes.ok_or_else(|| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "generated method `{}.{}` has no bounded reply output",
+                        signature.service, signature.method
+                    ),
                 })
-                .and_then(|output| output.max_bytes)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(RunnerError::BundleInvalid {
-                        message: format!(
-                            "generated method `{}.{}` has no bounded reply output",
-                            signature.service, signature.method
-                        ),
-                    })
-                })?
+            })?
         } else {
             0
         };
@@ -885,15 +831,17 @@ impl RuntimeLaunchManifest {
     /// provider whose served operation carries the same contract identity.
     fn validate_call_requirement(
         &self,
-        consumer: &str,
-        signature: &crate::port::PortSignature,
+        consumer: &crate::artifact::bundle::EndpointReference,
+        signature: &crate::contracts::MethodSignature,
     ) -> crate::Result<()> {
         let reject = |message: String| anyhow::anyhow!(RunnerError::BundleInvalid { message });
-        let consumer_key = consumer.to_owned();
-        let port_key = format!("{}.{}", self.instance_id, signature.name);
+        let port_key = crate::artifact::bundle::EndpointReference {
+            instance: self.instance_id.clone(),
+            endpoint: signature.endpoint.to_owned(),
+        };
         let sources = self
             .connections
-            .get(&consumer_key)
+            .get(consumer)
             .or_else(|| self.connections.get(&port_key))
             .ok_or_else(|| {
                 reject(format!(
@@ -905,20 +853,16 @@ impl RuntimeLaunchManifest {
                 "required call `{consumer}` accepts exactly one provider"
             )));
         }
-        let (source_instance, source_port) =
-            parse_graph_endpoint(&sources[0]).map_err(|message| {
-                reject(format!(
-                    "connection `{consumer} <- {}` is invalid: {message}",
-                    sources[0]
-                ))
-            })?;
-        let target = self.artifacts.get(&source_instance).ok_or_else(|| {
+        let source = &sources[0];
+        let source_instance = &source.instance;
+        let source_port = &source.endpoint;
+        let target = self.artifacts.get(source_instance).ok_or_else(|| {
             reject(format!(
                 "required call `{consumer}` provider `{source_instance}` has no admitted artifact"
             ))
         })?;
-        let served = target.inputs.iter().find(|input| {
-            input.role == "call_ingress"
+        let served = record_parts(target).0.iter().find(|input| {
+            input.delivery == crate::artifact::InputDelivery::CallIngress
                 && input.port.as_deref() == Some(source_port.as_str())
                 && input.signature.as_ref().is_some_and(|candidate| {
                     candidate.service == signature.service
@@ -942,45 +886,20 @@ impl RuntimeLaunchManifest {
     /// reusable service never learns a robot instance name. Destinations
     /// were resolved once at admission, keyed by the local field name, so
     /// two fields declaring the same descriptor keep independent
-    /// providers. The legacy empty marker resolves only when exactly one
-    /// requirement carries the staged identity; an ambiguous duplicate is
-    /// a hard error demanding the field-bound constructor.
+    /// providers. Every staged local requirement names its declared field.
     fn resolve_requirement_destination(
         &self,
         marker: &str,
-        signature: &crate::port::PortSignature,
-    ) -> crate::Result<(String, crate::port::PortSignature)> {
+        signature: &crate::contracts::MethodSignature,
+    ) -> crate::Result<(String, super::transport::MethodBinding)> {
         if let Some(destination) = self.requirement_destinations.get(marker) {
             return Ok(destination.clone());
-        }
-        if marker.is_empty() {
-            let matches: Vec<&String> = self
-                .artifacts
-                .get(&self.instance_id)
-                .into_iter()
-                .flat_map(|record| record.inputs.iter())
-                .filter(|input| {
-                    self.requirement_destinations.contains_key(&input.name)
-                        && input.signature.as_ref().is_some_and(|required| {
-                            required.service == signature.service
-                                && required.method == signature.method
-                                && required.request == signature.request
-                                && required.response == signature.response
-                        })
-                })
-                .map(|input| &input.name)
-                .collect();
-            if let [field] = matches.as_slice()
-                && let Some(destination) = self.requirement_destinations.get(field.as_str())
-            {
-                return Ok(destination.clone());
-            }
         }
         Err(anyhow::anyhow!(RunnerError::BundleInvalid {
             message: format!(
                 "required call `{}.{}` has no composition-bound provider for local field \
                  marker `{marker}`; generated constructors bind the requirement's own field name",
-                self.instance_id, signature.name
+                self.instance_id, signature.endpoint
             ),
         }))
     }
@@ -1247,10 +1166,6 @@ where
     let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
     let generated_correlations = Arc::new(Mutex::new(BTreeMap::new()));
     let generated_completions = Arc::new(Mutex::new(Vec::new()));
-    // Arrival signals stay inert unless the runtime registered arrival
-    // releases: the delivery workers always notify, only the hardware loop
-    // below selects on the signal, and only for arrival-aligned specs.
-    let arrivals = Arc::new(tokio::sync::Notify::new());
     let input = ExecutionInputAdapter::<R>::unbound()
         .with_shared_state(
             Arc::clone(&correlations),
@@ -1262,8 +1177,7 @@ where
         .with_generated_calls(
             Arc::clone(&generated_correlations),
             Arc::clone(&generated_completions),
-        )
-        .with_arrivals(Arc::clone(&arrivals));
+        );
     let output = ExecutionOutputAdapter::<R>::unbound()
         .with_shared_state(
             correlations,
@@ -1326,8 +1240,8 @@ where
         }
         result = recv_execution::<execution_wire::AdmitExecutionRequest>(&admit_subscriber) => result?,
     };
-    let execution_mode = match execution_wire::ExecutionMode::try_from(admission.mode) {
-        Ok(execution_wire::ExecutionMode::Unspecified) => {
+    let execution_mode = match admission.mode {
+        execution_wire::ExecutionMode::Unspecified => {
             let response = execution_wire::AdmitExecutionResponse {
                 admitted: false,
                 unsupported_contracts: Vec::new(),
@@ -1337,17 +1251,7 @@ where
             let _ = owner.close().await;
             return Err(anyhow::anyhow!("execution scheduling mode is required"));
         }
-        Ok(mode) => mode,
-        Err(_) => {
-            let response = execution_wire::AdmitExecutionResponse {
-                admitted: false,
-                unsupported_contracts: Vec::new(),
-                detail: Some("unknown execution scheduling mode".to_owned()),
-            };
-            let _ = publish_execution(&bus, &launch.instance_id, "admit-response", &response).await;
-            let _ = owner.close().await;
-            return Err(anyhow::anyhow!("unknown execution scheduling mode"));
-        }
+        mode => mode,
     };
     if let Err((detail, unsupported_contracts)) = validate_execution_admission::<R>(
         &manifest,
@@ -1400,16 +1304,12 @@ where
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut clock = SystemClock::new();
             loop {
-                let arrival = tokio::select! {
+                tokio::select! {
                     biased;
                     _ = &mut shutdown => break Ok(()),
-                    _ = ticker.tick() => false,
-                    _ = arrivals.notified(), if R::SPEC.arrival_releases => true,
+                    _ = ticker.tick() => {},
                 };
                 let now = clock.now();
-                if arrival {
-                    runner.arrive(now);
-                }
                 match runner.poll(now) {
                     Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
                     Ok(PollOutcome::Stopped) => break Ok(()),
@@ -1501,7 +1401,7 @@ async fn publish_execution<M: prost::Message>(
 }
 
 fn validate_execution_admission<R: RegisteredRuntime>(
-    manifest: &RuntimeLaunchManifest,
+    _manifest: &RuntimeLaunchManifest,
     request: &execution_wire::AdmitExecutionRequest,
     mode: execution_wire::ExecutionMode,
     expected_execution: &str,
@@ -1510,18 +1410,6 @@ fn validate_execution_admission<R: RegisteredRuntime>(
     if request.execution_id != expected_execution || request.timeline_id.is_empty() {
         return reject(
             "execution admission requires execution and timeline identities".to_owned(),
-            Vec::new(),
-        );
-    }
-    let Some(expected_digest) = decode_digest(manifest.executable_sha256()) else {
-        return reject(
-            "runtime executable digest is not a 32-byte hexadecimal value".to_owned(),
-            Vec::new(),
-        );
-    };
-    if request.artifact_digest != expected_digest {
-        return reject(
-            "runtime executable digest does not match the admitted artifact".to_owned(),
             Vec::new(),
         );
     }
@@ -1548,7 +1436,7 @@ fn validate_execution_admission<R: RegisteredRuntime>(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    if requirement.protocol != "phoxal.execution.v1"
+    if requirement.protocol != execution_wire::PROTOCOL
         || capabilities != exact_capabilities
         || requirement.capabilities.len() != exact_capabilities.len()
     {
@@ -1556,7 +1444,7 @@ fn validate_execution_admission<R: RegisteredRuntime>(
         unsupported_contracts.extend(
             capabilities
                 .difference(&exact_capabilities)
-                .map(|capability| format!("phoxal.execution.v1/{capability}")),
+                .map(|capability| format!("{}/{capability}", execution_wire::PROTOCOL)),
         );
         return reject(
             "execution admission requires the exact current execution capabilities".to_owned(),
@@ -1929,22 +1817,438 @@ async fn send_runtime_failure(
     publish_execution(bus, &launch.instance_id, "failure", &failure).await
 }
 
-fn decode_digest(value: &str) -> Option<Vec<u8>> {
-    if value.len() != 64 || !value.is_ascii() {
-        return None;
+fn catch_adapter<T>(operation: impl FnOnce() -> crate::Result<T>) -> crate::Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(super::InvocationError::Panicked)),
     }
-    let mut digest = Vec::with_capacity(32);
-    let bytes = value.as_bytes();
-    let (pairs, remainder) = bytes.as_chunks::<2>();
-    if !remainder.is_empty() {
-        return None;
+}
+
+/// Errors at the process/bundle runner boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum RunnerError {
+    /// A bundle filesystem operation failed.
+    #[error("bundle I/O failed for {path}: {source}")]
+    BundleIo {
+        /// Affected path.
+        path: PathBuf,
+        /// Filesystem source error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The bundle manifest was not admissible.
+    #[error("invalid runtime bundle: {message}")]
+    BundleInvalid {
+        /// Diagnostic detail.
+        message: String,
+    },
+    /// The bundle manifest could not be decoded.
+    #[error("cannot decode runtime bundle manifest {path}: {source}")]
+    BundleJson {
+        /// Manifest path.
+        path: PathBuf,
+        /// JSON source error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The selected instance did not occur in the executable table.
+    #[error("runtime instance `{instance}` is not admitted by the bundle")]
+    UnknownInstance {
+        /// Requested instance.
+        instance: String,
+    },
+    /// A schedule candidate failed before acceptance.
+    #[error("runtime schedule failed: {0}")]
+    Schedule(#[from] ScheduleError),
+    /// Generated contract bindings are required for process transport.
+    #[error(
+        "runtime instance `{instance}` cannot start on `{connect}` because generated typed input/output bindings are missing"
+    )]
+    TypedBindingsUnavailable {
+        /// Selected runtime instance.
+        instance: String,
+        /// Explicit supervisor endpoint.
+        connect: String,
+    },
+    /// A local operation outlived its cancellation grace.  The runtime has
+    /// stopped admitting work and the supervisor must terminate this process
+    /// before it can replace the operation owner.
+    #[error("operation `{field}` requires supervisor process termination: {detail}")]
+    ProcessTerminationRequired {
+        /// Generated operation/input field.
+        field: &'static str,
+        /// Operation lifecycle detail.
+        detail: String,
+    },
+}
+
+fn operation_error(field: &'static str, error: super::operation::OperationError) -> anyhow::Error {
+    match error {
+        super::operation::OperationError::ProcessTerminationRequired => {
+            anyhow::anyhow!(RunnerError::ProcessTerminationRequired {
+                field,
+                detail: "operation worker did not exit within cancel grace".to_owned(),
+            })
+        }
+        error => anyhow::anyhow!(error),
     }
-    for pair in pairs {
-        let high = (pair[0] as char).to_digit(16)?;
-        let low = (pair[1] as char).to_digit(16)?;
-        digest.push(((high << 4) | low) as u8);
+}
+
+fn enforce_process_boundary(result: crate::Result<()>) -> crate::Result<()> {
+    if requires_process_termination(&result) {
+        terminate_process_boundary();
     }
-    Some(digest)
+    result
+}
+
+fn requires_process_termination(result: &crate::Result<()>) -> bool {
+    result.as_ref().is_err_and(|error| {
+        error.chain().any(|cause| {
+            cause.downcast_ref::<RunnerError>().is_some_and(|error| {
+                matches!(error, RunnerError::ProcessTerminationRequired { .. })
+            })
+        })
+    })
+}
+
+#[cold]
+fn terminate_process_boundary() -> ! {
+    std::process::abort()
+}
+
+#[cfg(test)]
+fn enforce_process_boundary_with(
+    result: crate::Result<()>,
+    terminate: impl FnOnce(),
+) -> crate::Result<()> {
+    if requires_process_termination(&result) {
+        terminate();
+    }
+    result
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceScenarioProducer {
+    target_instance: String,
+    source_instance: String,
+    signature: crate::artifact::MethodSignature,
+    max_message_bytes: u32,
+}
+
+impl SourceScenarioProducer {
+    fn binding(&self) -> crate::Result<super::transport::MethodBinding> {
+        if self.signature.shape != crate::artifact::MethodShape::Call
+            || !self
+                .signature
+                .lease_valid_for_ms
+                .is_some_and(|valid_for_ms| valid_for_ms > 0)
+        {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "simulation source `{}.{}` is not a leased generated call",
+                    self.source_instance, self.signature.endpoint
+                ),
+            }));
+        }
+        Ok(self.signature.clone())
+    }
+}
+
+fn load_simulation_bindings(
+    path: Option<&Path>,
+) -> crate::Result<BTreeMap<(String, String), SourceScenarioProducer>> {
+    let Some(path) = path else {
+        return Ok(BTreeMap::new());
+    };
+    let bytes = read_bounded(path, 16 * 1024 * 1024)?;
+    let specification: crate::artifact::simulation_run::SimulationRunSpecification =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            anyhow::anyhow!(RunnerError::BundleJson {
+                path: path.to_owned(),
+                source,
+            })
+        })?;
+    let crate::artifact::simulation_run::SimulationRunSpecification::V0 { bindings, .. } =
+        specification;
+    let mut producers = BTreeMap::new();
+    for binding in bindings {
+        let key = (
+            binding.source_instance.clone(),
+            binding.signature.endpoint.clone(),
+        );
+        let producer = SourceScenarioProducer {
+            target_instance: binding.target_instance,
+            source_instance: binding.source_instance,
+            signature: binding.signature,
+            max_message_bytes: binding.max_message_bytes,
+        };
+        if producers.insert(key.clone(), producer).is_some() {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "simulation run contains duplicate source `{}.{}`",
+                    key.0, key.1
+                ),
+            }));
+        }
+    }
+    Ok(producers)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputDirection {
+    Request,
+    Publication,
+    Reply,
+    Completion,
+}
+
+impl InputDirection {
+    fn for_kind(kind: super::input::InputKind) -> crate::Result<Self> {
+        match kind {
+            super::input::InputKind::Latest
+            | super::input::InputKind::Samples
+            | super::input::InputKind::Events
+            | super::input::InputKind::Setpoint
+            | super::input::InputKind::Stream => Ok(Self::Publication),
+            super::input::InputKind::Read | super::input::InputKind::Request => Ok(Self::Reply),
+            super::input::InputKind::Commands => Ok(Self::Request),
+            super::input::InputKind::Operation | super::input::InputKind::Completions => {
+                Ok(Self::Completion)
+            }
+        }
+    }
+
+    fn key_direction(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Publication => "publish",
+            Self::Reply => "reply",
+            Self::Completion => "completion",
+        }
+    }
+
+    fn expected_shape(self, kind: super::input::InputKind) -> crate::contracts::MethodShape {
+        if self == Self::Publication && kind != super::input::InputKind::Setpoint {
+            crate::contracts::MethodShape::Observation
+        } else {
+            crate::contracts::MethodShape::Call
+        }
+    }
+}
+
+fn validate_read_request_metadata(
+    binding: &super::transport::MethodBinding,
+    allowed_callers: &BTreeMap<String, u64>,
+    sample: &WireSample,
+) -> crate::Result<transport::CommandIngress> {
+    let metadata = sample.metadata();
+    if metadata.wire_control()? != transport::WireControl::Data {
+        return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+            detail: format!(
+                "Read request on `{}` used a stream control record",
+                binding.endpoint
+            ),
+        }));
+    }
+    let command_id = metadata.command_id.ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(
+            "read request is missing command_id".to_owned(),
+        ))
+    })?;
+    if metadata.eligible_boundary.is_none() {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!("read request {command_id} is missing eligible_boundary"),
+        )));
+    }
+    let caller = metadata
+        .caller
+        .as_deref()
+        .filter(|caller| !caller.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                "read request {command_id} is missing caller identity"
+            )))
+        })?;
+    let source = metadata
+        .source
+        .as_deref()
+        .filter(|source| !source.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                "read request {command_id} is missing source"
+            )))
+        })?;
+    let ingress = transport::command_ingress(metadata)?;
+    if let transport::CommandIngress::External { .. } = ingress {
+        if source != "supervisor" || caller != "supervisor.public" {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                format!("external Read request {command_id} is not supervisor-owned"),
+            )));
+        }
+        return Ok(ingress);
+    }
+    let transport::CommandIngress::Controlled { caller_rank } = ingress else {
+        unreachable!("external Read requests return above");
+    };
+    let (caller_instance, _) = parse_graph_endpoint(caller).map_err(|error| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "read request {command_id} has invalid caller `{caller}`: {error}"
+        )))
+    })?;
+    if caller_instance != source {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!("read request {command_id} caller `{caller}` does not match source `{source}`"),
+        )));
+    }
+    let expected_rank = allowed_callers.get(caller).ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "caller `{caller}` is not connected to Read port `{}`",
+            binding.endpoint
+        )))
+    })?;
+    if *expected_rank != caller_rank {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!(
+                "read request {command_id} used caller rank {caller_rank}, expected {expected_rank}"
+            )
+        )));
+    }
+    Ok(ingress)
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedInputRoute {
+    input_kind: super::input::InputKind,
+    field: &'static str,
+    target_endpoint: String,
+    binding: super::transport::MethodBinding,
+    source_instance: String,
+    source_port: String,
+    direction: InputDirection,
+    max_items: u64,
+    max_bytes: u64,
+    request_max_bytes: Option<u64>,
+    caller_identity: Option<String>,
+    caller_rank: Option<u64>,
+    admitted_sources: BTreeSet<String>,
+}
+
+struct GeneratedCallRoute {
+    caller: String,
+    caller_rank: Option<u64>,
+    request_max_bytes: u64,
+    response_max_bytes: u64,
+    /// The provider's declared outstanding-request bound for this ingress;
+    /// a caller that outpaces its receiver's completions fails visibly at
+    /// the sender instead of overflowing the receiver's queue.
+    max_outstanding: u64,
+}
+
+fn parse_graph_endpoint(value: &str) -> Result<(String, String), String> {
+    let (instance, port) = value
+        .split_once('.')
+        .ok_or_else(|| "missing instance separator".to_owned())?;
+    if instance.is_empty() || port.is_empty() || port.contains('.') {
+        return Err("instance and port must contain exactly one non-empty separator".to_owned());
+    }
+    parse_identifier(instance).map_err(|error| error.to_owned())?;
+    parse_identifier(port).map_err(|error| error.to_owned())?;
+    Ok((instance.to_owned(), port.to_owned()))
+}
+
+/// One method signature's transport binding for a private runtime role.
+fn method_binding(
+    signature: &crate::artifact::MethodSignature,
+    expected_shape: crate::contracts::MethodShape,
+) -> crate::Result<super::transport::MethodBinding> {
+    if signature.shape != expected_shape {
+        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "method `{}.{}` shape does not match required shape `{expected_shape:?}`",
+                signature.service, signature.method
+            ),
+        }));
+    }
+    Ok(signature.clone())
+}
+
+/// The leased-observation semantics of one served setpoint source: the
+/// source's response payload arrives as the setpoint request under the
+/// method's positive lease.
+fn leased_setpoint_source_binding(
+    signature: &crate::artifact::MethodSignature,
+) -> crate::Result<super::transport::MethodBinding> {
+    if signature.shape != crate::artifact::MethodShape::Observation {
+        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "method `{}.{}` is not a leased observation setpoint source",
+                signature.service, signature.method
+            ),
+        }));
+    }
+    if !signature
+        .lease_valid_for_ms
+        .is_some_and(|valid_for_ms| valid_for_ms > 0)
+    {
+        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "method `{}.{}` carries no positive lease for setpoint validity",
+                signature.service, signature.method
+            ),
+        }));
+    }
+    if signature.request != "google.protobuf.Empty" {
+        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "method `{}.{}` is not a canonical observation: its request is not empty",
+                signature.service, signature.method
+            ),
+        }));
+    }
+    let mut ingress = signature.clone();
+    ingress.shape = crate::contracts::MethodShape::Call;
+    ingress.request = signature.response.clone();
+    ingress.response = signature.request.clone();
+    ingress.retained_latest = false;
+    Ok(ingress)
+}
+
+/// One simulation observation provider's delivery binding.
+fn provider_binding(
+    provider: &crate::artifact::bundle::BundleSimulationProvider,
+) -> crate::Result<super::transport::MethodBinding> {
+    if provider.shape != crate::artifact::MethodShape::Observation {
+        return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+            message: format!(
+                "simulation provider `{}.{}` is not an observation",
+                provider.service_instance, provider.port
+            ),
+        }));
+    }
+    let signature = crate::artifact::MethodSignature {
+        endpoint: provider.port.clone(),
+        service: provider.service_fqn.clone(),
+        method: provider.method.clone(),
+        shape: provider.shape,
+        request: provider.input_fqn.clone(),
+        response: provider.payload_fqn.clone(),
+        retained_latest: provider.retained_latest,
+        lease_valid_for_ms: provider.lease_valid_for_ms,
+    };
+    method_binding(&signature, crate::contracts::MethodShape::Observation)
+}
+
+/// The launch-facing fields of one runtime record.
+fn record_parts(
+    record: &crate::artifact::RuntimeRecord,
+) -> (
+    &[crate::artifact::InputRecord],
+    &[crate::artifact::OutputRecord],
+) {
+    let crate::artifact::RuntimeRecord::V0 {
+        inputs, outputs, ..
+    } = record;
+    (inputs, outputs)
 }
 
 /// Result of one bounded runner poll.
@@ -2054,14 +2358,6 @@ where
     fn initialize_controlled_state(&mut self, timeline_id: &str) -> crate::Result<()> {
         self.outputs.prepare_delivery(0, timeline_id)?;
         self.bootstrap(ExecutionTime::default())
-    }
-
-    /// Pull the next nominal release forward to `now` after an admitted
-    /// input arrival. A no-op unless the runtime registered
-    /// [`crate::runtime::RuntimeSpec::arrival_releases`] callers gate the signal on; the
-    /// schedule's period stays a hard rate bound.
-    pub fn arrive(&mut self, now: ExecutionTime) {
-        self.schedule.arrive(now);
     }
 
     /// Poll one candidate at an explicit host input-freeze time.
@@ -2326,577 +2622,6 @@ where
     }
 }
 
-fn catch_adapter<T>(operation: impl FnOnce() -> crate::Result<T>) -> crate::Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
-        Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!(super::InvocationError::Panicked)),
-    }
-}
-
-/// Errors at the process/bundle runner boundary.
-#[derive(Debug, thiserror::Error)]
-pub enum RunnerError {
-    /// A bundle filesystem operation failed.
-    #[error("bundle I/O failed for {path}: {source}")]
-    BundleIo {
-        /// Affected path.
-        path: PathBuf,
-        /// Filesystem source error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The bundle manifest was not admissible.
-    #[error("invalid runtime bundle: {message}")]
-    BundleInvalid {
-        /// Diagnostic detail.
-        message: String,
-    },
-    /// The bundle manifest could not be decoded.
-    #[error("cannot decode runtime bundle manifest {path}: {source}")]
-    BundleJson {
-        /// Manifest path.
-        path: PathBuf,
-        /// JSON source error.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// The selected instance did not occur in the executable table.
-    #[error("runtime instance `{instance}` is not admitted by the bundle")]
-    UnknownInstance {
-        /// Requested instance.
-        instance: String,
-    },
-    /// A schedule candidate failed before acceptance.
-    #[error("runtime schedule failed: {0}")]
-    Schedule(#[from] ScheduleError),
-    /// Generated contract bindings are required for process transport.
-    #[error(
-        "runtime instance `{instance}` cannot start on `{connect}` because generated typed input/output bindings are missing"
-    )]
-    TypedBindingsUnavailable {
-        /// Selected runtime instance.
-        instance: String,
-        /// Explicit supervisor endpoint.
-        connect: String,
-    },
-    /// A local operation outlived its cancellation grace.  The runtime has
-    /// stopped admitting work and the supervisor must terminate this process
-    /// before it can replace the operation owner.
-    #[error("operation `{field}` requires supervisor process termination: {detail}")]
-    ProcessTerminationRequired {
-        /// Generated operation/input field.
-        field: &'static str,
-        /// Operation lifecycle detail.
-        detail: String,
-    },
-}
-
-fn operation_error(field: &'static str, error: super::operation::OperationError) -> anyhow::Error {
-    match error {
-        super::operation::OperationError::ProcessTerminationRequired => {
-            anyhow::anyhow!(RunnerError::ProcessTerminationRequired {
-                field,
-                detail: "operation worker did not exit within cancel grace".to_owned(),
-            })
-        }
-        error => anyhow::anyhow!(error),
-    }
-}
-
-fn enforce_process_boundary(result: crate::Result<()>) -> crate::Result<()> {
-    if requires_process_termination(&result) {
-        terminate_process_boundary();
-    }
-    result
-}
-
-fn requires_process_termination(result: &crate::Result<()>) -> bool {
-    result.as_ref().is_err_and(|error| {
-        error.chain().any(|cause| {
-            cause.downcast_ref::<RunnerError>().is_some_and(|error| {
-                matches!(error, RunnerError::ProcessTerminationRequired { .. })
-            })
-        })
-    })
-}
-
-#[cold]
-fn terminate_process_boundary() -> ! {
-    std::process::abort()
-}
-
-#[cfg(test)]
-fn enforce_process_boundary_with(
-    result: crate::Result<()>,
-    terminate: impl FnOnce(),
-) -> crate::Result<()> {
-    if requires_process_termination(&result) {
-        terminate();
-    }
-    result
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "schema")]
-enum SourceBundleManifest {
-    #[serde(rename = "phoxal/bundle/v0")]
-    V0 {
-        robot_id: String,
-        executables: Vec<SourceExecutable>,
-        #[serde(default)]
-        simulation: Option<SourceSimulation>,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceScenarioProducer {
-    target_instance: String,
-    source_instance: String,
-    signature: crate::artifact::MethodSignature,
-    max_message_bytes: u32,
-}
-
-impl SourceScenarioProducer {
-    fn binding(&self) -> crate::Result<super::transport::PortBinding> {
-        if self.signature.shape != crate::artifact::MethodShape::Call
-            || self.signature.lease_valid_for_ms.is_none()
-        {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "simulation source `{}.{}` is not a leased generated call",
-                    self.source_instance, self.signature.endpoint
-                ),
-            }));
-        }
-        Ok(super::transport::PortBinding {
-            name: self.signature.endpoint.clone(),
-            service: self.signature.service.clone(),
-            method: self.signature.method.clone(),
-            kind: crate::port::PortKind::Setpoint,
-            request: self.signature.request.clone(),
-            response: self.signature.response.clone(),
-        })
-    }
-}
-
-fn load_simulation_bindings(
-    path: Option<&Path>,
-) -> crate::Result<BTreeMap<(String, String), SourceScenarioProducer>> {
-    let Some(path) = path else {
-        return Ok(BTreeMap::new());
-    };
-    let bytes = read_bounded(path, 16 * 1024 * 1024)?;
-    let specification: crate::artifact::simulation_run::SimulationRunSpecification =
-        serde_json::from_slice(&bytes).map_err(|source| {
-            anyhow::anyhow!(RunnerError::BundleJson {
-                path: path.to_owned(),
-                source,
-            })
-        })?;
-    let crate::artifact::simulation_run::SimulationRunSpecification::V0 { bindings, .. } =
-        specification;
-    let mut producers = BTreeMap::new();
-    for binding in bindings {
-        let key = (
-            binding.source_instance.clone(),
-            binding.signature.endpoint.clone(),
-        );
-        let producer = SourceScenarioProducer {
-            target_instance: binding.target_instance,
-            source_instance: binding.source_instance,
-            signature: binding.signature,
-            max_message_bytes: binding.max_message_bytes,
-        };
-        if producers.insert(key.clone(), producer).is_some() {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "simulation run contains duplicate source `{}.{}`",
-                    key.0, key.1
-                ),
-            }));
-        }
-    }
-    Ok(producers)
-}
-
-#[derive(Debug, Deserialize)]
-struct SourceSimulation {
-    providers: Vec<SourceObservationProvider>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceObservationProvider {
-    service_instance: String,
-    port: String,
-    service_fqn: String,
-    method: String,
-    shape: crate::artifact::MethodShape,
-    #[serde(default)]
-    retained_latest: bool,
-    #[serde(default)]
-    lease_valid_for_ms: Option<u64>,
-    input_fqn: String,
-    payload_fqn: String,
-    max_message_bytes: u32,
-    max_buffered_items: u32,
-}
-
-impl SourceObservationProvider {
-    fn binding(&self) -> crate::Result<super::transport::PortBinding> {
-        if self.shape != crate::artifact::MethodShape::Observation {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "simulation provider `{}.{}` is not an observation",
-                    self.service_instance, self.port
-                ),
-            }));
-        }
-        SourceMethodSignature {
-            endpoint: self.port.clone(),
-            service: self.service_fqn.clone(),
-            method: self.method.clone(),
-            shape: self.shape,
-            request: self.input_fqn.clone(),
-            response: self.payload_fqn.clone(),
-            retained_latest: self.retained_latest,
-            lease_valid_for_ms: self.lease_valid_for_ms,
-        }
-        .to_binding(if self.retained_latest {
-            crate::port::PortKind::State
-        } else {
-            crate::port::PortKind::Sample
-        })
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct SourceDocument {
-    #[serde(default)]
-    robot: SourceRobot,
-    #[serde(default)]
-    services: BTreeMap<String, SourceService>,
-    #[serde(default)]
-    connections: BTreeMap<String, SourceConnectionSources>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct SourceRobot {
-    #[serde(default)]
-    components: BTreeMap<String, SourceComponent>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct SourceComponent {
-    #[serde(default)]
-    driver: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum SourceConnectionSources {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl SourceConnectionSources {
-    fn as_slice(&self) -> &[String] {
-        match self {
-            Self::One(source) => std::slice::from_ref(source),
-            Self::Many(sources) => sources,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct SourceService {
-    #[serde(default)]
-    config: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SourceExecutable {
-    instance: String,
-    path: String,
-    #[serde(default)]
-    artifact: Option<SourceArtifact>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceArtifact {
-    runtime: SourceRuntimeRecord,
-}
-
-#[derive(Clone, Debug, Deserialize, Default, Eq, PartialEq)]
-struct SourceRuntimeRecord {
-    #[serde(default)]
-    period_ms: Option<u64>,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-    #[serde(default)]
-    init_timeout_ms: Option<u64>,
-    #[serde(default)]
-    inputs: Vec<SourceInputRecord>,
-    #[serde(default)]
-    transient_outputs: Vec<SourceOutputRecord>,
-    #[serde(default)]
-    service_outputs: Vec<SourceOutputRecord>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceInputRecord {
-    name: String,
-    #[serde(default)]
-    role: String,
-    #[serde(default)]
-    max_items: Option<u64>,
-    #[serde(default)]
-    max_bytes: Option<u64>,
-    #[serde(default)]
-    port: Option<String>,
-    #[serde(default)]
-    signature: Option<SourceMethodSignature>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceOutputRecord {
-    name: String,
-    #[serde(default)]
-    role: String,
-    #[serde(default)]
-    port: Option<String>,
-    #[serde(default)]
-    signature: Option<SourceMethodSignature>,
-    #[serde(default)]
-    input: Option<String>,
-    #[serde(default)]
-    max_items: Option<u64>,
-    #[serde(default)]
-    max_bytes: Option<u64>,
-    #[serde(default)]
-    max_request_bytes: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct SourceMethodSignature {
-    endpoint: String,
-    service: String,
-    method: String,
-    shape: crate::artifact::MethodShape,
-    request: String,
-    response: String,
-    retained_latest: bool,
-    lease_valid_for_ms: Option<u64>,
-}
-
-impl SourceMethodSignature {
-    fn to_binding(
-        &self,
-        kind: crate::port::PortKind,
-    ) -> crate::Result<super::transport::PortBinding> {
-        let expected_shape = if matches!(
-            kind,
-            crate::port::PortKind::State
-                | crate::port::PortKind::Sample
-                | crate::port::PortKind::Event
-                | crate::port::PortKind::Stream
-        ) {
-            crate::artifact::MethodShape::Observation
-        } else {
-            crate::artifact::MethodShape::Call
-        };
-        if self.shape != expected_shape {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "method `{}.{}` shape does not match private runtime role `{}`",
-                    self.service,
-                    self.method,
-                    kind.as_str()
-                ),
-            }));
-        }
-        Ok(super::transport::PortBinding {
-            name: self.endpoint.clone(),
-            service: self.service.clone(),
-            method: self.method.clone(),
-            kind,
-            request: self.request.clone(),
-            response: self.response.clone(),
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InputDirection {
-    Request,
-    Publication,
-    Reply,
-    Completion,
-}
-
-impl InputDirection {
-    fn for_kind(kind: super::input::InputKind) -> crate::Result<Self> {
-        match kind {
-            super::input::InputKind::Latest
-            | super::input::InputKind::Samples
-            | super::input::InputKind::Events
-            | super::input::InputKind::Setpoint
-            | super::input::InputKind::Stream => Ok(Self::Publication),
-            super::input::InputKind::Read | super::input::InputKind::Request => Ok(Self::Reply),
-            super::input::InputKind::Commands => Ok(Self::Request),
-            super::input::InputKind::Operation | super::input::InputKind::Completions => {
-                Ok(Self::Completion)
-            }
-        }
-    }
-
-    fn key_direction(self) -> &'static str {
-        match self {
-            Self::Request => "request",
-            Self::Publication => "publish",
-            Self::Reply => "reply",
-            Self::Completion => "completion",
-        }
-    }
-
-    fn expected_kind(self, input_kind: super::input::InputKind) -> crate::port::PortKind {
-        match self {
-            Self::Request => crate::port::PortKind::Commands,
-            Self::Publication => match input_kind {
-                super::input::InputKind::Latest => crate::port::PortKind::State,
-                super::input::InputKind::Samples => crate::port::PortKind::Sample,
-                super::input::InputKind::Events => crate::port::PortKind::Event,
-                super::input::InputKind::Setpoint => crate::port::PortKind::Setpoint,
-                super::input::InputKind::Stream => crate::port::PortKind::Stream,
-                _ => crate::port::PortKind::State,
-            },
-            Self::Reply => match input_kind {
-                super::input::InputKind::Read => crate::port::PortKind::Read,
-                super::input::InputKind::Request => crate::port::PortKind::Commands,
-                _ => crate::port::PortKind::Read,
-            },
-            Self::Completion => crate::port::PortKind::Commands,
-        }
-    }
-}
-
-fn validate_read_request_metadata(
-    binding: &super::transport::PortBinding,
-    allowed_callers: &BTreeMap<String, u64>,
-    sample: &WireSample,
-) -> crate::Result<transport::CommandIngress> {
-    let metadata = sample.metadata();
-    if metadata.wire_control()? != transport::WireControl::Data {
-        return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
-            detail: format!(
-                "Read request on `{}` used a stream control record",
-                binding.name
-            ),
-        }));
-    }
-    let command_id = metadata.command_id.ok_or_else(|| {
-        anyhow::anyhow!(TransportError::CommandCorrelation(
-            "read request is missing command_id".to_owned(),
-        ))
-    })?;
-    if metadata.eligible_boundary.is_none() {
-        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-            format!("read request {command_id} is missing eligible_boundary"),
-        )));
-    }
-    let caller = metadata
-        .caller
-        .as_deref()
-        .filter(|caller| !caller.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-                "read request {command_id} is missing caller identity"
-            )))
-        })?;
-    let source = metadata
-        .source
-        .as_deref()
-        .filter(|source| !source.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-                "read request {command_id} is missing source"
-            )))
-        })?;
-    let ingress = transport::command_ingress(metadata)?;
-    if let transport::CommandIngress::External { .. } = ingress {
-        if source != "supervisor" || caller != "supervisor.public" {
-            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                format!("external Read request {command_id} is not supervisor-owned"),
-            )));
-        }
-        return Ok(ingress);
-    }
-    let transport::CommandIngress::Controlled { caller_rank } = ingress else {
-        unreachable!("external Read requests return above");
-    };
-    let (caller_instance, _) = parse_graph_endpoint(caller).map_err(|error| {
-        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-            "read request {command_id} has invalid caller `{caller}`: {error}"
-        )))
-    })?;
-    if caller_instance != source {
-        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-            format!("read request {command_id} caller `{caller}` does not match source `{source}`"),
-        )));
-    }
-    let expected_rank = allowed_callers.get(caller).ok_or_else(|| {
-        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-            "caller `{caller}` is not connected to Read port `{}`",
-            binding.name
-        )))
-    })?;
-    if *expected_rank != caller_rank {
-        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-            format!(
-                "read request {command_id} used caller rank {caller_rank}, expected {expected_rank}"
-            )
-        )));
-    }
-    Ok(ingress)
-}
-
-#[derive(Clone, Debug)]
-struct ResolvedInputRoute {
-    field: &'static str,
-    binding: super::transport::PortBinding,
-    source_instance: String,
-    source_port: String,
-    direction: InputDirection,
-    max_items: u64,
-    max_bytes: u64,
-    request_max_bytes: Option<u64>,
-    caller_identity: Option<String>,
-    caller_rank: Option<u64>,
-    admitted_sources: BTreeSet<String>,
-}
-
-struct GeneratedCallRoute {
-    caller: String,
-    caller_rank: Option<u64>,
-    request_max_bytes: u64,
-    response_max_bytes: u64,
-    /// The provider's declared outstanding-request bound for this ingress;
-    /// a caller that outpaces its receiver's completions fails visibly at
-    /// the sender instead of overflowing the receiver's queue.
-    max_outstanding: u64,
-}
-
-fn parse_graph_endpoint(value: &str) -> Result<(String, String), String> {
-    let (instance, port) = value
-        .split_once('.')
-        .ok_or_else(|| "missing instance separator".to_owned())?;
-    if instance.is_empty() || port.is_empty() || port.contains('.') {
-        return Err("instance and port must contain exactly one non-empty separator".to_owned());
-    }
-    parse_identifier(instance).map_err(|error| error.to_owned())?;
-    parse_identifier(port).map_err(|error| error.to_owned())?;
-    Ok((instance.to_owned(), port.to_owned()))
-}
-
 fn decode_config<C: Config>(value: Value) -> crate::Result<C> {
     match serde_json::from_value::<C>(value.clone()) {
         Ok(config) => Ok(config),
@@ -2911,30 +2636,6 @@ fn decode_config<C: Config>(value: Value) -> crate::Result<C> {
             "runtime configuration is not valid for the selected implementation: {error}"
         )),
     }
-}
-
-fn executable_digest(path: &Path) -> crate::Result<String> {
-    let mut file = fs::File::open(path).map_err(|source| {
-        anyhow::anyhow!(RunnerError::BundleIo {
-            path: path.to_owned(),
-            source,
-        })
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|source| {
-            anyhow::anyhow!(RunnerError::BundleIo {
-                path: path.to_owned(),
-                source,
-            })
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> crate::Result<Vec<u8>> {
@@ -3017,16 +2718,19 @@ fn parse_endpoint(value: &str) -> Result<String, String> {
 /// fail admission before any step runs.
 fn precompute_requirement_destinations(
     instance_id: &str,
-    connections: &BTreeMap<String, Vec<String>>,
-    artifacts: &BTreeMap<String, SourceRuntimeRecord>,
-) -> crate::Result<BTreeMap<String, (String, crate::port::PortSignature)>> {
+    connections: &BTreeMap<
+        crate::artifact::bundle::EndpointReference,
+        Vec<crate::artifact::bundle::EndpointReference>,
+    >,
+    artifacts: &BTreeMap<String, crate::artifact::RuntimeRecord>,
+) -> crate::Result<BTreeMap<String, (String, super::transport::MethodBinding)>> {
     let reject = |message: String| anyhow::anyhow!(RunnerError::BundleInvalid { message });
     let Some(own) = artifacts.get(instance_id) else {
         return Ok(BTreeMap::new());
     };
     let mut destinations = BTreeMap::new();
-    for input in &own.inputs {
-        if input.role != "call_completions" {
+    for input in record_parts(own).0 {
+        if input.delivery != crate::artifact::InputDelivery::CallCompletions {
             continue;
         }
         if input.port.is_none() {
@@ -3039,7 +2743,10 @@ fn precompute_requirement_destinations(
         // `brain.start_countdown: countdown.start`), and the resolved
         // destination is keyed by that same local field name: two fields
         // declaring the same descriptor keep independent providers.
-        let consumer = format!("{instance_id}.{}", input.name);
+        let consumer = crate::artifact::bundle::EndpointReference {
+            instance: instance_id.to_owned(),
+            endpoint: input.name.clone(),
+        };
         let Some(sources) = connections.get(&consumer) else {
             return Err(reject(format!(
                 "required call `{consumer}` has no authored connection"
@@ -3050,23 +2757,19 @@ fn precompute_requirement_destinations(
                 "required call `{consumer}` accepts exactly one provider"
             )));
         }
-        let (source_instance, source_port) =
-            parse_graph_endpoint(&sources[0]).map_err(|message| {
-                reject(format!(
-                    "connection `{consumer} <- {}` is invalid: {message}",
-                    sources[0],
-                ))
-            })?;
-        let provider = artifacts.get(&source_instance).ok_or_else(|| {
+        let source = &sources[0];
+        let source_instance = &source.instance;
+        let source_port = &source.endpoint;
+        let provider = artifacts.get(source_instance).ok_or_else(|| {
             reject(format!(
                 "required call `{consumer}` provider `{source_instance}` has no admitted artifact"
             ))
         })?;
-        let served = provider
-            .inputs
+        let served = record_parts(provider)
+            .0
             .iter()
             .find(|candidate| {
-                candidate.role == "call_ingress"
+                candidate.delivery == crate::artifact::InputDelivery::CallIngress
                     && candidate.port.as_deref() == Some(source_port.as_str())
                     && candidate.signature.as_ref().is_some_and(|signature| {
                         signature.service == required.service
@@ -3081,15 +2784,8 @@ fn precompute_requirement_destinations(
                     required.service
                 ))
             })?;
-        let signature = crate::port::PortSignature::new_owned(
-            served.endpoint.as_str(),
-            served.service.as_str(),
-            served.method.as_str(),
-            crate::port::PortKind::Commands,
-            served.request.as_str(),
-            served.response.as_str(),
-        );
-        destinations.insert(input.name.clone(), (source_instance, signature));
+        let signature = served;
+        destinations.insert(input.name.clone(), (source_instance.clone(), signature));
     }
     Ok(destinations)
 }

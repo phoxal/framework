@@ -1,191 +1,43 @@
-name: ci
-
-# Framework CI: formatting, a prepare-free unit lane, strict clippy over
-# every target with the deterministic workspace tests, and the
-# prerequisite-establishing acceptance lanes.
-#
-# The unit lane selects packages and targets explicitly and needs no
-# preparation. Compiling any Phoxal composition requires its prepared
-# contracts, so the build job first builds cargo-phoxal and prepares the
-# workspace fixture compositions (tests/robot, tests/contracts/robot,
-# tests/contracts/client, tests/runtime-authoring/consumer — whose
-# robot.yaml supplies the countdown contracts it consumes — and
-# services/world, whose transport test compiles only against its own
-# prepared products). The workspace run also executes the documentation
-# tests. The excluded-by-tests packages:
-#
-# - tests/robot's native MuJoCo scenario needs a simulator installation;
-#   it is compiled here and runs as the recorded native acceptance
-#   command on a prepared host:
-#
-#     cargo build -p phoxal-supervisor --bin phoxal-supervisor &&
-#     cargo phoxal test --simulator <simulator-binary> forward_turn_stop
-#
-# - tests/supervisor-runtime needs its supervisor binary built first
-#   (two-step suite contract) and runs in its own job below.
-#
-# - tests/contracts/robot's composition legs need prebuilt composition
-#   bundles, tests/contracts/standard-plus-custom's warm-edit regression
-#   builds its own cold scratch tree, and tests/host-acquisition launches
-#   nested Cargo with network: selecting the integration acceptance job
-#   establishes those prerequisites and runs the three packages there.
-#
-# The nested build trees under target/suites and target/tests are not
-# covered by the Rust cache, so both test jobs cache them explicitly,
-# keyed on the lockfile.
-#
-# The always-open release-plz version PR (authored by the release App)
-# contains only commits already merged to main and already checked here,
-# so it is excluded instead of re-running the whole suite on every update.
-
+name: CI
 on:
+  push:
+    branches: [main]
   pull_request:
-
-# A merged PR has already passed these checks. Cancel obsolete PR heads.
+  workflow_dispatch:
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: sdk-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
   fmt:
-    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          cache: false
       - run: cargo fmt --all -- --check
-
-  # The unit lane needs no fixture preparation and no composition
-  # compilation: it selects exactly the packages and targets whose tests
-  # are deterministic and self-contained. The library selection includes
-  # every production package except phoxal-service-world, whose transport
-  # test requires its own prepared products and runs in the lane below.
-  unit:
-    name: unit tests
-    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Run the library unit suites
-        run: >-
-          cargo test --locked --no-fail-fast --lib
-          -p phoxal -p phoxal-macros -p phoxal-build -p phoxal-supervisor
-          -p phoxal-service-kinematics -p phoxal-service-motion
-          -p phoxal-service-navigation -p phoxal-service-safety
-          -p phoxal-component-bno085 -p phoxal-component-ddsm115
-          -p phoxal-component-oak_d_lite -p phoxal-component-vl53l1x
-          -p phoxal-component-zed_f9p
-      - name: Run the cargo-phoxal CLI unit suites
-        run: cargo test --locked --no-fail-fast -p cargo-phoxal --bins
-      - name: Run the external-crate unit suites
-        run: >-
-          cargo test --locked --no-fail-fast -p phoxal
-          --test unit --test runtime_behavior_observers
-
-  build-and-test:
+  tests:
     name: clippy and tests
-    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Release script contract tests
-        run: |
-          bash .github/scripts/test-release-groups.sh
-          bash .github/scripts/test-select-release-pr.sh
-      - name: Restore the nested build trees
-        uses: actions/cache@v4
-        with:
-          path: |
-            target/suites
-            target/tests
-          key: nested-trees-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: nested-trees-${{ runner.os }}-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-      - name: Build cargo-phoxal
-        run: cargo build -p cargo-phoxal --locked
-      - name: Prepare the fixture compositions
-        run: |
-          set -euo pipefail
-          for fixture in tests/robot tests/contracts/robot tests/contracts/client tests/runtime-authoring/consumer services/world; do
-            (cd "$fixture" && "$GITHUB_WORKSPACE/target/debug/cargo-phoxal" prepare)
-          done
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The supervisor acceptance, composition, warm-edit, and host
-      # acquisition suites establish their prerequisites in their own
-      # jobs, so the workspace command excludes those fixtures as well as
-      # the MuJoCo robot.
-      - name: Build the test binaries
-        run: >-
-          cargo test --workspace --locked --no-run
-          --exclude phoxal-test-robot
-          --exclude phoxal-supervisor-runtime-fixture
-          --exclude phoxal-contract-robot-fixture
-          --exclude standard-plus-custom
-          --exclude phoxal-host-acquisition-fixture
-      - name: Run the tests
-        run: >-
-          cargo test --workspace --locked --no-fail-fast
-          --exclude phoxal-test-robot
-          --exclude phoxal-supervisor-runtime-fixture
-          --exclude phoxal-contract-robot-fixture
-          --exclude standard-plus-custom
-          --exclude phoxal-host-acquisition-fixture
-
-  supervisor-acceptance:
-    name: supervisor acceptance
-    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Build the supervisor binary (two-step suite contract)
-        run: cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
-      - name: Run the supervisor acceptance suite
-        run: cargo test -p phoxal-supervisor-runtime-fixture --locked --no-fail-fast
-
-  integration-acceptance:
-    name: integration acceptance
-    if: github.event.pull_request.user.login != 'app/phoxal-release-bot'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore the nested build trees
-        uses: actions/cache@v4
-        with:
-          path: |
-            target/suites
-            target/tests
-          key: nested-trees-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: nested-trees-${{ runner.os }}-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Build cargo-phoxal and the supervisor binary
-        run: |
-          cargo build -p cargo-phoxal --locked
-          cargo build -p phoxal-supervisor --bin phoxal-supervisor --locked
-      - name: Build the composition bundles
-        run: |
-          set -euo pipefail
-          tool="$GITHUB_WORKSPACE/target/debug/cargo-phoxal"
-          cd tests/contracts/robot
-          "$tool" build --output "$GITHUB_WORKSPACE/target/integration-bundles/eval"
-          cp robot.yaml "$RUNNER_TEMP/robot.yaml"
-          cp robot.substitution.yaml robot.yaml
-          "$tool" build --output "$GITHUB_WORKSPACE/target/integration-bundles/substitution"
-          cp "$RUNNER_TEMP/robot.yaml" robot.yaml
-          "$tool" prepare
-      - name: Run the composition legs
-        run: cargo test -p phoxal-contract-robot-fixture --locked --no-fail-fast
+      - run: cargo test --locked -p phoxal -p phoxal-build -p phoxal-macros --lib --all-features
+      - run: cargo test --locked -p phoxal-build -p phoxal-macros --tests
+      - run: cargo test --locked -p phoxal --test unit --test runtime_behavior_observers --all-features
+      - run: cargo test --locked -p phoxal --test compile --features scenario
+      - run: cargo test --locked -p phoxal-schema-proof-fixture --all-targets
+      - run: cargo test --locked -p phoxal -p phoxal-build -p phoxal-macros --doc --all-features
+      - run: cargo clippy --locked -p phoxal -p phoxal-build -p phoxal-macros --all-targets --all-features -- -D warnings
+      - run: cargo doc --locked -p phoxal -p phoxal-build -p phoxal-macros --no-deps --all-features
         env:
-          PHOXAL_EVAL_BUNDLE: ${{ github.workspace }}/target/integration-bundles/eval
-          PHOXAL_SUBSTITUTION_BUNDLE: ${{ github.workspace }}/target/integration-bundles/substitution
-      - name: Run the warm-edit regression
-        run: cargo test -p standard-plus-custom --locked --no-fail-fast
-      - name: Run the host-acquisition paths
-        run: cargo test -p phoxal-host-acquisition-fixture --locked --no-fail-fast
+          RUSTDOCFLAGS: -D warnings
+  warm-edit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo test --locked -p standard-plus-custom --test warm_edit

@@ -6,6 +6,11 @@
 //! delivery consults a process-wide call-site interest cache; the
 //! compiler contracts live in the `compile` suite.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
 mod config_derive;
 mod runtime_authoring;
 mod runtime_semantics;
+
+mod path_attachments;

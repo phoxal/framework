@@ -9,11 +9,6 @@ use prost::Message;
 
 use crate::runtime::connection::Connection;
 
-/// The generated execution messages used by participants and the supervisor.
-pub mod wire {
-    include!(concat!(env!("OUT_DIR"), "/phoxal.execution.v1.rs"));
-}
-
 /// Exact semantics required before a runtime can announce readiness.
 pub const REQUIRED_CAPABILITIES: &[&str] = &[
     "invocation",

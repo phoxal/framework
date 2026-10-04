@@ -983,7 +983,8 @@ where
             })
         })?;
         if timeout_ms == 0
-            || (refresh_every_steps.is_some() && route.binding.kind != crate::port::PortKind::Read)
+            || (refresh_every_steps.is_some()
+                && route.input_kind != crate::runtime::input::InputKind::Read)
         {
             return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
                 detail: format!("remote activation `{field}` has invalid timeout/refresh policy"),
@@ -1012,7 +1013,7 @@ where
                 }));
             }
         }
-        let kind = if route.binding.kind == crate::port::PortKind::Read {
+        let kind = if route.input_kind == crate::runtime::input::InputKind::Read {
             ExchangeKind::Read
         } else {
             ExchangeKind::Request
@@ -1094,6 +1095,7 @@ where
                 metadata,
             ) {
                 Ok(output) => output
+                    .for_immutable_read(kind == ExchangeKind::Read)
                     .for_field(field)
                     .for_instance(route.source_instance.clone()),
                 Err(error) => {
@@ -1188,15 +1190,15 @@ fn reject_conflicting_leased_writes(
         let Some(signature) = record.port_signature() else {
             continue;
         };
-        if signature.kind != crate::port::PortKind::Setpoint {
+        if signature.lease.is_none() {
             continue;
         }
-        if !leased_writes.insert((target.to_owned(), signature.name)) {
+        if !leased_writes.insert((target.to_owned(), signature.endpoint)) {
             return Err(crate::anyhow!(TransportError::InvalidMetadata {
                 detail: format!(
                     "conflicting staged writes to the leased output `{target}.{}` in one \
                      candidate: stage a single arbitrated write",
-                    signature.name
+                    signature.endpoint
                 ),
             }));
         }
@@ -1251,22 +1253,24 @@ where
                 // A local requirement handle: composition resolves the
                 // destination and the provider's actual endpoint identity
                 // through this runtime's own connection, keyed by the
-                // staging field's own name (the empty marker is the legacy
-                // uniquely-resolved form). The request is re-signed so
+                // staging field's own name. The request is re-signed so
                 // keys and replies use the provider's spelling while the
                 // ticket stays the consumer's own.
                 let (resolved, provider_signature) =
                     manifest.resolve_requirement_destination(staged_target.as_str(), &signature)?;
                 record.retarget_instance(&resolved);
-                record.retarget_signature(provider_signature);
+                record.retarget_binding(provider_signature.clone());
                 (resolved, provider_signature)
             } else {
-                (staged_target, signature)
+                (
+                    staged_target,
+                    transport::MethodBinding::from_method(signature),
+                )
             };
-            let route = manifest.generated_call_route(&target, signature)?;
+            let route = manifest.generated_call_route(&target, &signature)?;
             if payload_bytes as u64 > route.request_max_bytes {
                 return Err(anyhow::anyhow!(TransportError::BodyTooLarge {
-                    port: signature.name.to_owned(),
+                    port: signature.endpoint.to_owned(),
                     bytes: payload_bytes,
                     maximum: route.request_max_bytes,
                 }));
@@ -1291,11 +1295,11 @@ where
                     let outstanding = outstanding_generated_calls(
                         correlations,
                         &generated_correlations,
-                        signature.name,
+                        &signature.endpoint,
                     );
                     if outstanding as u64 >= route.max_outstanding {
                         return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                            port: signature.name.to_owned(),
+                            port: signature.endpoint.to_owned(),
                             what: "outstanding generated calls",
                             actual: outstanding as u64 + 1,
                             maximum: route.max_outstanding,
@@ -1319,7 +1323,7 @@ where
                     GeneratedCorrelation {
                         ticket,
                         expected_source: target,
-                        endpoint: signature.name.to_owned(),
+                        endpoint: signature.endpoint.to_owned(),
                         caller: route.caller,
                         caller_rank,
                         max_response_bytes: route.response_max_bytes,
@@ -1369,7 +1373,7 @@ where
                 field
                     .input
                     .and_then(transport::input_port_signature::<R::Inputs>)
-                    .map(|signature| signature.name)
+                    .map(|signature| signature.endpoint)
             } else {
                 field.port
             }
@@ -1722,7 +1726,8 @@ where
 #[cfg(test)]
 mod conflict_guard_tests {
     use super::reject_conflicting_leased_writes;
-    use crate::runtime::transport::{PreparedOutput, RuntimeWireMetadata};
+    use crate::communication::execution::RuntimeWireMetadata;
+    use crate::runtime::transport::PreparedOutput;
 
     #[allow(clippy::needless_pass_by_value)]
     fn setpoint_record(
@@ -1738,10 +1743,7 @@ mod conflict_guard_tests {
             Some(100),
             &[],
         );
-        let signature = crate::port::PortSignature::from_method(
-            method.signature(),
-            crate::port::PortKind::Setpoint,
-        );
+        let signature = method.signature();
         PreparedOutput::withdrawal(
             signature,
             RuntimeWireMetadata::data("fixture", crate::runtime::ExecutionTime::from_nanos(0), 1),

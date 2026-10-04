@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::port::PortSignature;
+use crate::contracts::OwnedMethodSignature;
 
 /// One finite simulated experiment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +189,7 @@ pub enum Action {
         /// typed constructor rejects an empty instance so production
         /// programs cannot omit the targeted service.
         target_instance: String,
-        consumer_signature: PortSignature,
+        consumer_signature: OwnedMethodSignature,
         encoded_payload: Vec<u8>,
         /// Authoritative validity of the resulting intent.
         validity: Validity,
@@ -198,14 +198,14 @@ pub enum Action {
     /// supplying a replacement.
     Withdraw {
         target_instance: String,
-        producer_signature: PortSignature,
+        producer_signature: OwnedMethodSignature,
     },
     /// Submit a request to a commands-style service and observe the
     /// correlation id through the controlled boundary. Advancement
     /// continues while the reply is pending.
     Command {
         target_instance: String,
-        service_signature: PortSignature,
+        service_signature: OwnedMethodSignature,
         request_encoded: Vec<u8>,
         /// Stable label used to correlate command with reply.
         label: String,
@@ -250,21 +250,21 @@ impl Action {
     /// construction so the program never carries an untyped action.
     pub fn setpoint(
         target_instance: impl Into<String>,
-        descriptor: PortSignature,
+        descriptor: impl Into<OwnedMethodSignature>,
         encoded_payload: Vec<u8>,
         validity: Validity,
     ) -> Result<Self, PlanValidationError> {
+        let descriptor = descriptor.into();
         let target_instance = target_instance.into();
         if target_instance.is_empty() {
             return Err(PlanValidationError::EmptyTargetInstance {
                 constructor: "Action::setpoint",
             });
         }
-        if descriptor.kind != crate::port::PortKind::Setpoint {
-            return Err(PlanValidationError::WrongPortKind {
+        if !descriptor.is_leased_call() {
+            return Err(PlanValidationError::WrongMethodContract {
                 step_label: target_instance,
-                expected: crate::port::PortKind::Setpoint,
-                actual: descriptor.kind,
+                detail: "method contract does not support this action",
             });
         }
         Ok(Action::Setpoint {
@@ -281,21 +281,19 @@ impl Action {
     /// instance whose authority is being recalled.
     pub fn withdraw(
         target_instance: impl Into<String>,
-        producer_signature: PortSignature,
+        producer_signature: impl Into<OwnedMethodSignature>,
     ) -> Result<Self, PlanValidationError> {
+        let producer_signature = producer_signature.into();
         let target_instance = target_instance.into();
         if target_instance.is_empty() {
             return Err(PlanValidationError::EmptyTargetInstance {
                 constructor: "Action::withdraw",
             });
         }
-        if producer_signature.kind != crate::port::PortKind::Setpoint
-            && producer_signature.kind != crate::port::PortKind::State
-        {
-            return Err(PlanValidationError::WrongPortKind {
+        if !producer_signature.permits_withdrawal() {
+            return Err(PlanValidationError::WrongMethodContract {
                 step_label: target_instance,
-                expected: crate::port::PortKind::Setpoint,
-                actual: producer_signature.kind,
+                detail: "method contract does not support this action",
             });
         }
         Ok(Action::Withdraw {
@@ -313,23 +311,23 @@ impl Action {
     /// `host_deadline` is the wall-clock budget after issuance.
     pub fn command(
         target_instance: impl Into<String>,
-        descriptor: PortSignature,
+        descriptor: impl Into<OwnedMethodSignature>,
         request_encoded: Vec<u8>,
         label: impl Into<String>,
         simulated_deadline: Duration,
         host_deadline: Duration,
     ) -> Result<Self, PlanValidationError> {
+        let descriptor = descriptor.into();
         let target_instance = target_instance.into();
         if target_instance.is_empty() {
             return Err(PlanValidationError::EmptyTargetInstance {
                 constructor: "Action::command",
             });
         }
-        if descriptor.kind != crate::port::PortKind::Commands {
-            return Err(PlanValidationError::WrongPortKind {
+        if !descriptor.is_plain_call() {
+            return Err(PlanValidationError::WrongMethodContract {
                 step_label: target_instance,
-                expected: crate::port::PortKind::Commands,
-                actual: descriptor.kind,
+                detail: "method contract does not support this action",
             });
         }
         if host_deadline.is_zero() {
@@ -381,11 +379,10 @@ impl Action {
                         constructor: "Action::Setpoint",
                     });
                 }
-                if consumer_signature.kind != crate::port::PortKind::Setpoint {
-                    return Err(PlanValidationError::WrongPortKind {
+                if !consumer_signature.is_leased_call() {
+                    return Err(PlanValidationError::WrongMethodContract {
                         step_label: step_label.to_owned(),
-                        expected: crate::port::PortKind::Setpoint,
-                        actual: consumer_signature.kind,
+                        detail: "method contract does not support this action",
                     });
                 }
                 // A message containing only default fields has a valid zero-byte encoding.
@@ -406,13 +403,10 @@ impl Action {
                         constructor: "Action::Withdraw",
                     });
                 }
-                if producer_signature.kind != crate::port::PortKind::Setpoint
-                    && producer_signature.kind != crate::port::PortKind::State
-                {
-                    return Err(PlanValidationError::WrongPortKind {
+                if !producer_signature.permits_withdrawal() {
+                    return Err(PlanValidationError::WrongMethodContract {
                         step_label: step_label.to_owned(),
-                        expected: crate::port::PortKind::Setpoint,
-                        actual: producer_signature.kind,
+                        detail: "method contract does not support this action",
                     });
                 }
             }
@@ -429,11 +423,10 @@ impl Action {
                         constructor: "Action::Command",
                     });
                 }
-                if service_signature.kind != crate::port::PortKind::Commands {
-                    return Err(PlanValidationError::WrongPortKind {
+                if !service_signature.is_plain_call() {
+                    return Err(PlanValidationError::WrongMethodContract {
                         step_label: step_label.to_owned(),
-                        expected: crate::port::PortKind::Commands,
-                        actual: service_signature.kind,
+                        detail: "method contract does not support this action",
                     });
                 }
                 // An empty Protobuf message has a valid zero-byte encoding.
@@ -465,17 +458,17 @@ impl Action {
 pub enum Capture {
     State {
         name: String,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     },
     Sample {
         name: String,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     },
     Event {
         name: String,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     },
     /// Native simulator body data, identified by documented units and
@@ -541,97 +534,85 @@ fn nonzero_capture_capacity(capacity: u32) -> crate::Result<u32> {
 /// correct the wire form rather than guessing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureError {
-    WrongPortKind {
+    InvalidContract {
         constructor: &'static str,
-        expected: crate::port::PortKind,
-        actual: crate::port::PortKind,
+        detail: &'static str,
     },
 }
 
 impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WrongPortKind {
-                constructor,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "{constructor}: expected port kind {expected:?}, got {actual:?}"
-            ),
-        }
+        let Self::InvalidContract {
+            constructor,
+            detail,
+        } = self;
+        write!(f, "{constructor}: {detail}")
     }
 }
 
 impl std::error::Error for CaptureError {}
 
 impl Capture {
-    /// Capture a state-style port. The signature must declare
-    /// `PortKind::State`; commands-style or setpoint-style signatures
-    /// are rejected at construction so the program never observes a
-    /// mismatched wire form.
-    pub fn state(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
-        Self::state_with_policy(name, signature, CapturePolicy::Latest)
+    /// Captures a retained observation, validating its actual method contract.
+    pub fn state(
+        name: impl Into<String>,
+        signature: impl Into<OwnedMethodSignature>,
+    ) -> Result<Self, CaptureError> {
+        Self::state_with_policy(name, signature.into(), CapturePolicy::Latest)
     }
 
     pub(crate) fn state_with_policy(
         name: impl Into<String>,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     ) -> Result<Self, CaptureError> {
-        require_kind(
-            "Capture::state",
-            crate::port::PortKind::State,
-            signature.kind,
-        )?;
+        require_observation("Capture::state", &signature, true)?;
         Ok(Self::State {
             name: name.into(),
             signature,
             policy,
         })
     }
-    pub fn sample(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+    pub fn sample(
+        name: impl Into<String>,
+        signature: impl Into<OwnedMethodSignature>,
+    ) -> Result<Self, CaptureError> {
         Self::sample_with_policy(
             name,
-            signature,
+            signature.into(),
             CapturePolicy::BestEffortHistory { capacity: 4096 },
         )
     }
 
     pub(crate) fn sample_with_policy(
         name: impl Into<String>,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     ) -> Result<Self, CaptureError> {
-        require_kind(
-            "Capture::sample",
-            crate::port::PortKind::Sample,
-            signature.kind,
-        )?;
+        require_observation("Capture::sample", &signature, false)?;
         Ok(Self::Sample {
             name: name.into(),
             signature,
             policy,
         })
     }
-    pub fn event(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+    pub fn event(
+        name: impl Into<String>,
+        signature: impl Into<OwnedMethodSignature>,
+    ) -> Result<Self, CaptureError> {
         Self::event_with_policy(
             name,
-            signature,
+            signature.into(),
             CapturePolicy::BestEffortHistory { capacity: 4096 },
         )
     }
 
     pub(crate) fn event_with_policy(
         name: impl Into<String>,
-        signature: PortSignature,
+        signature: OwnedMethodSignature,
         policy: CapturePolicy,
     ) -> Result<Self, CaptureError> {
-        require_kind(
-            "Capture::event",
-            crate::port::PortKind::Event,
-            signature.kind,
-        )?;
+        require_observation("Capture::event", &signature, false)?;
         Ok(Self::Event {
             name: name.into(),
             signature,
@@ -660,28 +641,26 @@ impl Capture {
         let units = units.into();
         let frame = frame.into();
         if units.is_empty() || frame.is_empty() {
-            return Err(CaptureError::WrongPortKind {
+            return Err(CaptureError::InvalidContract {
                 constructor: "Capture::native_body",
-                expected: crate::port::PortKind::Stream,
-                actual: crate::port::PortKind::Stream,
+                detail: "units and frame must be non-empty",
             });
         }
         Ok(Self::NativeBody { name, units, frame })
     }
 }
 
-fn require_kind(
+fn require_observation(
     constructor: &'static str,
-    expected: crate::port::PortKind,
-    actual: crate::port::PortKind,
+    signature: &OwnedMethodSignature,
+    retained_latest: bool,
 ) -> Result<(), CaptureError> {
-    if actual == expected {
+    if signature.is_observation() && signature.retained_latest == retained_latest {
         Ok(())
     } else {
-        Err(CaptureError::WrongPortKind {
+        Err(CaptureError::InvalidContract {
             constructor,
-            expected,
-            actual,
+            detail: "observation shape or retention does not match this capture",
         })
     }
 }
@@ -720,10 +699,9 @@ pub enum PlanValidationError {
         prior_step: String,
         duplicate_step: String,
     },
-    WrongPortKind {
+    WrongMethodContract {
         step_label: String,
-        expected: crate::port::PortKind,
-        actual: crate::port::PortKind,
+        detail: &'static str,
     },
     PayloadTooLarge {
         step_label: String,
@@ -796,14 +774,9 @@ impl std::fmt::Display for PlanValidationError {
                 f,
                 "duplicate command label `{label}` used by steps `{prior_step}` and `{duplicate_step}`"
             ),
-            Self::WrongPortKind {
-                step_label,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "step `{step_label}` has wrong port kind: expected {expected:?}, got {actual:?}"
-            ),
+            Self::WrongMethodContract { step_label, detail } => {
+                write!(f, "step `{step_label}`: {detail}")
+            }
             Self::PayloadTooLarge { step_label, bytes } => write!(
                 f,
                 "step `{step_label}` payload is {bytes} bytes, exceeding the {MAX_PAYLOAD}-byte cap"
@@ -842,35 +815,44 @@ impl std::error::Error for PlanValidationError {}
 mod tests {
     use super::*;
 
-    fn setpoint_sig() -> PortSignature {
-        PortSignature::new(
-            "motion/cmd",
+    fn setpoint_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "Set",
-            crate::port::PortKind::Setpoint,
-            "SetpointRequest",
-            "SetpointReply",
-        )
-    }
-    fn command_sig() -> PortSignature {
-        PortSignature::new(
             "motion/cmd",
+            crate::contracts::MethodShape::Call,
+            "SetpointRequest",
+            "google.protobuf.Empty",
+            false,
+            Some(100),
+            &[],
+        ))
+    }
+    fn command_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "Do",
-            crate::port::PortKind::Commands,
+            "motion/cmd",
+            crate::contracts::MethodShape::Call,
             "CommandRequest",
             "CommandReply",
-        )
+            false,
+            None,
+            &[],
+        ))
     }
-    fn state_sig() -> PortSignature {
-        PortSignature::new(
-            "motion/state",
+    fn state_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "State",
-            crate::port::PortKind::State,
+            "motion/state",
+            crate::contracts::MethodShape::Observation,
+            "google.protobuf.Empty",
             "State",
-            "State",
-        )
+            true,
+            None,
+            &[],
+        ))
     }
 
     fn setpoint_action(byte: u8) -> Action {
@@ -1016,7 +998,7 @@ mod tests {
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(1), steps, vec![]);
         assert!(matches!(
             plan.unwrap_err(),
-            PlanValidationError::WrongPortKind { .. }
+            PlanValidationError::WrongMethodContract { .. }
         ));
     }
 
@@ -1057,7 +1039,7 @@ mod tests {
         let result = Action::setpoint("motion_target", command_sig(), vec![1], Validity::Permanent);
         assert!(matches!(
             result,
-            Err(PlanValidationError::WrongPortKind { .. })
+            Err(PlanValidationError::WrongMethodContract { .. })
         ));
     }
 

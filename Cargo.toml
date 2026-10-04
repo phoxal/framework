@@ -1,93 +1,49 @@
-[workspace.package]
-edition = "2024"
-rust-version = "1.88"
-license = "AGPL-3.0-only"
-publish = false
-description = "Phoxal framework - engine + complete platform service set."
-documentation = "https://github.com/phoxal/framework#readme"
-homepage = "https://github.com/phoxal/framework"
-repository = "https://github.com/phoxal/framework"
-
 [workspace]
-exclude = ["tests/adapted-robot"]
 resolver = "3"
-# The framework runtime, its proc-macros, official services, and suite
-# component crates. The project compiler and installation helper are
-# private Rust modules of `phoxal/cargo`; they are not
-# independent workspace packages.
+# SDK libraries and small SDK-owned compile/runtime fixtures.
 members = [
-    "phoxal/build",
-    "tests/contracts/consumer",
+    "phoxal-build",
     "tests/contracts/client",
-    "tests/contracts/encoder-a",
-    "tests/contracts/encoder-b",
+    "tests/contracts/client/provider",
     "tests/contracts/foreign-reading",
-    "tests/contracts/robot",
     "tests/contracts/identity-owner-a",
     "tests/contracts/identity-owner-b",
     "tests/contracts/schema-proof",
     "tests/contracts/standard-plus-custom",
     "tests/hardware/driver",
-    "tests/host-acquisition",
-    "tests/runtime-authoring/consumer",
-    "tests/runtime-authoring/countdown",
     "tests/runtime-authoring/multistage",
     "tests/runtime-authoring/procedure",
-    "tests/robot",
-    "tests/robot/controller",
-    "tests/supervisor-runtime",
     "phoxal",
-    "phoxal/macros",
-    "supervisor",
-    "components/bno085",
-    "components/ddsm115",
-    "components/oak_d_lite",
-    "components/vl53l1x",
-    "components/zed_f9p",
-    "services/kinematics",
-    "services/motion",
-    "services/navigation",
-    "services/safety",
-    "services/world",
-    "phoxal/cargo",
+    "phoxal-macros",
 ]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+publish = false
+description = "Phoxal SDK, shared contracts, and runtime/session primitives."
+documentation = "https://github.com/phoxal/framework#readme"
+homepage = "https://github.com/phoxal/framework"
+repository = "https://github.com/phoxal/framework"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
-async-trait = "0.1.89"
 base64 = "0.22.1"
-# The framework project's manifest reader; `phoxal/cargo` uses it to inspect an
-# authored workspace, and tests under `phoxal/tests/` use it to assert the
-# SDK's consumer policy.
-cargo_metadata = { version = "0.23.1", features = ["builder"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
-const_format = "0.2"
-ctrlc = { version = "3.5.2", features = ["termination"] }
-derive_setters = "0.1.9"
-flate2 = "1.1.10"
 fs4 = "1.1.0"
-gilrs = "0.11.2"
 getrandom = "0.3.4"
 heck = "0.5.0"
-json5 = "0.4.1"
-image = { version = "0.25.8", default-features = false, features = ["jpeg", "png"] }
-libc = "0.2.180"
-nalgebra = { version = "0.34.2", features = ["serde-serialize"] }
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 prost = "0.14.4"
-prost-build = "0.14.4"
 prost-reflect = "0.16.5"
 prost-types = "0.14.4"
-protoc-bin-vendored = "3.2.0"
 prettyplease = "0.2.37"
 object = "0.36.7"
 quote = "1.0"
-rmp-serde = "1.3.1"
 schemars = "1.2.1"
 sha2 = "0.10.9"
 jsonschema = { version = "0.46.6", default-features = false }
-keyring = "3.6.3"
-reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_derive_internals = "0.29.1"
 serde_bytes = "0.11.19"
@@ -95,23 +51,11 @@ serde_json = "1.0.149"
 semver = "1.0"
 serde_yaml = "0.9"
 serial_test = "3"
-system_shutdown = "4.1.0"
-tar = "0.4.46"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-# `system` and `disk` are the minimal features for host/process CPU and memory
-# sampling plus mounted-filesystem capacity. Default features additionally pull
-# network/component/user bindings this workspace never reads. Pinned to 0.36
-# (not the newest 0.39.x) because newer releases raise their MSRV past this
-# workspace's `rust-version`.
-sysinfo = { version = "0.36", default-features = false, features = ["disk", "system"] }
-inventory = "0.3"
 tempfile = "3.27.0"
-tobj = { version = "4.0.4", default-features = false, features = ["use_f64"] }
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
 tokio-util = { version = "0.7", default-features = false }
-toml = "1"
-toml_edit = "0.25.12"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
@@ -136,13 +80,13 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
-# also covers the service and component crates' dependency on `phoxal`.
+# also preserves ordinary standalone package verification.
 # `default-features = false`: `phoxal` carries one consumer profile per
 # supported role, and a member that inherits a default profile never says which
 # role it is. Every member below names its own.
 phoxal = { path = "phoxal", version = "=0.0.0-dev.8", registry = "phoxal", default-features = false }
-phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.8", registry = "phoxal" }
-phoxal-build = { path = "phoxal/build", version = "=0.0.0-dev.8", registry = "phoxal" }
+phoxal-macros = { path = "phoxal-macros", version = "=0.0.0-dev.8", registry = "phoxal" }
+phoxal-build = { path = "phoxal-build", version = "=0.0.0-dev.8", registry = "phoxal" }
 
 [workspace.lints.rust]
 unused = "warn"

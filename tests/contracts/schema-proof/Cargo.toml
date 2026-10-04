@@ -19,9 +19,11 @@ phoxal = { path = "../../../phoxal", default-features = false }
 prost = { workspace = true }
 
 [build-dependencies]
-phoxal = { path = "../../../phoxal", default-features = false, features = ["build"] }
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
+phoxal-build = { path = "../../../phoxal-build" }
 object = { workspace = true }
 prost-reflect = { workspace = true }
 prost-types = { workspace = true }

@@ -11,7 +11,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use super::{ExecutionDuration, ExecutionTime, ObservationStamp, Sample};
-use crate::port::PortSignature;
+use crate::contracts::MethodSignature;
 
 /// The input kind fixed by one runtime input form.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -73,7 +73,7 @@ pub struct InputField {
     /// Optional served Commands descriptor name.
     pub port: Option<&'static str>,
     /// Complete generated descriptor identity for a bound input port.
-    pub port_signature: Option<PortSignature>,
+    pub port_signature: Option<MethodSignature>,
     /// Request message for a read, request, or served command.
     pub request_type: Option<MessageType>,
     /// Received publication or response message; local operations have none.
@@ -163,7 +163,7 @@ pub trait TransportInputSet: InputSnapshot {
     fn decode_transport_field(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()>;
 
@@ -187,7 +187,7 @@ pub trait TransportInputSet: InputSnapshot {
     fn decode_transport_field_with_keys(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         keys: &mut dyn TransportKeyLookup,
     ) -> crate::Result<()> {
@@ -200,7 +200,7 @@ pub trait TransportInputSet: InputSnapshot {
     fn decode_transport_field_with_keys_at(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         now: ExecutionTime,
         keys: &mut dyn TransportKeyLookup,
@@ -231,7 +231,7 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
     fn decode(
         inputs: &mut Inputs,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()>;
 
@@ -249,7 +249,7 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
     fn decode_at(
         inputs: &mut Inputs,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         now: ExecutionTime,
     ) -> crate::Result<()> {
@@ -262,7 +262,7 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
     fn decode_with_keys(
         inputs: &mut Inputs,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         keys: &mut dyn TransportKeyLookup,
     ) -> crate::Result<()> {
@@ -275,7 +275,7 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
     fn decode_with_keys_at(
         inputs: &mut Inputs,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         keys: &mut dyn TransportKeyLookup,
         now: ExecutionTime,
@@ -296,7 +296,7 @@ impl GeneratedTransportDecoder<()> for () {
     fn decode(
         _inputs: &mut (),
         field: &str,
-        _binding: Option<&super::transport::PortBinding>,
+        _binding: Option<&super::transport::MethodBinding>,
         _samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()> {
         Err(anyhow::anyhow!(
@@ -318,7 +318,7 @@ where
     fn decode_transport_field(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()> {
         <T::Transport as GeneratedTransportDecoder<T>>::decode(self, field, binding, samples)
@@ -331,7 +331,7 @@ where
     fn decode_transport_field_with_keys(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         keys: &mut dyn TransportKeyLookup,
     ) -> crate::Result<()> {
@@ -343,7 +343,7 @@ where
     fn decode_transport_field_with_keys_at(
         &mut self,
         field: &str,
-        binding: Option<&super::transport::PortBinding>,
+        binding: Option<&super::transport::MethodBinding>,
         samples: Vec<super::transport::WireSample>,
         now: ExecutionTime,
         keys: &mut dyn TransportKeyLookup,
@@ -455,6 +455,31 @@ pub struct TransportCallCompletion {
     pub ticket: u128,
     /// Exact response body or definitive call failure.
     pub result: Result<Vec<u8>, RequestError>,
+}
+
+/// Upper bound of completions retained across cuts in one execution. The
+/// sender-side outstanding cap already bounds outstanding calls per
+/// endpoint; this bound protects runtimes with many call endpoints.
+pub(crate) const MAX_RETAINED_COMPLETIONS: usize = 256;
+/// Upper bound of encoded response bytes the retained completion mailbox
+/// may hold across cuts; reserved before a completion is exposed.
+pub(crate) const MAX_RETAINED_COMPLETION_BYTES: usize = 256 * 1024;
+
+impl TransportCallCompletion {
+    /// The encoded response bytes one retained completion holds.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        match &self.result {
+            Ok(bytes) => bytes.len(),
+            Err(error) => match error {
+                crate::runtime::input::RequestError::NotSent(detail)
+                | crate::runtime::input::RequestError::OutcomeUnknown(detail)
+                | crate::runtime::input::RequestError::RejectedBeforeAdmission(detail)
+                | crate::runtime::input::RequestError::Integrity(detail) => detail.len(),
+                crate::runtime::input::RequestError::Oversized
+                | crate::runtime::input::RequestError::Timeout => 0,
+            },
+        }
+    }
 }
 
 /// One completion produced by a runner-owned local operation.
@@ -1093,6 +1118,7 @@ impl<T: 'static> InputSpec for Events<T> {
 }
 
 /// A replaceable intent with an explicit validity interval.
+#[derive(Clone)]
 pub struct Setpoint<T> {
     value: Option<T>,
     source: Option<String>,
@@ -1176,6 +1202,12 @@ impl<T> Setpoint<T> {
     #[must_use]
     pub const fn issued_at(&self) -> Option<ExecutionTime> {
         self.issued_at
+    }
+
+    /// Returns the original expiry instant, without renewing the intent.
+    #[must_use]
+    pub const fn valid_until(&self) -> Option<ExecutionTime> {
+        self.valid_until
     }
 
     /// Reports whether the intent is valid at the supplied instant.

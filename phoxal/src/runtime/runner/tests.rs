@@ -8,12 +8,21 @@ use prost::Message;
 
 use super::input::{CollectedInput, DeliveryAdmissionError, DeliveryQueue};
 use super::*;
+use crate::communication::execution::RuntimeWireMetadata;
 use crate::runtime::input::OperationInputError;
-use crate::runtime::transport::{PreparedOutput, RuntimeWireMetadata};
+use crate::runtime::transport::PreparedOutput;
 use crate::runtime::{
     ExecutionDuration, InitContext, ObservationStamp, ReadError, RequestError, Runtime,
     RuntimeSpec, StepContext,
 };
+use serde::Deserialize;
+
+fn graph_endpoint(instance: &str, endpoint: &str) -> crate::artifact::bundle::EndpointReference {
+    crate::artifact::bundle::EndpointReference {
+        instance: instance.to_owned(),
+        endpoint: endpoint.to_owned(),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct TestConfig {
@@ -40,12 +49,8 @@ fn controlled_sample(
 #[test]
 fn forwarding_keeps_observation_provenance_separate_from_delivery_identity() {
     let stamp = ObservationStamp::new("physical-sensor", ExecutionTime::from_nanos(17), Some(3));
-    let mut metadata = transport::RuntimeWireMetadata::observed(&stamp, 4).with_delivery_identity(
-        "execution",
-        "timeline",
-        9,
-        0,
-    );
+    let mut metadata = crate::communication::execution::RuntimeWireMetadata::observed(&stamp, 4)
+        .with_delivery_identity("execution", "timeline", 9, 0);
     metadata.producer = Some("forwarder".into());
     let sample = WireSample::from_parts(vec![7], metadata, "test");
     let queue = DeliveryQueue::new(8, 64, super::super::input::InputKind::Samples);
@@ -77,13 +82,22 @@ fn receiver_keeps_current_value_when_next_boundary_output_arrives_early() {
     );
     let current = queue.drain(5);
     assert_eq!(current.len(), 1);
-    assert_eq!(current[0].metadata().boundary(), 4);
+    assert_eq!(
+        current[0].metadata().boundary.expect("delivery boundary"),
+        4
+    );
     assert_eq!(queue.items.len(), 2);
     let next = queue.drain(6);
     assert_eq!(next.len(), 1);
-    assert_eq!(next[0].metadata().boundary(), 5);
+    assert_eq!(next[0].metadata().boundary.expect("delivery boundary"), 5);
     assert_eq!(queue.bytes, 8);
-    assert_eq!(queue.drain(7)[0].metadata().boundary(), 5);
+    assert_eq!(
+        queue.drain(7)[0]
+            .metadata()
+            .boundary
+            .expect("delivery boundary"),
+        5
+    );
 }
 
 #[test]
@@ -112,8 +126,20 @@ fn camera_latest_queue_has_two_bounded_cuts_and_rejects_oversize_frames() {
         saturated,
         Err(DeliveryAdmissionError::Saturated(_))
     ));
-    assert_eq!(queue.drain(3)[0].metadata().boundary(), 2);
-    assert_eq!(queue.drain(4)[0].metadata().boundary(), 3);
+    assert_eq!(
+        queue.drain(3)[0]
+            .metadata()
+            .boundary
+            .expect("delivery boundary"),
+        2
+    );
+    assert_eq!(
+        queue.drain(4)[0]
+            .metadata()
+            .boundary
+            .expect("delivery boundary"),
+        3
+    );
 }
 
 #[test]
@@ -199,6 +225,64 @@ fn receiver_queue_fan_in_uses_one_aggregate_bound() {
         saturated,
         Err(DeliveryAdmissionError::Saturated(_))
     ));
+}
+
+#[test]
+fn frozen_fan_in_accepts_distinct_source_endpoints_and_keeps_provenance() {
+    let left = transport::MethodBinding {
+        endpoint: "left_encoder".into(),
+        service: "fixture.Encoder".into(),
+        method: "LeftEncoder".into(),
+        shape: crate::contracts::MethodShape::Observation,
+        request: "google.protobuf.Empty".into(),
+        response: "fixture.Position".into(),
+        retained_latest: false,
+        lease_valid_for_ms: None,
+    };
+    let mut right = left.clone();
+    right.endpoint = "right_encoder".into();
+    right.method = "RightEncoder".into();
+    let mut batch = CollectedInput {
+        input_kind: crate::runtime::input::InputKind::Samples,
+        field: "encoders",
+        binding: left,
+        direction: InputDirection::Publication,
+        max_items: 2,
+        max_bytes: 8,
+        samples: vec![controlled_sample("left", "execution", "timeline", 0, 0, 1)],
+    };
+    batch
+        .merge_source(
+            &right,
+            InputDirection::Publication,
+            vec![controlled_sample("right", "execution", "timeline", 0, 0, 1)],
+        )
+        .expect("admitted wire-compatible fan-in also freezes");
+    assert_eq!(batch.samples.len(), 2);
+    assert_eq!(batch.samples[0].metadata().publisher(), Some("left"));
+    assert_eq!(batch.samples[1].metadata().publisher(), Some("right"));
+    right.lease_valid_for_ms = Some(20);
+    assert!(
+        batch
+            .merge_source(&right, InputDirection::Publication, vec![])
+            .is_err()
+    );
+    right.lease_valid_for_ms = None;
+    right.response = "fixture.Incompatible".into();
+    assert!(
+        batch
+            .merge_source(
+                &right,
+                InputDirection::Publication,
+                vec![controlled_sample("bad", "execution", "timeline", 0, 0, 1)],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        batch.samples.len(),
+        2,
+        "refusal preserves the collected cut"
+    );
 }
 
 #[test]
@@ -295,7 +379,6 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
         robot_id: "test".into(),
         instance_id: "brain".into(),
         executable: PathBuf::from("brain"),
-        executable_sha256: "00".repeat(32),
         config: Value::Null,
         connections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
@@ -306,15 +389,14 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
     let mut request = execution_wire::AdmitExecutionRequest {
         execution_id: "execution".into(),
         timeline_id: "timeline".into(),
-        artifact_digest: vec![0; 32],
         required_contracts: vec![execution_wire::ContractRequirement {
-            protocol: "phoxal.execution.v1".into(),
+            protocol: execution_wire::PROTOCOL.into(),
             capabilities: execution_protocol::REQUIRED_CAPABILITIES
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
         }],
-        mode: execution_wire::ExecutionMode::Controlled as i32,
+        mode: execution_wire::ExecutionMode::Controlled,
         quantum_ns: 1_000_000,
     };
     let valid = |request: &execution_wire::AdmitExecutionRequest| {
@@ -327,6 +409,12 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
         .is_ok()
     };
     assert!(valid(&request));
+    request.required_contracts[0].protocol = "phoxal.execution.v1".into();
+    assert!(
+        !valid(&request),
+        "the superseded decoder contract must be refused"
+    );
+    request.required_contracts[0].protocol = execution_wire::PROTOCOL.into();
     request.required_contracts[0]
         .capabilities
         .push("invocation".into());
@@ -377,6 +465,91 @@ impl OutputSink<TestRuntime> for TestSink {
     }
 }
 
+fn bundle_fixture_runtime(config_schema: serde_json::Value) -> crate::artifact::RuntimeRecord {
+    crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        period_ms: 20,
+        timeout_ms: 100,
+        init_timeout_ms: 1_000,
+        config_schema,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    }
+}
+
+fn bundle_fixture_descriptors() -> Vec<crate::artifact::DescriptorSummary> {
+    vec![crate::artifact::DescriptorSummary {
+        sha256: "ab".repeat(32),
+        bytes: 8,
+        files: vec!["fixture.proto".to_owned()],
+    }]
+}
+
+/// Writes one bundle fixture holding `artifacts`/`instances` and returns the
+/// manifest JSON value for further mutation.
+fn write_bundle_fixture(
+    root: &std::path::Path,
+    artifacts: Vec<(Vec<u8>, crate::artifact::RuntimeRecord)>,
+    instances: Vec<(
+        String,
+        crate::artifact::bundle::InstanceRole,
+        String,
+        Option<serde_json::Value>,
+    )>,
+    connections: Vec<crate::artifact::bundle::BundleConnection>,
+) -> serde_json::Value {
+    std::fs::create_dir_all(root.join("bin")).expect("bundle bin directory");
+    let mut artifact_records = Vec::new();
+    for (index, (bytes, runtime)) in artifacts.into_iter().enumerate() {
+        // Bundle-local selection IDs: fixture artifacts get deterministic
+        // positional identities, never executable digests.
+        let id = format!("fixture-{index}");
+        std::fs::write(root.join(format!("bin/{id}")), &bytes).expect("artifact executable");
+        artifact_records.push(serde_json::json!({
+            "id": id,
+            "path": format!("bin/{id}"),
+            "runtime": runtime,
+            "descriptors": bundle_fixture_descriptors(),
+        }));
+    }
+    let instances = instances
+        .into_iter()
+        .map(|(id, role, artifact, config)| {
+            let mut instance = serde_json::json!({
+                "id": id,
+                "role": match role {
+                    crate::artifact::bundle::InstanceRole::Brain => "brain",
+                    crate::artifact::bundle::InstanceRole::Service => "service",
+                    crate::artifact::bundle::InstanceRole::Driver => "driver",
+                },
+                "artifact": artifact,
+            });
+            // The canonical absent configuration is the omitted field.
+            if let Some(config) = config {
+                instance["config"] = config;
+            }
+            instance
+        })
+        .collect::<Vec<_>>();
+    let manifest = serde_json::json!({
+        "schema": "phoxal/bundle/v0",
+        "robot_id": "fixture",
+        "target": crate::artifact::bundle::host_execution_target(),
+        "supervisor": {"path": "bin/supervisor"},
+        "artifacts": artifact_records,
+        "instances": instances,
+        "connections": connections,
+        "components": [],
+    });
+    std::fs::write(
+        root.join("manifest.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+    manifest
+}
+
 #[test]
 fn launch_manifest_reads_component_driver_configuration() {
     let temporary = std::env::temp_dir().join(format!(
@@ -387,29 +560,35 @@ fn launch_manifest_reads_component_driver_configuration() {
             .expect("system clock is after the Unix epoch")
             .as_nanos()
     ));
-    std::fs::create_dir_all(&temporary).expect("temporary driver bundle");
-    let executable = temporary.join("bin/sensor");
-    std::fs::create_dir_all(executable.parent().expect("driver parent")).expect("bin");
-    let bytes = b"driver-fixture";
-    std::fs::write(&executable, bytes).expect("driver executable");
-    let manifest = serde_json::json!({
-        "schema": "phoxal/bundle/v0",
-        "robot_id": "driver-fixture",
-        "executables": [{
-            "instance": "sensor",
-            "path": "bin/sensor"
-        }]
-    });
-    std::fs::write(
-        temporary.join("manifest.json"),
-        serde_json::to_vec(&manifest).expect("manifest serializes"),
-    )
-    .expect("manifest writes");
-    std::fs::write(
-        temporary.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot:\n  id: driver-fixture\n  components:\n    sensor:\n      component: hardware-driver-fixture\n      mount_site: sensor_mount\n      driver:\n        config:\n          value: 42\nservices: {}\nconnections: {}\n",
-    )
-    .expect("compiled robot document writes");
+    let _ = std::fs::remove_dir_all(&temporary);
+    write_bundle_fixture(
+        &temporary,
+        vec![
+            (
+                b"brain-fixture".to_vec(),
+                bundle_fixture_runtime(serde_json::json!({"type": "object"})),
+            ),
+            (
+                b"driver-fixture".to_vec(),
+                bundle_fixture_runtime(serde_json::json!({"type": "object"})),
+            ),
+        ],
+        vec![
+            (
+                "brain".to_owned(),
+                crate::artifact::bundle::InstanceRole::Brain,
+                "fixture-0".to_owned(),
+                None,
+            ),
+            (
+                "sensor".to_owned(),
+                crate::artifact::bundle::InstanceRole::Driver,
+                "fixture-1".to_owned(),
+                Some(serde_json::json!({"value": 42})),
+            ),
+        ],
+        Vec::new(),
+    );
 
     let launch =
         RuntimeLaunchManifest::open(&temporary, "sensor").expect("component driver bundle opens");
@@ -626,13 +805,15 @@ struct TransportResponse {
     value: u32,
 }
 
-const TRANSPORT_PORT: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
-    "transport-commands",
+const TRANSPORT_PORT: crate::contracts::MethodSignature = crate::contracts::MethodSignature::new(
     "phoxal.runtime.test",
     "Transport",
-    crate::port::PortKind::Commands,
+    "transport-commands",
+    crate::contracts::MethodShape::Call,
     "phoxal.runtime.test.TransportRequest",
     "phoxal.runtime.test.TransportResponse",
+    false,
+    None,
     &[],
 );
 
@@ -668,7 +849,7 @@ impl crate::runtime::input::InputSet for TransportInputs {
                 .checked_add(sample.payload().len() as u64)
                 .ok_or_else(|| {
                     anyhow::anyhow!(crate::runtime::transport::TransportError::BatchTooLarge {
-                        port: TRANSPORT_PORT.name.to_owned(),
+                        port: TRANSPORT_PORT.endpoint.to_owned(),
                         what: "encoded bytes",
                         actual: u64::MAX,
                         maximum: 1024,
@@ -677,7 +858,7 @@ impl crate::runtime::input::InputSet for TransportInputs {
             if bytes > 1024 {
                 return Err(anyhow::anyhow!(
                     crate::runtime::transport::TransportError::BatchTooLarge {
-                        port: TRANSPORT_PORT.name.to_owned(),
+                        port: TRANSPORT_PORT.endpoint.to_owned(),
                         what: "encoded bytes",
                         actual: bytes,
                         maximum: 1024,
@@ -715,7 +896,7 @@ impl crate::runtime::input::TransportInputSet for TransportInputs {
     fn decode_transport_field(
         &mut self,
         field: &str,
-        _binding: Option<&crate::runtime::transport::PortBinding>,
+        _binding: Option<&crate::runtime::transport::MethodBinding>,
         samples: Vec<crate::runtime::transport::WireSample>,
     ) -> crate::Result<()> {
         <Self as crate::runtime::input::InputSet>::decode_transport_field(self, field, samples)
@@ -821,7 +1002,7 @@ impl crate::runtime::outputs::OutputSet for TransportOutputs {
     fn encode_transport(
         &self,
         context: StepContext,
-        _resolve_input_port: &dyn Fn(&str) -> Option<crate::port::PortSignature>,
+        _resolve_input_port: &dyn Fn(&str) -> Option<crate::contracts::MethodSignature>,
         source: &str,
     ) -> crate::Result<Vec<crate::runtime::transport::PreparedOutput>> {
         let mut records = Vec::with_capacity(self.replies.len());
@@ -889,7 +1070,7 @@ static CADENCE_FIELDS: &[crate::runtime::outputs::OutputField] =
     &[crate::runtime::outputs::OutputField {
         name: "status",
         kind: crate::runtime::outputs::OutputKind::State,
-        port: Some(TRANSPORT_PORT.name),
+        port: Some(TRANSPORT_PORT.endpoint),
         port_signature: Some(TRANSPORT_PORT),
         input: None,
         project: None,
@@ -938,7 +1119,7 @@ fn bootstrap_and_every_steps_use_one_based_acceptance_cadence() {
             TRANSPORT_PORT,
             &TransportResponse { value: 1 },
             1024,
-            crate::runtime::transport::RuntimeWireMetadata::data(
+            crate::communication::execution::RuntimeWireMetadata::data(
                 "cadence",
                 ExecutionTime::default(),
                 1,
@@ -984,7 +1165,7 @@ fn bootstrap_and_every_steps_use_one_based_acceptance_cadence() {
 
 #[test]
 fn future_commands_validate_before_retention_and_reject_replays() {
-    fn sample(metadata: crate::runtime::transport::RuntimeWireMetadata) -> WireSample {
+    fn sample(metadata: crate::communication::execution::RuntimeWireMetadata) -> WireSample {
         let mut payload = Vec::new();
         TransportRequest { value: 7 }
             .encode(&mut payload)
@@ -998,8 +1179,9 @@ fn future_commands_validate_before_retention_and_reject_replays() {
 
     fn batch(sample: WireSample) -> CollectedInput {
         CollectedInput {
+            input_kind: crate::runtime::input::InputKind::Commands,
             field: "commands",
-            binding: crate::runtime::transport::PortBinding::from_signature(TRANSPORT_PORT),
+            binding: crate::runtime::transport::MethodBinding::from_method(TRANSPORT_PORT),
             direction: InputDirection::Request,
             max_items: 4,
             max_bytes: 1024,
@@ -1008,7 +1190,7 @@ fn future_commands_validate_before_retention_and_reject_replays() {
     }
 
     let mut adapter = ExecutionInputAdapter::<TransportRuntime>::unbound();
-    let mut malformed = crate::runtime::transport::RuntimeWireMetadata::external_command(
+    let mut malformed = crate::communication::execution::RuntimeWireMetadata::external_command(
         ExecutionTime::default(),
         1,
         100,
@@ -1022,7 +1204,7 @@ fn future_commands_validate_before_retention_and_reject_replays() {
     assert!(adapter.future_commands.is_empty());
 
     let valid = sample(
-        crate::runtime::transport::RuntimeWireMetadata::external_command(
+        crate::communication::execution::RuntimeWireMetadata::external_command(
             ExecutionTime::default(),
             2,
             100,
@@ -1146,11 +1328,11 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
     output.bind_direct(bus.clone(), "transport");
     output.reply_callers = BTreeMap::from([
         (
-            (TRANSPORT_PORT.name.to_owned(), 2),
+            (TRANSPORT_PORT.endpoint.to_owned(), 2),
             "caller-b.commands".to_owned(),
         ),
         (
-            (TRANSPORT_PORT.name.to_owned(), 3),
+            (TRANSPORT_PORT.endpoint.to_owned(), 3),
             "caller-a.commands".to_owned(),
         ),
     ]);
@@ -1158,7 +1340,7 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
     let session = bus.session().expect("session is open");
     let reply_key = bus.full_key(&crate::runtime::transport::port_key(
         "transport",
-        TRANSPORT_PORT.name,
+        TRANSPORT_PORT.endpoint,
         "reply",
     ));
     let replies = session
@@ -1169,7 +1351,7 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
 
     let input_key = bus.full_key(&crate::runtime::transport::port_key(
         "transport",
-        TRANSPORT_PORT.name,
+        TRANSPORT_PORT.endpoint,
         "request",
     ));
     let publish_request = |request: TransportRequest,
@@ -1179,7 +1361,7 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
                            caller_rank: u64| {
         let mut payload = Vec::new();
         request.encode(&mut payload).expect("request encodes");
-        let metadata = crate::runtime::transport::RuntimeWireMetadata::command(
+        let metadata = crate::communication::execution::RuntimeWireMetadata::command(
             source,
             ExecutionTime::from_nanos(10),
             command_id,
@@ -1204,7 +1386,7 @@ async fn generated_prost_runtime_transport_round_trip_preserves_command_order() 
                                     ingress_sequence: u64| {
         let mut payload = Vec::new();
         request.encode(&mut payload).expect("request encodes");
-        let metadata = crate::runtime::transport::RuntimeWireMetadata::external_command(
+        let metadata = crate::communication::execution::RuntimeWireMetadata::external_command(
             ExecutionTime::from_nanos(10),
             command_id,
             eligible_boundary,
@@ -1366,8 +1548,8 @@ impl RequestClientRuntime {
 }
 
 fn request_client_manifest() -> RuntimeLaunchManifest {
-    let signature = SourceMethodSignature {
-        endpoint: TRANSPORT_PORT.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: TRANSPORT_PORT.endpoint.to_owned(),
         service: TRANSPORT_PORT.service.to_owned(),
         method: TRANSPORT_PORT.method.to_owned(),
         shape: crate::artifact::MethodShape::Call,
@@ -1381,38 +1563,35 @@ fn request_client_manifest() -> RuntimeLaunchManifest {
         robot_id: "typed-request-test".to_owned(),
         instance_id: "request-client".to_owned(),
         executable: PathBuf::from("typed-request-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::from([(
-            "request-client.request".to_owned(),
-            vec!["server.transport-commands".to_owned()],
+            graph_endpoint("request-client", "request"),
+            vec![graph_endpoint("server", "transport-commands")],
         )]),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::from([(
             "server".to_owned(),
-            SourceRuntimeRecord {
-                period_ms: Some(1),
-                timeout_ms: Some(100),
-                init_timeout_ms: Some(100),
-                inputs: vec![SourceInputRecord {
+            crate::artifact::RuntimeRecord::V0 {
+                record: crate::artifact::RUNTIME_RECORD.to_owned(),
+                conversions: Vec::new(),
+                config_schema: serde_json::json!({"type": "object"}),
+                period_ms: 1,
+                timeout_ms: 100,
+                init_timeout_ms: 100,
+                inputs: vec![crate::artifact::InputRecord {
+                    max_age_ms: None,
+                    request_fqn: None,
+                    response_fqn: None,
                     name: "commands".to_owned(),
-                    role: "call_ingress".to_owned(),
+                    delivery: crate::artifact::InputDelivery::CallIngress,
                     max_items: Some(4),
                     max_bytes: Some(1024),
-                    port: Some(TRANSPORT_PORT.name.to_owned()),
+                    port: Some(TRANSPORT_PORT.endpoint.to_owned()),
                     signature: Some(signature),
+                    response_max_bytes: Some(1024),
+                    response_max_items: Some(4),
                 }],
-                transient_outputs: vec![SourceOutputRecord {
-                    name: "replies".to_owned(),
-                    role: "reply".to_owned(),
-                    port: Some(TRANSPORT_PORT.name.to_owned()),
-                    signature: None,
-                    input: Some("commands".to_owned()),
-                    max_items: Some(4),
-                    max_bytes: Some(1024),
-                    max_request_bytes: None,
-                }],
-                service_outputs: Vec::new(),
+                outputs: Vec::new(),
             },
         )]),
         scenario_producers: BTreeMap::new(),
@@ -1473,7 +1652,7 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
         .session()?
         .declare_subscriber(bus.full_key(&transport::port_key(
             "server",
-            TRANSPORT_PORT.name,
+            TRANSPORT_PORT.endpoint,
             "request",
         )))
         .with(zenoh::handlers::FifoChannel::new(4))
@@ -1503,15 +1682,19 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
             ExecutionTime::from_nanos(2_000_000),
             ExecutionDuration::from_millis(1),
         ),
-        metadata.command_id(),
-        metadata.eligible_boundary(),
+        metadata.command_id.expect("command identity"),
+        metadata.eligible_boundary.expect("eligibility boundary"),
         metadata.caller_rank.expect("request caller rank"),
     )
     .with_caller(metadata.caller.clone().expect("request caller"))
     .encode_bounded()?;
     bus.session()?
         .put(
-            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            bus.full_key(&transport::port_key(
+                "server",
+                TRANSPORT_PORT.endpoint,
+                "reply",
+            )),
             transport::encode_prost(&TransportResponse { value: 42 })?,
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
@@ -1584,8 +1767,10 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
             ExecutionTime::from_nanos(9_000_000),
             ExecutionDuration::from_millis(1),
         ),
-        retry_metadata.command_id(),
-        retry_metadata.eligible_boundary(),
+        retry_metadata.command_id.expect("command identity"),
+        retry_metadata
+            .eligible_boundary
+            .expect("eligibility boundary"),
         retry_metadata
             .caller_rank
             .expect("late request caller rank"),
@@ -1594,7 +1779,11 @@ async fn generated_request_is_one_shot_across_reply_timeout_withdrawal_and_reset
     .encode_bounded()?;
     bus.session()?
         .put(
-            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            bus.full_key(&transport::port_key(
+                "server",
+                TRANSPORT_PORT.endpoint,
+                "reply",
+            )),
             transport::encode_prost(&TransportResponse { value: 99 })?,
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
@@ -1697,8 +1886,8 @@ impl crate::runtime::outputs::OutputBindings for GeneratedCallRuntime {
 }
 
 fn generated_call_manifest() -> RuntimeLaunchManifest {
-    let signature = SourceMethodSignature {
-        endpoint: TRANSPORT_PORT.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: TRANSPORT_PORT.endpoint.to_owned(),
         service: TRANSPORT_PORT.service.to_owned(),
         method: TRANSPORT_PORT.method.to_owned(),
         shape: crate::artifact::MethodShape::Call,
@@ -1707,51 +1896,55 @@ fn generated_call_manifest() -> RuntimeLaunchManifest {
         retained_latest: false,
         lease_valid_for_ms: None,
     };
-    let caller = SourceRuntimeRecord {
-        period_ms: Some(1),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
-        inputs: vec![SourceInputRecord {
+    let caller = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 1,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
+        inputs: vec![crate::artifact::InputRecord {
+            max_age_ms: None,
+            request_fqn: None,
+            response_fqn: None,
             name: "completions".to_owned(),
-            role: "call_completions".to_owned(),
+            delivery: crate::artifact::InputDelivery::CallCompletions,
             max_items: None,
             max_bytes: None,
             port: None,
             signature: None,
+            response_max_bytes: None,
+            response_max_items: None,
         }],
-        transient_outputs: Vec::new(),
-        service_outputs: Vec::new(),
+        outputs: Vec::new(),
     };
-    let server = SourceRuntimeRecord {
-        period_ms: Some(1),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
-        inputs: vec![SourceInputRecord {
+    let server = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 1,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
+        inputs: vec![crate::artifact::InputRecord {
+            max_age_ms: None,
+            request_fqn: None,
+            response_fqn: None,
             name: "commands".to_owned(),
-            role: "call_ingress".to_owned(),
+            delivery: crate::artifact::InputDelivery::CallIngress,
             max_items: Some(4),
             max_bytes: Some(1024),
-            port: Some(TRANSPORT_PORT.name.to_owned()),
+            port: Some(TRANSPORT_PORT.endpoint.to_owned()),
             signature: Some(signature),
+            response_max_bytes: Some(1024),
+            response_max_items: Some(4),
         }],
-        transient_outputs: vec![SourceOutputRecord {
-            name: "replies".to_owned(),
-            role: "reply".to_owned(),
-            port: Some(TRANSPORT_PORT.name.to_owned()),
-            signature: None,
-            input: Some("commands".to_owned()),
-            max_items: Some(4),
-            max_bytes: Some(1024),
-            max_request_bytes: None,
-        }],
-        service_outputs: Vec::new(),
+        outputs: Vec::new(),
     };
     RuntimeLaunchManifest {
         root: PathBuf::from("."),
         robot_id: "generated-call-test".to_owned(),
         instance_id: "caller".to_owned(),
         executable: PathBuf::from("generated-call-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
@@ -1791,7 +1984,7 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
         .session()?
         .declare_subscriber(bus.full_key(&transport::port_key(
             "server",
-            TRANSPORT_PORT.name,
+            TRANSPORT_PORT.endpoint,
             "request",
         )))
         .with(zenoh::handlers::FifoChannel::new(4))
@@ -1824,8 +2017,10 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
             ExecutionTime::from_nanos(1_000_000),
             ExecutionDuration::from_millis(1),
         ),
-        request_metadata.command_id(),
-        request_metadata.eligible_boundary(),
+        request_metadata.command_id.expect("command identity"),
+        request_metadata
+            .eligible_boundary
+            .expect("eligibility boundary"),
         request_metadata
             .caller_rank
             .expect("generated request caller rank"),
@@ -1839,7 +2034,11 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
     .encode_bounded()?;
     bus.session()?
         .put(
-            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            bus.full_key(&transport::port_key(
+                "server",
+                TRANSPORT_PORT.endpoint,
+                "reply",
+            )),
             transport::encode_prost(&TransportResponse { value: 42 })?,
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
@@ -1874,7 +2073,11 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
 
     bus.session()?
         .put(
-            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            bus.full_key(&transport::port_key(
+                "server",
+                TRANSPORT_PORT.endpoint,
+                "reply",
+            )),
             transport::encode_prost(&TransportResponse { value: 99 })?,
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
@@ -1885,8 +2088,10 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
                     ExecutionTime::from_nanos(3_000_000),
                     ExecutionDuration::from_millis(1),
                 ),
-                request_metadata.command_id(),
-                request_metadata.eligible_boundary(),
+                request_metadata.command_id.expect("command identity"),
+                request_metadata
+                    .eligible_boundary
+                    .expect("eligibility boundary"),
                 request_metadata
                     .caller_rank
                     .expect("stale generated request caller rank"),
@@ -1912,7 +2117,11 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
     let replacement_metadata = replacement.metadata();
     bus.session()?
         .put(
-            bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+            bus.full_key(&transport::port_key(
+                "server",
+                TRANSPORT_PORT.endpoint,
+                "reply",
+            )),
             transport::encode_prost(&TransportResponse { value: 43 })?,
         )
         .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
@@ -1923,8 +2132,10 @@ async fn generated_call_crosses_transport_and_completes_in_a_later_invocation() 
                     ExecutionTime::from_nanos(4_000_000),
                     ExecutionDuration::from_millis(1),
                 ),
-                replacement_metadata.command_id(),
-                replacement_metadata.eligible_boundary(),
+                replacement_metadata.command_id.expect("command identity"),
+                replacement_metadata
+                    .eligible_boundary
+                    .expect("eligibility boundary"),
                 replacement_metadata
                     .caller_rank
                     .expect("replacement generated request caller rank"),
@@ -2074,8 +2285,8 @@ impl crate::runtime::outputs::OutputBindings for CountingProviderRuntime {
 
 fn local_requirement_manifest() -> RuntimeLaunchManifest {
     let mut manifest = generated_call_manifest();
-    let signature = SourceMethodSignature {
-        endpoint: TRANSPORT_PORT.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: TRANSPORT_PORT.endpoint.to_owned(),
         service: TRANSPORT_PORT.service.to_owned(),
         method: TRANSPORT_PORT.method.to_owned(),
         shape: crate::artifact::MethodShape::Call,
@@ -2084,41 +2295,61 @@ fn local_requirement_manifest() -> RuntimeLaunchManifest {
         retained_latest: false,
         lease_valid_for_ms: None,
     };
-    let requirement = |field: &str| SourceInputRecord {
+    let requirement = |field: &str| crate::artifact::InputRecord {
+        max_age_ms: None,
+        request_fqn: None,
+        response_fqn: None,
         name: field.to_owned(),
-        role: "call_completions".to_owned(),
+        delivery: crate::artifact::InputDelivery::CallCompletions,
         max_items: None,
         max_bytes: None,
-        port: Some(TRANSPORT_PORT.name.to_owned()),
+        port: Some(TRANSPORT_PORT.endpoint.to_owned()),
         signature: Some(signature.clone()),
+        response_max_bytes: None,
+        response_max_items: None,
     };
-    let consumer = SourceRuntimeRecord {
-        period_ms: Some(1),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
+    let consumer = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 1,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
         inputs: vec![requirement("ask"), requirement("verify")],
-        transient_outputs: Vec::new(),
-        service_outputs: Vec::new(),
+        outputs: Vec::new(),
     };
     manifest.instance_id = "local".to_owned();
+    let transport_endpoint = TRANSPORT_PORT.endpoint;
     manifest.connections = BTreeMap::from([
         (
-            "local.ask".to_owned(),
-            vec![format!("countdown.{}", TRANSPORT_PORT.name)],
+            graph_endpoint("local", "ask"),
+            vec![crate::artifact::bundle::EndpointReference {
+                instance: "countdown".to_owned(),
+                endpoint: transport_endpoint.to_owned(),
+            }],
         ),
         (
-            "local.verify".to_owned(),
-            vec![format!("countdown2.{}", TRANSPORT_PORT.name)],
+            graph_endpoint("local", "verify"),
+            vec![crate::artifact::bundle::EndpointReference {
+                instance: "countdown2".to_owned(),
+                endpoint: transport_endpoint.to_owned(),
+            }],
         ),
     ]);
     // Bundle admission resolves each requirement destination once, keyed by
     // the local field name, exactly as precompute_requirement_destinations
     // would for an admitted bundle.
     manifest.requirement_destinations = BTreeMap::from([
-        ("ask".to_owned(), ("countdown".to_owned(), TRANSPORT_PORT)),
+        (
+            "ask".to_owned(),
+            (
+                "countdown".to_owned(),
+                transport::MethodBinding::from_method(TRANSPORT_PORT),
+            ),
+        ),
         (
             "verify".to_owned(),
-            ("countdown2".to_owned(), TRANSPORT_PORT),
+            ("countdown2".to_owned(), TRANSPORT_PORT.into()),
         ),
     ]);
     manifest.artifacts.insert("local".to_owned(), consumer);
@@ -2147,6 +2378,27 @@ fn poll_provider(
         runner.poll(ExecutionTime::from_nanos(attempt * 1_000_000))?;
     }
     Ok(())
+}
+
+#[test]
+fn local_requirements_refuse_an_empty_field_marker() {
+    let manifest = local_requirement_manifest();
+    let signature = GENERATED_TRANSPORT_METHOD.signature();
+    assert!(
+        manifest
+            .resolve_requirement_destination("", &signature)
+            .is_err()
+    );
+    assert!(
+        manifest
+            .resolve_requirement_destination("ask", &signature)
+            .is_ok()
+    );
+    assert!(
+        manifest
+            .resolve_requirement_destination("verify", &signature)
+            .is_ok()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2483,7 +2735,7 @@ async fn generated_call_outstanding_cap_enforces_provider_ingress_bound() -> cra
         .session()?
         .declare_subscriber(bus.full_key(&transport::port_key(
             "server",
-            TRANSPORT_PORT.name,
+            TRANSPORT_PORT.endpoint,
             "request",
         )))
         .with(zenoh::handlers::FifoChannel::new(8))
@@ -2521,7 +2773,11 @@ async fn generated_call_outstanding_cap_enforces_provider_ingress_bound() -> cra
     for (index, metadata) in request_metadata.iter().take(2).enumerate() {
         bus.session()?
             .put(
-                bus.full_key(&transport::port_key("server", TRANSPORT_PORT.name, "reply")),
+                bus.full_key(&transport::port_key(
+                    "server",
+                    TRANSPORT_PORT.endpoint,
+                    "reply",
+                )),
                 transport::encode_prost(&TransportResponse {
                     value: 100 + index as u32,
                 })?,
@@ -2534,8 +2790,8 @@ async fn generated_call_outstanding_cap_enforces_provider_ingress_bound() -> cra
                         ExecutionTime::from_nanos((5 + index as u64) * 1_000_000),
                         ExecutionDuration::from_millis(1),
                     ),
-                    metadata.command_id(),
-                    metadata.eligible_boundary(),
+                    metadata.command_id.expect("command identity"),
+                    metadata.eligible_boundary.expect("eligibility boundary"),
                     metadata.caller_rank.expect("outstanding caller rank"),
                 )
                 .with_caller(metadata.caller.clone().expect("outstanding caller"))
@@ -3051,14 +3307,16 @@ struct ReadResponse {
     value: u32,
 }
 
-const READ_PORT: crate::port::Read<ReadRequest, ReadResponse> = crate::port::Read::with_signature(
-    "read",
-    "phoxal.runtime.test.Reader",
-    "Current",
-    "phoxal.runtime.test.ReadRequest",
-    "phoxal.runtime.test.ReadResponse",
-    &[],
-);
+const READ_PORT: crate::contracts::CallMethod<ReadRequest, ReadResponse> =
+    crate::contracts::CallMethod::new(
+        "phoxal.runtime.test.Reader",
+        "Current",
+        "read",
+        "phoxal.runtime.test.ReadRequest",
+        "phoxal.runtime.test.ReadResponse",
+        None,
+        &[],
+    );
 
 #[derive(Default)]
 struct PublicReadRuntime {
@@ -3260,8 +3518,8 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     )
     .await
     .expect("test bus opens");
-    let signature = SourceMethodSignature {
-        endpoint: READ_PORT.signature().name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: READ_PORT.signature().endpoint.to_owned(),
         service: READ_PORT.signature().service.to_owned(),
         method: READ_PORT.signature().method.to_owned(),
         shape: crate::artifact::MethodShape::Call,
@@ -3272,25 +3530,31 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     };
     let mut connections = BTreeMap::new();
     connections.insert(
-        "read-client.read".to_owned(),
-        vec!["reader.read".to_owned()],
+        graph_endpoint("read-client", "read"),
+        vec![graph_endpoint("reader", "read")],
     );
-    connections.insert("other.read".to_owned(), vec!["reader.read".to_owned()]);
+    connections.insert(
+        graph_endpoint("other", "read"),
+        vec![graph_endpoint("reader", "read")],
+    );
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "reader".to_owned(),
-        SourceRuntimeRecord {
-            period_ms: Some(1),
-            timeout_ms: Some(100),
-            init_timeout_ms: Some(100),
+        crate::artifact::RuntimeRecord::V0 {
+            record: crate::artifact::RUNTIME_RECORD.to_owned(),
+            conversions: Vec::new(),
+            config_schema: serde_json::json!({"type": "object"}),
+            period_ms: 1,
+            timeout_ms: 100,
+            init_timeout_ms: 100,
             inputs: Vec::new(),
-            transient_outputs: Vec::new(),
-            service_outputs: vec![SourceOutputRecord {
+            outputs: vec![crate::artifact::OutputRecord {
+                every_steps: None,
+                bootstrap: false,
+                timeout_ms: None,
                 name: "current".to_owned(),
-                role: "method".to_owned(),
                 port: Some("read".to_owned()),
                 signature: Some(signature),
-                input: None,
                 max_items: Some(1),
                 max_bytes: Some(64),
                 max_request_bytes: Some(64),
@@ -3302,7 +3566,6 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         robot_id: "typed-read-test".to_owned(),
         instance_id: "read-client".to_owned(),
         executable: PathBuf::from("typed-read-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
         requirement_destinations: BTreeMap::new(),
@@ -3314,7 +3577,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     let session = bus.session().expect("session is open");
     let request_key = bus.full_key(&crate::runtime::transport::port_key(
         "reader",
-        READ_PORT.name(),
+        READ_PORT.signature().endpoint,
         "read-request",
     ));
     let requests = session
@@ -3396,7 +3659,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     .expect("reply metadata");
     let response_key = bus.full_key(&crate::runtime::transport::port_key(
         "reader",
-        READ_PORT.name(),
+        READ_PORT.signature().endpoint,
         "reply",
     ));
     session
@@ -3578,7 +3841,6 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
         robot_id: "public-read-test".to_owned(),
         instance_id: "public-reader".to_owned(),
         executable: PathBuf::from("public-read-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
@@ -3601,7 +3863,7 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
     let session = bus.session().expect("session is open");
     let reply_key = bus.full_key(&crate::runtime::transport::port_key(
         "public-reader",
-        READ_PORT.name(),
+        READ_PORT.signature().endpoint,
         "reply",
     ));
     let replies = session
@@ -3611,12 +3873,12 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
         .expect("reply subscriber");
     let request_key = bus.full_key(&crate::runtime::transport::port_key(
         "public-reader",
-        READ_PORT.name(),
+        READ_PORT.signature().endpoint,
         "request",
     ));
     let mut request_payload = Vec::new();
     ReadRequest { value: 1 }.encode(&mut request_payload)?;
-    let request_metadata = crate::runtime::transport::RuntimeWireMetadata::external_request(
+    let request_metadata = crate::communication::execution::RuntimeWireMetadata::external_request(
         ExecutionTime::default(),
         7,
         0,
@@ -3662,16 +3924,18 @@ struct SetpointTestInputs {
 
 #[test]
 fn empty_protobuf_setpoint_is_a_value_and_withdrawal_is_explicit() {
-    let signature = crate::port::PortSignature::with_descriptor(
-        "target",
+    let signature = crate::contracts::MethodSignature::new(
         "test.Service",
         "Target",
-        crate::port::PortKind::Setpoint,
-        "google.protobuf.Empty",
+        "target",
+        crate::contracts::MethodShape::Call,
         "phoxal.runtime.test.TypedState",
+        "google.protobuf.Empty",
+        false,
+        Some(100),
         &[],
     );
-    let binding = transport::PortBinding::from_signature(signature);
+    let binding = transport::MethodBinding::from_method(signature);
     let mut metadata = RuntimeWireMetadata::data("source", ExecutionTime::default(), 1);
     metadata.expires_at_nanos = Some(100);
     let mut inputs = SetpointTestInputs {
@@ -3712,13 +3976,75 @@ fn empty_protobuf_setpoint_is_a_value_and_withdrawal_is_explicit() {
     );
 }
 
-const SOURCE_STATE: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
-    "state",
+#[test]
+fn leased_input_refuses_invalid_contracts_and_excessive_validity() {
+    let signature = crate::contracts::MethodSignature::new(
+        "test.Service",
+        "Target",
+        "target",
+        crate::contracts::MethodShape::Call,
+        "phoxal.runtime.test.TypedState",
+        "google.protobuf.Empty",
+        false,
+        Some(100),
+        &[],
+    );
+    let binding = transport::MethodBinding::from_method(signature);
+    let mut metadata = RuntimeWireMetadata::data("source", ExecutionTime::default(), 1);
+    metadata.expires_at_nanos = Some(100_000_000);
+    let mut inputs = SetpointTestInputs {
+        target: crate::runtime::Setpoint::withdrawn(),
+    };
+    for invalid_lease in [None, Some(0)] {
+        let mut invalid = binding.clone();
+        invalid.lease_valid_for_ms = invalid_lease;
+        assert!(
+            TransportInputSet::decode_transport_field(
+                &mut inputs,
+                "target",
+                Some(&invalid),
+                vec![WireSample::from_parts(vec![], metadata.clone(), "test")],
+            )
+            .is_err()
+        );
+        assert!(inputs.target.value().is_none());
+    }
+    for expiry in [0, 100_000_001] {
+        let mut invalid = metadata.clone();
+        invalid.expires_at_nanos = Some(expiry);
+        assert!(
+            TransportInputSet::decode_transport_field(
+                &mut inputs,
+                "target",
+                Some(&binding),
+                vec![WireSample::from_parts(vec![], invalid, "test")],
+            )
+            .is_err()
+        );
+        assert!(inputs.target.value().is_none());
+    }
+    TransportInputSet::decode_transport_field(
+        &mut inputs,
+        "target",
+        Some(&binding),
+        vec![WireSample::from_parts(vec![], metadata, "test")],
+    )
+    .expect("the declared lease boundary remains inclusive");
+    assert_eq!(
+        inputs.target.valid_until(),
+        Some(ExecutionTime::from_nanos(100_000_000))
+    );
+}
+
+const SOURCE_STATE: crate::contracts::MethodSignature = crate::contracts::MethodSignature::new(
     "phoxal.runtime.test",
     "State",
-    crate::port::PortKind::State,
+    "state",
+    crate::contracts::MethodShape::Observation,
     "google.protobuf.Empty",
     "phoxal.runtime.test.TypedState",
+    true,
+    None,
     &[],
 );
 
@@ -3777,8 +4103,8 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
     )
     .await
     .expect("test bus opens");
-    let signature = SourceMethodSignature {
-        endpoint: SOURCE_STATE.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: SOURCE_STATE.endpoint.to_owned(),
         service: SOURCE_STATE.service.to_owned(),
         method: SOURCE_STATE.method.to_owned(),
         shape: crate::artifact::MethodShape::Observation,
@@ -3789,24 +4115,27 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
     };
     let mut connections = BTreeMap::new();
     connections.insert(
-        "consumer.state".to_owned(),
-        vec!["producer.state".to_owned()],
+        graph_endpoint("consumer", "state"),
+        vec![graph_endpoint("producer", "state")],
     );
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "producer".to_owned(),
-        SourceRuntimeRecord {
-            period_ms: Some(10),
-            timeout_ms: Some(100),
-            init_timeout_ms: Some(100),
+        crate::artifact::RuntimeRecord::V0 {
+            record: crate::artifact::RUNTIME_RECORD.to_owned(),
+            conversions: Vec::new(),
+            config_schema: serde_json::json!({"type": "object"}),
+            period_ms: 10,
+            timeout_ms: 100,
+            init_timeout_ms: 100,
             inputs: Vec::new(),
-            transient_outputs: Vec::new(),
-            service_outputs: vec![SourceOutputRecord {
+            outputs: vec![crate::artifact::OutputRecord {
+                every_steps: None,
+                bootstrap: false,
+                timeout_ms: None,
                 name: "state".to_owned(),
-                role: "method".to_owned(),
                 port: Some("state".to_owned()),
                 signature: Some(signature),
-                input: None,
                 max_items: Some(1),
                 max_bytes: Some(64),
                 max_request_bytes: None,
@@ -3818,7 +4147,6 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
         robot_id: "typed-test".to_owned(),
         instance_id: "consumer".to_owned(),
         executable: PathBuf::from("typed-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
         requirement_destinations: BTreeMap::new(),
@@ -3870,19 +4198,19 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
     Ok(())
 }
 
-/// The conversion-role scheduling shape: an arrival-aligned runtime whose
+/// The canonical conversion scheduling shape: an ordinary runtime whose
 /// step mirrors the generated conversion glue — a bounded-freshness Latest
 /// input that forwards only fresh samples, and an optional conversion
 /// failure surfaced as a step error.
-struct ArrivalRuntime {
+struct ConversionRuntime {
     seen: Arc<Mutex<Option<i32>>>,
     fail_on_admit: bool,
 }
 
-impl Runtime for ArrivalRuntime {
+impl Runtime for ConversionRuntime {
     type Config = ();
     type State = ();
-    type Inputs = ArrivalInputs;
+    type Inputs = ConversionInputs;
     type Outputs = ();
 
     fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
@@ -3901,36 +4229,36 @@ impl Runtime for ArrivalRuntime {
             if self.fail_on_admit {
                 return Err(anyhow::anyhow!("converted payload rejected"));
             }
-            *self.seen.lock().expect("arrival observation lock") = Some(sample.payload().value);
+            *self.seen.lock().expect("conversion observation lock") = Some(sample.payload().value);
         }
         Ok((state, ()))
     }
 }
 
-impl RegisteredRuntime for ArrivalRuntime {
-    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(20, 200, 200).with_arrival_releases();
+impl RegisteredRuntime for ConversionRuntime {
+    const SPEC: RuntimeSpec = RuntimeSpec::from_millis(20, 200, 200);
 
     fn retain_artifact_metadata() {}
 }
 
-impl crate::runtime::outputs::OutputBindings for ArrivalRuntime {
+impl crate::runtime::outputs::OutputBindings for ConversionRuntime {
     const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
 }
 
 #[crate::runtime::inputs]
-struct ArrivalInputs {
+struct ConversionInputs {
     #[crate::runtime::input(max_age_ms = 50)]
     state: crate::runtime::Latest<TypedState>,
 }
 
-async fn arrival_runner(
+async fn conversion_runner(
     seen: Arc<Mutex<Option<i32>>>,
     fail_on_admit: bool,
 ) -> crate::Result<(
     RuntimeRunner<
-        ArrivalRuntime,
-        super::ExecutionInputAdapter<ArrivalRuntime>,
-        super::ExecutionOutputAdapter<ArrivalRuntime>,
+        ConversionRuntime,
+        super::ExecutionInputAdapter<ConversionRuntime>,
+        super::ExecutionOutputAdapter<ConversionRuntime>,
     >,
     crate::runtime::connection::ConnectionOwner,
     crate::runtime::connection::Connection,
@@ -3938,13 +4266,13 @@ async fn arrival_runner(
     let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
         crate::runtime::connection::ConnectionConfig::for_participant(
             crate::identity::ExecutionId::mint(),
-            crate::identity::ParticipantId::new("arrival-consumer")?,
+            crate::identity::ParticipantId::new("conversion-consumer")?,
             Vec::new(),
         ),
     )
     .await?;
-    let signature = SourceMethodSignature {
-        endpoint: SOURCE_STATE.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: SOURCE_STATE.endpoint.to_owned(),
         service: SOURCE_STATE.service.to_owned(),
         method: SOURCE_STATE.method.to_owned(),
         shape: crate::artifact::MethodShape::Observation,
@@ -3955,24 +4283,27 @@ async fn arrival_runner(
     };
     let mut connections = BTreeMap::new();
     connections.insert(
-        "consumer.state".to_owned(),
-        vec!["producer.state".to_owned()],
+        graph_endpoint("consumer", "state"),
+        vec![graph_endpoint("producer", "state")],
     );
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "producer".to_owned(),
-        SourceRuntimeRecord {
-            period_ms: Some(20),
-            timeout_ms: Some(200),
-            init_timeout_ms: Some(200),
+        crate::artifact::RuntimeRecord::V0 {
+            record: crate::artifact::RUNTIME_RECORD.to_owned(),
+            conversions: Vec::new(),
+            config_schema: serde_json::json!({"type": "object"}),
+            period_ms: 20,
+            timeout_ms: 200,
+            init_timeout_ms: 200,
             inputs: Vec::new(),
-            transient_outputs: Vec::new(),
-            service_outputs: vec![SourceOutputRecord {
+            outputs: vec![crate::artifact::OutputRecord {
+                every_steps: None,
+                bootstrap: false,
+                timeout_ms: None,
                 name: "state".to_owned(),
-                role: "method".to_owned(),
                 port: Some("state".to_owned()),
                 signature: Some(signature),
-                input: None,
                 max_items: Some(1),
                 max_bytes: Some(64),
                 max_request_bytes: None,
@@ -3981,10 +4312,9 @@ async fn arrival_runner(
     );
     let manifest = RuntimeLaunchManifest {
         root: PathBuf::from("."),
-        robot_id: "arrival-test".to_owned(),
+        robot_id: "conversion-test".to_owned(),
         instance_id: "consumer".to_owned(),
-        executable: PathBuf::from("arrival-test"),
-        executable_sha256: "00".repeat(32),
+        executable: PathBuf::from("conversion-test"),
         config: Value::Object(serde_json::Map::new()),
         connections,
         requirement_destinations: BTreeMap::new(),
@@ -3992,12 +4322,12 @@ async fn arrival_runner(
         scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
-    let mut input = super::ExecutionInputAdapter::<ArrivalRuntime>::unbound();
+    let mut input = super::ExecutionInputAdapter::<ConversionRuntime>::unbound();
     input.bind(bus.clone(), &manifest).await?;
-    let mut output = super::ExecutionOutputAdapter::<ArrivalRuntime>::unbound();
+    let mut output = super::ExecutionOutputAdapter::<ConversionRuntime>::unbound();
     output.bind_direct(bus.clone(), "consumer");
     let runner = RuntimeRunner::new(
-        ArrivalRuntime {
+        ConversionRuntime {
             seen,
             fail_on_admit,
         },
@@ -4029,10 +4359,10 @@ async fn publish_state(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_arrival_pulled_release_converts_between_period_ticks() -> crate::Result<()> {
+async fn a_conversion_waits_for_the_declared_period() -> crate::Result<()> {
     const MS: u64 = 1_000_000;
     let seen = Arc::new(Mutex::new(None));
-    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
+    let (mut runner, owner, bus) = conversion_runner(seen.clone(), false).await?;
     assert!(matches!(
         runner.poll(ExecutionTime::from_nanos(0)),
         Ok(PollOutcome::Accepted {
@@ -4041,7 +4371,7 @@ async fn an_arrival_pulled_release_converts_between_period_ticks() -> crate::Res
     ));
     publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
     assert_eq!(
-        *seen.lock().expect("arrival observation lock"),
+        *seen.lock().expect("conversion observation lock"),
         None,
         "no release ran between ticks"
     );
@@ -4051,19 +4381,17 @@ async fn an_arrival_pulled_release_converts_between_period_ticks() -> crate::Res
         runner.poll(ExecutionTime::from_nanos(5 * MS)),
         Ok(PollOutcome::NotDue { .. })
     ));
-    // ...while the admitted arrival pulls the release to its own instant
-    // and the fresh sample converts immediately.
-    runner.arrive(ExecutionTime::from_nanos(5 * MS));
+    // The same owner converts at its next declared release.
     assert!(matches!(
-        runner.poll(ExecutionTime::from_nanos(5 * MS)),
+        runner.poll(ExecutionTime::from_nanos(20 * MS)),
         Ok(PollOutcome::Accepted {
             invocation_index: 1
         })
     ));
     assert_eq!(
-        *seen.lock().expect("arrival observation lock"),
+        *seen.lock().expect("conversion observation lock"),
         Some(42),
-        "the arrival-triggered release forwarded the fresh sample"
+        "the declared release forwarded the fresh sample"
     );
     runner.stop()?;
     owner.close().await;
@@ -4071,12 +4399,11 @@ async fn an_arrival_pulled_release_converts_between_period_ticks() -> crate::Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stale_sample_through_an_arrival_release_is_not_forwarded() -> crate::Result<()> {
+async fn a_stale_sample_at_the_declared_release_is_not_forwarded() -> crate::Result<()> {
     const MS: u64 = 1_000_000;
     let seen = Arc::new(Mutex::new(None));
-    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
-    // A late first poll (60 ms) skips missed releases; the schedule's next
-    // release is 80 ms, so the 70 ms polls below only run through arrivals.
+    let (mut runner, owner, bus) = conversion_runner(seen.clone(), false).await?;
+    // A late first poll skips missed releases; the next release is 80 ms.
     assert!(matches!(
         runner.poll(ExecutionTime::from_nanos(60 * MS)),
         Ok(PollOutcome::Accepted {
@@ -4085,38 +4412,35 @@ async fn a_stale_sample_through_an_arrival_release_is_not_forwarded() -> crate::
     ));
     // A sample stamped at the start is already older than the 50 ms bound.
     publish_state(&bus, ExecutionTime::from_nanos(0)).await?;
-    runner.arrive(ExecutionTime::from_nanos(70 * MS));
     assert!(matches!(
-        runner.poll(ExecutionTime::from_nanos(70 * MS)),
+        runner.poll(ExecutionTime::from_nanos(80 * MS)),
         Ok(PollOutcome::Accepted {
             invocation_index: 1
         })
     ));
     assert_eq!(
-        *seen.lock().expect("arrival observation lock"),
+        *seen.lock().expect("conversion observation lock"),
         None,
-        "stale data must not be forwarded through the arrival path"
+        "stale data must not be forwarded"
     );
-    // A fresh sample through the same path converts.
+    // A fresh sample converts at the following declared release.
     publish_state(&bus, ExecutionTime::from_nanos(65 * MS)).await?;
-    runner.arrive(ExecutionTime::from_nanos(75 * MS));
-    assert!(runner.poll(ExecutionTime::from_nanos(75 * MS)).is_ok());
-    assert_eq!(*seen.lock().expect("arrival observation lock"), Some(42));
+    assert!(runner.poll(ExecutionTime::from_nanos(100 * MS)).is_ok());
+    assert_eq!(*seen.lock().expect("conversion observation lock"), Some(42));
     runner.stop()?;
     owner.close().await;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_conversion_failure_through_an_arrival_release_fails_visibly() -> crate::Result<()> {
+async fn a_conversion_failure_at_the_declared_release_fails_visibly() -> crate::Result<()> {
     const MS: u64 = 1_000_000;
     let seen = Arc::new(Mutex::new(None));
-    let (mut runner, owner, bus) = arrival_runner(seen.clone(), true).await?;
+    let (mut runner, owner, bus) = conversion_runner(seen.clone(), true).await?;
     assert!(runner.poll(ExecutionTime::from_nanos(0)).is_ok());
     publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
-    runner.arrive(ExecutionTime::from_nanos(5 * MS));
     let error = runner
-        .poll(ExecutionTime::from_nanos(5 * MS))
+        .poll(ExecutionTime::from_nanos(20 * MS))
         .expect_err("a conversion failure must surface, never publish a default");
     assert!(
         error.to_string().contains("converted payload rejected"),
@@ -4127,19 +4451,18 @@ async fn a_conversion_failure_through_an_arrival_release_fails_visibly() -> crat
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_holds_through_arrival_releases() -> crate::Result<()> {
+async fn stop_holds_at_the_next_declared_release() -> crate::Result<()> {
     const MS: u64 = 1_000_000;
     let seen = Arc::new(Mutex::new(None));
-    let (mut runner, owner, bus) = arrival_runner(seen.clone(), false).await?;
+    let (mut runner, owner, bus) = conversion_runner(seen.clone(), false).await?;
     assert!(runner.poll(ExecutionTime::from_nanos(0)).is_ok());
     publish_state(&bus, ExecutionTime::from_nanos(5 * MS)).await?;
     runner.stop()?;
-    runner.arrive(ExecutionTime::from_nanos(5 * MS));
     assert!(matches!(
         runner.poll(ExecutionTime::from_nanos(5 * MS)),
         Ok(PollOutcome::Stopped)
     ));
-    assert_eq!(*seen.lock().expect("arrival observation lock"), None);
+    assert_eq!(*seen.lock().expect("conversion observation lock"), None);
     owner.close().await;
     Ok(())
 }
@@ -4160,16 +4483,16 @@ fn reply_receipts_preserve_the_source_port_and_select_only_the_admitted_caller()
     )
     .unwrap();
     let callers = BTreeMap::from([(
-        (TRANSPORT_PORT.name.to_owned(), 3),
+        (TRANSPORT_PORT.endpoint.to_owned(), 3),
         "alice.request".to_owned(),
     )]);
     reply.bind_reply_caller(&callers).unwrap();
     let receipt = reply.delivery_receipt(0).unwrap();
-    assert_eq!(receipt.0, TRANSPORT_PORT.name);
+    assert_eq!(receipt.0, TRANSPORT_PORT.endpoint);
     assert_eq!(receipt.1, "reply");
     assert_eq!(receipt.2.as_deref(), Some("alice.request"));
     let different = BTreeMap::from([(
-        (TRANSPORT_PORT.name.to_owned(), 3),
+        (TRANSPORT_PORT.endpoint.to_owned(), 3),
         "bob.request".to_owned(),
     )]);
     assert!(reply.bind_reply_caller(&different).is_err());
@@ -4203,7 +4526,7 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             .session()?
             .declare_subscriber(bus.full_key(&transport::port_key(
                 "producer",
-                SOURCE_STATE.name,
+                SOURCE_STATE.endpoint,
                 "publish",
             )))
             .with(zenoh::handlers::FifoChannel::new(2))
@@ -4216,12 +4539,11 @@ async fn paused_receiver_fields_acknowledge_independently_when_one_queue_is_full
             expected_sources: BTreeSet::from(["producer".to_owned()]),
             expected_callers: BTreeSet::new(),
             target: format!("consumer.{field}"),
-            port: SOURCE_STATE.name.to_owned(),
+            port: SOURCE_STATE.endpoint.to_owned(),
             direction: "publish".to_owned(),
             ack_leg: "delivery-ack".to_owned(),
             cancel: cancel.clone(),
             reply_admission: None,
-            arrivals: None,
         })));
     }
     for boundary in [1, 2] {
@@ -4272,9 +4594,11 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         robot_id: "read-proof".to_owned(),
         instance_id: "reader".to_owned(),
         executable: PathBuf::from("reader"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
-        connections: BTreeMap::from([("caller.read".to_owned(), vec!["reader.read".to_owned()])]),
+        connections: BTreeMap::from([(
+            graph_endpoint("caller", "read"),
+            vec![graph_endpoint("reader", "read")],
+        )]),
         requirement_destinations: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
@@ -4322,7 +4646,8 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
             64,
             metadata,
         )?
-        .for_instance("reader");
+        .for_instance("reader")
+        .for_immutable_read(true);
         request.stamp_delivery_identity(&execution.to_string(), "timeline", boundary, 0)?;
         request.publish_async(&bus, "caller").await?;
         let reply = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
@@ -4383,7 +4708,8 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         64,
         metadata,
     )?
-    .for_instance("reader");
+    .for_instance("reader")
+    .for_immutable_read(true);
     request.stamp_delivery_identity(&execution.to_string(), "timeline", 3, 0)?;
     request.publish_async(&bus, "caller").await?;
     tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
@@ -4420,7 +4746,8 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         64,
         metadata,
     )?
-    .for_instance("reader");
+    .for_instance("reader")
+    .for_immutable_read(true);
     request.stamp_delivery_identity(&execution.to_string(), "timeline", 4, 0)?;
     request.publish_async(&bus, "caller").await?;
     let reply = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
@@ -4505,7 +4832,6 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         robot_id: "read-proof".to_owned(),
         instance_id: "reader".to_owned(),
         executable: PathBuf::from("reader"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
         requirement_destinations: BTreeMap::new(),
@@ -4573,7 +4899,7 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
             .await?
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let wire = WireSample::from_zenoh(sample)?;
-        received.insert(wire.metadata().command_id(), wire);
+        received.insert(wire.metadata().command_id.expect("command identity"), wire);
     }
     assert_eq!(
         ReadResponse::decode(received[&1].payload())?.value,
@@ -4766,13 +5092,15 @@ impl Meter {
     }
 }
 
-const LIFECYCLE_TICKS: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
-    "ticks",
+const LIFECYCLE_TICKS: crate::contracts::MethodSignature = crate::contracts::MethodSignature::new(
     "phoxal.tests.runner.lifecycle.v1",
     "Ticks",
-    crate::port::PortKind::Event,
+    "ticks",
+    crate::contracts::MethodShape::Observation,
     "google.protobuf.Empty",
     "phoxal.tests.runner.lifecycle.v1.TickEvent",
+    false,
+    None,
     &[],
 );
 
@@ -4794,8 +5122,8 @@ async fn lifecycle_adapters() -> crate::Result<(
         ),
     )
     .await?;
-    let signature = SourceMethodSignature {
-        endpoint: LIFECYCLE_TICKS.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: LIFECYCLE_TICKS.endpoint.to_owned(),
         service: LIFECYCLE_TICKS.service.to_owned(),
         method: LIFECYCLE_TICKS.method.to_owned(),
         shape: crate::artifact::MethodShape::Observation,
@@ -4805,26 +5133,32 @@ async fn lifecycle_adapters() -> crate::Result<(
         lease_valid_for_ms: None,
     };
     let mut connections = BTreeMap::new();
-    connections.insert("meter.ticks".to_owned(), vec!["producer.ticks".to_owned()]);
+    connections.insert(
+        graph_endpoint("meter", "ticks"),
+        vec![graph_endpoint("producer", "ticks")],
+    );
     let mut artifacts = BTreeMap::new();
     artifacts.insert(
         "producer".to_owned(),
-        SourceRuntimeRecord {
-            period_ms: Some(10),
-            timeout_ms: Some(100),
-            init_timeout_ms: Some(100),
+        crate::artifact::RuntimeRecord::V0 {
+            record: crate::artifact::RUNTIME_RECORD.to_owned(),
+            conversions: Vec::new(),
+            config_schema: serde_json::json!({"type": "object"}),
+            period_ms: 10,
+            timeout_ms: 100,
+            init_timeout_ms: 100,
             inputs: Vec::new(),
-            transient_outputs: vec![SourceOutputRecord {
+            outputs: vec![crate::artifact::OutputRecord {
+                every_steps: None,
+                bootstrap: false,
+                timeout_ms: None,
                 name: "ticks".to_owned(),
-                role: "method".to_owned(),
                 port: Some("ticks".to_owned()),
                 signature: Some(signature),
-                input: None,
                 max_items: Some(4),
                 max_bytes: Some(256),
                 max_request_bytes: None,
             }],
-            service_outputs: Vec::new(),
         },
     );
     let manifest = RuntimeLaunchManifest {
@@ -4832,7 +5166,6 @@ async fn lifecycle_adapters() -> crate::Result<(
         robot_id: "lifecycle-test".to_owned(),
         instance_id: "meter".to_owned(),
         executable: PathBuf::from("lifecycle-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections,
         requirement_destinations: BTreeMap::new(),
@@ -5168,7 +5501,7 @@ impl Importer {
 }
 
 fn reverse_graph_manifest() -> RuntimeLaunchManifest {
-    let report_signature = SourceMethodSignature {
+    let report_signature = crate::artifact::MethodSignature {
         endpoint: "report".to_owned(),
         service: "phoxal.runtime.reverse.v1.Report".to_owned(),
         method: "report".to_owned(),
@@ -5178,48 +5511,57 @@ fn reverse_graph_manifest() -> RuntimeLaunchManifest {
         retained_latest: true,
         lease_valid_for_ms: None,
     };
-    let exporter = SourceRuntimeRecord {
-        period_ms: Some(10),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
+    let exporter = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 10,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
         inputs: vec![],
-        transient_outputs: vec![SourceOutputRecord {
+        outputs: vec![crate::artifact::OutputRecord {
+            every_steps: None,
+            bootstrap: false,
+            timeout_ms: None,
             name: "report".to_owned(),
-            role: "method".to_owned(),
             port: Some("report".to_owned()),
             signature: Some(report_signature),
-            input: None,
             max_items: None,
             max_bytes: Some(4096),
             max_request_bytes: None,
         }],
-        service_outputs: vec![],
     };
-    let importer = SourceRuntimeRecord {
-        period_ms: Some(10),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
-        inputs: vec![SourceInputRecord {
+    let importer = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 10,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
+        inputs: vec![crate::artifact::InputRecord {
+            max_age_ms: None,
+            request_fqn: None,
+            response_fqn: None,
             name: "report".to_owned(),
-            role: "observation_latest".to_owned(),
+            delivery: crate::artifact::InputDelivery::ObservationLatest,
             max_items: None,
             max_bytes: Some(4096),
             port: Some("report".to_owned()),
             signature: None,
+            response_max_bytes: None,
+            response_max_items: None,
         }],
-        transient_outputs: vec![],
-        service_outputs: vec![],
+        outputs: Vec::new(),
     };
     RuntimeLaunchManifest {
         root: PathBuf::from("."),
         robot_id: "reverse-graph-test".to_owned(),
         instance_id: "importer".to_owned(),
         executable: PathBuf::from("reverse-graph-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::from([(
-            "importer.report".to_owned(),
-            vec!["exporter.report".to_owned()],
+            graph_endpoint("importer", "report"),
+            vec![graph_endpoint("exporter", "report")],
         )]),
         requirement_destinations: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
@@ -5320,7 +5662,7 @@ fn cycle_reply_wire(
     command_id: u64,
     delivery: Option<(&str, &str)>,
 ) -> WireSample {
-    let mut metadata = transport::RuntimeWireMetadata::command(
+    let mut metadata = crate::communication::execution::RuntimeWireMetadata::command(
         source,
         ExecutionTime::default(),
         command_id,
@@ -5562,10 +5904,15 @@ fn a_reply_with_a_mismatched_identity_is_rejected_as_corrupt() {
 #[test]
 fn refused_and_failed_wire_controls_map_to_their_request_errors() {
     let correlations = cycle_admission(7);
-    let mut metadata =
-        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
-            .with_caller("cycle.ask")
-            .with_reason("queue full");
+    let mut metadata = crate::communication::execution::RuntimeWireMetadata::command(
+        "countdown",
+        ExecutionTime::default(),
+        7,
+        1,
+        3,
+    )
+    .with_caller("cycle.ask")
+    .with_reason("queue full");
     metadata.control = transport::WireControl::Rejected as u32;
     let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
     match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
@@ -5581,9 +5928,14 @@ fn refused_and_failed_wire_controls_map_to_their_request_errors() {
     }
 
     let correlations = cycle_admission(7);
-    let mut metadata =
-        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
-            .with_caller("cycle.ask");
+    let mut metadata = crate::communication::execution::RuntimeWireMetadata::command(
+        "countdown",
+        ExecutionTime::default(),
+        7,
+        1,
+        3,
+    )
+    .with_caller("cycle.ask");
     metadata.control = transport::WireControl::Failed as u32;
     let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
     match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
@@ -5601,9 +5953,14 @@ fn refused_and_failed_wire_controls_map_to_their_request_errors() {
 fn an_oversized_reply_body_maps_to_the_oversized_error() {
     // The admitted call caps responses at eight encoded bytes.
     let correlations = cycle_admission(7);
-    let metadata =
-        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
-            .with_caller("cycle.ask");
+    let metadata = crate::communication::execution::RuntimeWireMetadata::command(
+        "countdown",
+        ExecutionTime::default(),
+        7,
+        1,
+        3,
+    )
+    .with_caller("cycle.ask");
     let wire = WireSample::from_parts(vec![0; 9], metadata, "cycle/ports/ask/reply");
     match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
         .expect("an oversized reply classifies")
@@ -5616,9 +5973,14 @@ fn an_oversized_reply_body_maps_to_the_oversized_error() {
     }
 
     let correlations = cycle_admission(7);
-    let mut metadata =
-        transport::RuntimeWireMetadata::command("countdown", ExecutionTime::default(), 7, 1, 3)
-            .with_caller("cycle.ask");
+    let mut metadata = crate::communication::execution::RuntimeWireMetadata::command(
+        "countdown",
+        ExecutionTime::default(),
+        7,
+        1,
+        3,
+    )
+    .with_caller("cycle.ask");
     metadata.control = transport::WireControl::Oversized as u32;
     let wire = WireSample::from_parts(Vec::new(), metadata, "cycle/ports/ask/reply");
     match super::input::classify_generated_reply(&wire, "cycle", "exec-1", None, &correlations)
@@ -5666,7 +6028,7 @@ fn retained_completions_reserve_item_and_byte_charges_until_consumed() {
 #[test]
 fn the_retained_mailbox_bounds_its_item_count_and_encoded_bytes() {
     let mut adapter = ExecutionInputAdapter::<CountingProviderRuntime>::unbound();
-    for ticket in 0..super::exchange::MAX_RETAINED_COMPLETIONS as u128 {
+    for ticket in 0..crate::runtime::input::MAX_RETAINED_COMPLETIONS as u128 {
         adapter
             .admit_retained_completion(completion_of(ticket, 1))
             .expect("admission up to the item bound");
@@ -5899,8 +6261,8 @@ async fn cycle_graph() -> crate::Result<(
         ),
     )
     .await?;
-    let signature = SourceMethodSignature {
-        endpoint: TRANSPORT_PORT.name.to_owned(),
+    let signature = crate::artifact::MethodSignature {
+        endpoint: TRANSPORT_PORT.endpoint.to_owned(),
         service: TRANSPORT_PORT.service.to_owned(),
         method: TRANSPORT_PORT.method.to_owned(),
         shape: crate::artifact::MethodShape::Call,
@@ -5909,35 +6271,41 @@ async fn cycle_graph() -> crate::Result<(
         retained_latest: false,
         lease_valid_for_ms: None,
     };
-    let consumer_record = SourceRuntimeRecord {
-        period_ms: Some(10),
-        timeout_ms: Some(100),
-        init_timeout_ms: Some(100),
-        inputs: vec![SourceInputRecord {
+    let consumer_record = crate::artifact::RuntimeRecord::V0 {
+        record: crate::artifact::RUNTIME_RECORD.to_owned(),
+        conversions: Vec::new(),
+        config_schema: serde_json::json!({"type": "object"}),
+        period_ms: 10,
+        timeout_ms: 100,
+        init_timeout_ms: 100,
+        inputs: vec![crate::artifact::InputRecord {
+            max_age_ms: None,
+            request_fqn: None,
+            response_fqn: None,
             name: "ask".to_owned(),
-            role: "call_completions".to_owned(),
+            delivery: crate::artifact::InputDelivery::CallCompletions,
             max_items: None,
             max_bytes: None,
-            port: Some(TRANSPORT_PORT.name.to_owned()),
+            port: Some(TRANSPORT_PORT.endpoint.to_owned()),
             signature: Some(signature),
+            response_max_bytes: Some(1024),
+            response_max_items: Some(4),
         }],
-        transient_outputs: vec![],
-        service_outputs: vec![],
+        outputs: Vec::new(),
     };
     let mut manifest = RuntimeLaunchManifest {
         root: PathBuf::from("."),
         robot_id: "cycle-graph-test".to_owned(),
         instance_id: "cycle".to_owned(),
         executable: PathBuf::from("cycle-graph-test"),
-        executable_sha256: "00".repeat(32),
         config: Value::Object(serde_json::Map::new()),
-        connections: BTreeMap::from([(
-            "cycle.ask".to_owned(),
-            vec![format!("countdown.{}", TRANSPORT_PORT.name)],
-        )]),
+        connections: BTreeMap::from([(graph_endpoint("cycle", "ask"), vec![])]),
         requirement_destinations: BTreeMap::from([(
             "ask".to_owned(),
-            ("countdown".to_owned(), TRANSPORT_PORT),
+            (
+                "countdown".to_owned(),
+                transport::MethodBinding::from_method(TRANSPORT_PORT),
+            ),
         )]),
         observation_providers: BTreeMap::new(),
         scenario_producers: BTreeMap::new(),
@@ -6110,4 +6478,350 @@ async fn a_reset_mid_exchange_fences_retired_calls_and_keeps_draining() -> crate
     provider.stop()?;
     owner.close().await;
     crate::Result::Ok(())
+}
+
+// ---- Authored leased setpoint source admission -------------------------
+
+/// Marker payload type: the descriptors below carry the identities, so the
+/// Rust type only grounds the descriptor generics.
+#[derive(Debug)]
+struct FixtureIntent;
+
+const FIXTURE_PAYLOAD: &str = "fixture.MotionIntent";
+
+/// The consumer's public leased call ingress, exactly as a generated
+/// `#[phoxal::input(lease_ms = ...)]` declaration binds it.
+fn leased_ingress() -> phoxal::contracts::CallMethod<FixtureIntent, phoxal::contracts::Empty> {
+    phoxal::contracts::CallMethod::new(
+        FIXTURE_PAYLOAD,
+        "manual",
+        "manual",
+        FIXTURE_PAYLOAD,
+        "google.protobuf.Empty",
+        Some(100),
+        &[],
+    )
+}
+
+/// The source brain's authored leased projection, exactly as a generated
+/// `#[phoxal::output(projection = state, lease_ms = ...)]` declaration
+/// publishes it.
+fn leased_projection() -> phoxal::contracts::ObservationMethod<FixtureIntent> {
+    phoxal::contracts::ObservationMethod::new(
+        FIXTURE_PAYLOAD,
+        "manual",
+        "manual",
+        "google.protobuf.Empty",
+        FIXTURE_PAYLOAD,
+        true,
+        Some(100),
+        &[],
+    )
+}
+
+/// Serializes one contract signature in the compiled artifact record format.
+fn signature_json(signature: phoxal::contracts::MethodSignature) -> serde_json::Value {
+    serde_json::json!({
+        "endpoint": signature.endpoint,
+        "service": signature.service,
+        "method": signature.method,
+        "shape": match signature.shape {
+            phoxal::contracts::MethodShape::Call => "call",
+            phoxal::contracts::MethodShape::Observation => "observation",
+        },
+        "request": signature.request,
+        "response": signature.response,
+        "retained_latest": signature.retained_latest,
+        "lease_valid_for_ms": signature.lease.map(|lease| lease.valid_for_ms()),
+    })
+}
+
+fn leased_input_field(
+    ingress: phoxal::contracts::CallMethod<FixtureIntent, phoxal::contracts::Empty>,
+) -> crate::runtime::transport::InputTransportField {
+    crate::runtime::transport::InputTransportField {
+        name: "manual",
+        kind: crate::runtime::input::InputKind::Setpoint,
+        signature: Some(ingress.signature()),
+        max_age_ms: None,
+        max_items: None,
+        max_bytes: Some(4_096),
+    }
+}
+
+/// Writes one two-participant bundle whose consumer leases `brain.manual`.
+fn leased_source_bundle(root: &std::path::Path, source_signature: serde_json::Value) {
+    let leased_output = crate::artifact::OutputRecord {
+        name: "manual".to_owned(),
+        port: Some("manual".to_owned()),
+        signature: Some(
+            serde_json::from_value::<crate::artifact::MethodSignature>(source_signature)
+                .expect("source signature decodes"),
+        ),
+        max_items: None,
+        max_bytes: Some(256),
+        max_request_bytes: None,
+        every_steps: None,
+        bootstrap: false,
+        timeout_ms: None,
+    };
+    let leased_input = crate::artifact::InputRecord {
+        name: "manual".to_owned(),
+        delivery: crate::artifact::InputDelivery::LeasedValue,
+        max_age_ms: None,
+        max_items: None,
+        max_bytes: Some(4_096),
+        port: Some("manual".to_owned()),
+        signature: Some(method_signature_record(leased_ingress().signature())),
+        request_fqn: None,
+        response_fqn: None,
+        response_max_bytes: None,
+        response_max_items: None,
+    };
+    let brain_runtime = {
+        let crate::artifact::RuntimeRecord::V0 {
+            record,
+            period_ms,
+            timeout_ms,
+            init_timeout_ms,
+            config_schema,
+            inputs,
+            ..
+        } = bundle_fixture_runtime(serde_json::json!({"type": "object"}));
+        crate::artifact::RuntimeRecord::V0 {
+            record,
+            period_ms,
+            timeout_ms,
+            init_timeout_ms,
+            config_schema,
+            inputs,
+            conversions: Vec::new(),
+            outputs: vec![leased_output],
+        }
+    };
+    let consumer_runtime = {
+        let crate::artifact::RuntimeRecord::V0 {
+            record,
+            period_ms,
+            timeout_ms,
+            init_timeout_ms,
+            config_schema,
+            outputs,
+            ..
+        } = bundle_fixture_runtime(serde_json::json!({"type": "object"}));
+        crate::artifact::RuntimeRecord::V0 {
+            record,
+            period_ms,
+            timeout_ms,
+            init_timeout_ms,
+            config_schema,
+            inputs: vec![leased_input],
+            conversions: Vec::new(),
+            outputs,
+        }
+    };
+    write_bundle_fixture(
+        root,
+        vec![
+            (b"brain-fixture".to_vec(), brain_runtime),
+            (b"consumer-fixture".to_vec(), consumer_runtime),
+        ],
+        vec![
+            (
+                "brain".to_owned(),
+                crate::artifact::bundle::InstanceRole::Brain,
+                "fixture-0".to_owned(),
+                None,
+            ),
+            (
+                "consumer".to_owned(),
+                crate::artifact::bundle::InstanceRole::Service,
+                "fixture-1".to_owned(),
+                None,
+            ),
+        ],
+        vec![crate::artifact::bundle::BundleConnection {
+            consumer: graph_endpoint("consumer", "manual"),
+            sources: vec![graph_endpoint("brain", "manual")],
+        }],
+    );
+}
+
+/// Converts one contract descriptor signature into its record form.
+fn method_signature_record(
+    signature: phoxal::contracts::MethodSignature,
+) -> crate::artifact::MethodSignature {
+    crate::artifact::MethodSignature {
+        endpoint: signature.endpoint.to_owned(),
+        service: signature.service.to_owned(),
+        method: signature.method.to_owned(),
+        shape: match signature.shape {
+            phoxal::contracts::MethodShape::Call => crate::artifact::MethodShape::Call,
+            phoxal::contracts::MethodShape::Observation => {
+                crate::artifact::MethodShape::Observation
+            }
+        },
+        request: signature.request.to_owned(),
+        response: signature.response.to_owned(),
+        retained_latest: signature.retained_latest,
+        lease_valid_for_ms: signature.lease.map(|lease| lease.valid_for_ms()),
+    }
+}
+
+fn leased_source_bundle_root(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "phoxal-leased-source-{}-{}-{}",
+        label,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos()
+    ));
+    if root.exists() {
+        std::fs::remove_dir_all(&root).expect("stale leased-source bundle removes");
+    }
+    root
+}
+
+/// An authored leased projection feeding a leased input without any scenario
+/// override admits as that input's public leased ingress identity.
+#[test]
+fn authored_leased_projection_admits_as_setpoint_source() {
+    let root = leased_source_bundle_root("admit");
+    leased_source_bundle(&root, signature_json(leased_projection().signature()));
+    let manifest =
+        RuntimeLaunchManifest::open(&root, "consumer").expect("leased source bundle opens");
+    let routes = manifest
+        .input_routes(&leased_input_field(leased_ingress()))
+        .expect("authored leased projection admits");
+    let [route] = routes.as_slice() else {
+        panic!("leased input resolves exactly one route: {routes:?}");
+    };
+    assert_eq!(route.source_instance, "brain");
+    assert_eq!(route.source_port, "manual");
+    assert_eq!(route.direction, InputDirection::Publication);
+    assert_eq!(route.binding.shape, crate::contracts::MethodShape::Call);
+    assert_eq!(
+        route.binding,
+        crate::runtime::transport::MethodBinding::from_method(leased_ingress().signature()),
+        "the delivered route keeps the consuming endpoint's public ingress identity"
+    );
+    assert_eq!(route.max_bytes, 4_096);
+    let mut private_field = leased_input_field(leased_ingress());
+    private_field.name = "private_manual_storage";
+    let private_routes = manifest
+        .input_routes(&private_field)
+        .expect("a private Rust binding resolves through its public ingress endpoint");
+    assert_eq!(private_routes[0].field, "private_manual_storage");
+    assert_eq!(private_routes[0].target_endpoint, "manual");
+    assert_eq!(private_routes[0].binding, route.binding);
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
+}
+
+/// A call-shaped served output is not a leased observation source.
+#[test]
+fn leased_setpoint_source_refuses_call_shaped_output() {
+    let root = leased_source_bundle_root("call-shape");
+    leased_source_bundle(&root, signature_json(leased_ingress().signature()));
+    let error = RuntimeLaunchManifest::open(&root, "consumer")
+        .expect_err("a call-shaped output is refused by shared admission");
+    assert!(
+        error
+            .to_string()
+            .contains("leases from a non-observation method"),
+        "unexpected refusal: {error:#}"
+    );
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
+}
+
+/// An observation without a lease cannot govern setpoint validity.
+#[test]
+fn leased_setpoint_source_refuses_unleased_observation() {
+    let root = leased_source_bundle_root("unleased");
+    let unleased = phoxal::contracts::ObservationMethod::<FixtureIntent>::new(
+        FIXTURE_PAYLOAD,
+        "manual",
+        "manual",
+        "google.protobuf.Empty",
+        FIXTURE_PAYLOAD,
+        true,
+        None,
+        &[],
+    );
+    leased_source_bundle(&root, signature_json(unleased.signature()));
+    let error = RuntimeLaunchManifest::open(&root, "consumer")
+        .expect_err("an unleased observation is refused by shared admission");
+    assert!(
+        error.to_string().contains("without a positive lease"),
+        "unexpected refusal: {error:#}"
+    );
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
+}
+
+/// A serialized zero lease cannot govern setpoint validity.
+#[test]
+fn leased_setpoint_source_refuses_zero_serialized_lease() {
+    let root = leased_source_bundle_root("zero-lease");
+    let mut signature = signature_json(leased_projection().signature());
+    signature["lease_valid_for_ms"] = serde_json::json!(0);
+    leased_source_bundle(&root, signature);
+    let error = RuntimeLaunchManifest::open(&root, "consumer")
+        .expect_err("a zero serialized lease is refused by shared admission");
+    assert!(
+        error.to_string().contains("declares a non-positive lease")
+            || error.to_string().contains("without a positive lease"),
+        "unexpected refusal: {error:#}"
+    );
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
+}
+
+/// A serialized observation carrying a non-empty request is not canonical.
+#[test]
+fn leased_setpoint_source_refuses_non_empty_serialized_request() {
+    let root = leased_source_bundle_root("non-empty-request");
+    let mut signature = signature_json(leased_projection().signature());
+    signature["request"] = serde_json::json!(FIXTURE_PAYLOAD);
+    leased_source_bundle(&root, signature);
+    let error = RuntimeLaunchManifest::open(&root, "consumer")
+        .expect_err("a non-empty serialized request is refused by shared admission");
+    assert!(
+        error
+            .to_string()
+            .contains("leases from a non-canonical observation"),
+        "unexpected refusal: {error:#}"
+    );
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
+}
+
+/// A leased observation of a different payload does not match the consuming
+/// endpoint's generated ingress descriptor.
+#[test]
+fn leased_setpoint_source_refuses_payload_mismatch() {
+    #[derive(Debug)]
+    struct OtherIntent;
+    let other_payload = phoxal::contracts::ObservationMethod::<OtherIntent>::new(
+        "fixture.OtherIntent",
+        "manual",
+        "manual",
+        "google.protobuf.Empty",
+        "fixture.OtherIntent",
+        true,
+        Some(100),
+        &[],
+    );
+    let root = leased_source_bundle_root("payload");
+    leased_source_bundle(&root, signature_json(other_payload.signature()));
+    let manifest =
+        RuntimeLaunchManifest::open(&root, "consumer").expect("bundle opens before routing");
+    let error = manifest
+        .input_routes(&leased_input_field(leased_ingress()))
+        .expect_err("mismatched payload must not admit");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match the input's generated descriptor"),
+        "unexpected refusal: {error:#}"
+    );
+    std::fs::remove_dir_all(root).expect("leased-source bundle removes");
 }

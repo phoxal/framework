@@ -12,9 +12,6 @@
 //!
 //! Phoxal's own bootstrap (`phoxal/build.rs`) keeps a direct
 //! `phoxal-build` dependency identified by reason: it cannot depend on its
-//! own not-yet-built library to generate its own protocols.
+//! own not-yet-built library to capture the binding generator version.
 
-pub use phoxal_build::{
-    BuildApiConfig, ConversionEdge, ConversionPlan, Error, api, compile_protos,
-    compile_protos_with_output, include_dir,
-};
+pub use phoxal_build::{BuildApiConfig, Error, api};
