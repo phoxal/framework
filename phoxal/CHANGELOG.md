@@ -7,6 +7,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0](https://github.com/phoxal/framework/compare/phoxal-v0.68.0...phoxal-v0.69.0) - 2026-10-04
+
+### Added
+
+- simplify SDK ownership and publish 0.69 on crates.io ([#529](https://github.com/phoxal/framework/pull/529))
+- [**breaking**] add runtime authoring and bounded behavior execution ([#518](https://github.com/phoxal/framework/pull/518))
+- consolidate build-script APIs for robot participants
+- [**breaking**] centralize simulator provisioning in cargo-phoxal ([#479](https://github.com/phoxal/framework/pull/479))
+- [**breaking**] complete the runtime and scenario rewrite
+- *(sdk)* expose phoxal::build facade; route generated ports through phoxal::port
+- *(scenario)* execute robot scenarios in simulation
+- *(framework)* real phase loop drives the typed evidence collector
+- *(framework)* scenario bundle writer + bundle-relative admission
+- *(framework)* typed action constructors and decode-and-revalidate
+- *(framework)* bounded evidence records with capacity accounting
+- *(framework)* bounded required evidence + sealing for ScenarioRun
+- *(framework)* distinct simulated and host deadlines in participant
+- *(framework)* wire simulation scenario subcommand; drop attach
+- *(framework)* typed authoring and one validated Program
+- *(framework)* P3 typed ScenarioRun + P4 CLI helpers + P5 attachment + P6 rover example
+- *(framework)* P2 scenario bundle + supervisor admission policy + gate tests
+- *(framework)* P2 prepared fixture participant with shared phase driver
+- *(framework)* P2 typed finite program + immutable schedule with byte digest
+- *(framework)* P1 scenario registry, macro, discovery, and cargo integration
+- [**breaking**] require authored native component bindings
+- preserve explicit simulation bundle contracts
+- [**breaking**] acknowledge controlled receiver delivery
+- [**breaking**] implement controlled runtime boundary protocol
+- [**breaking**] isolate session consumer dependencies
+- wire supervisor runtime ingress
+- wire supervisor runtime public backends
+- [**breaking**] add typed public sessions and simulation authority
+- [**breaking**] wire typed runtime transport
+- [**breaking**] cut over official components to MuJoCo
+- discover bounded routed supervisors
+- share public session transport across robots
+- [**breaking**] complete typed official service graph
+- launch source runtime process graphs
+- retain runtime contract artifacts
+- add bounded runtime owner boundary
+- add routed public session transport
+- migrate navigation and motion runtimes
+- add public supervisor session adapter
+- reserve outputs before invocation acceptance
+- schedule hardware invocations without catch-up
+- add runtime authoring core
+- require supervisor deployment identity
+- bound public logical sessions
+- define public execution protocols
+
+### Fixed
+
+- reuse installed participants across robot preparations ([#517](https://github.com/phoxal/framework/pull/517))
+- decouple generator versions and simplify CI ([#516](https://github.com/phoxal/framework/pull/516))
+- *(runtime)* complete managed input lifecycles ([#487](https://github.com/phoxal/framework/pull/487))
+- capture external package license files ([#483](https://github.com/phoxal/framework/pull/483))
+- package simulator license provenance ([#482](https://github.com/phoxal/framework/pull/482))
+- install simulator from sparse registry archive ([#481](https://github.com/phoxal/framework/pull/481))
+- make rewritten runtime CI portable
+- remove duplicate RenderedCamera export, drop unused port import, format
+- *(sdk)* repair facade checkpoint after R1-R6 review
+- *(framework)* ScenarioPlan rejects unaligned durations with checked nanos
+- *(framework)* command-reply accounting + duplicate-label dedup at normalize
+- *(framework)* seal refuses 3,000-transition plans with boundary-zero evidence
+- *(framework)* remove synthetic FixtureParticipant::run paths
+- *(framework)* #[phoxal::scenario] expands through Default, not plan-name
+- *(framework)* terminal evidence semantics + zero-event intervals
+- *(framework)* repair tests/project.rs, formatting, clippy, harness semantics
+- *(framework)* host deadline starts at command issuance
+- *(framework)* exact transition arithmetic and stable schedule ordering
+- *(scenario)* real identity, sealed evidence, no construction bypasses
+- *(framework)* repair P1 preparation: single transaction, no destructive removal, real workspace inheritance
+- tolerate public queryable propagation
+- [**breaking**] require explicit execution scheduling mode
+- admit local supervisor session sockets
+- keep runtime rewrite lint clean
+- keep transport bounds behind generated runtime wiring
+- preserve framework policy gates
+- wait for admitted simulation runtime
+- expose runtime config transport bounds
+- align public backend with runtime controls
+- [**breaking**] complete runtime delivery semantics
+- keep public backend tests lint-clean
+- make public supervisor info lifecycle-aware
+- keep supervisor lifecycle lint-clean
+- keep public lifecycle hooks lint-clean
+- retain artifact metadata in runner fixtures
+- keep test transport helper profile-safe
+- keep runtime feature gating at crate root
+- satisfy detection error lint
+- enforce deployment identity grammar
+
+### Other
+
+- consolidate test targets and add a prepare-free unit lane ([#528](https://github.com/phoxal/framework/pull/528))
+- pass robot documents in memory and drop empty trybuild globs ([#527](https://github.com/phoxal/framework/pull/527))
+- give every ignored workflow an executed integration lane ([#526](https://github.com/phoxal/framework/pull/526))
+- prove sender flow control and command ordering deterministically ([#525](https://github.com/phoxal/framework/pull/525))
+- prove call admission and mailbox accounting deterministically ([#524](https://github.com/phoxal/framework/pull/524))
+- remove the generator's migration guard and deduplicate CI selection ([#523](https://github.com/phoxal/framework/pull/523))
+- *(release)* update package versions ([#520](https://github.com/phoxal/framework/pull/520))
+- *(release)* update package versions ([#515](https://github.com/phoxal/framework/pull/515))
+- Make arrival releases pull the next release; prove it end to end ([#511](https://github.com/phoxal/framework/pull/511))
+- *(release)* update package versions ([#510](https://github.com/phoxal/framework/pull/510))
+- Host the conversion role inside the robot executable ([#509](https://github.com/phoxal/framework/pull/509))
+- Key prepared contracts by complete identity; test the real caller boundary; share suite dependency builds ([#508](https://github.com/phoxal/framework/pull/508))
+- *(release)* update package versions ([#506](https://github.com/phoxal/framework/pull/506))
+- Consolidate prepared contracts into one readable layout ([#504](https://github.com/phoxal/framework/pull/504))
+- Qualify the pull-request head filter and verify the head ([#497](https://github.com/phoxal/framework/pull/497))
+- Correct the release chain: same-repo submissions, verified live bytes, exact release identity ([#496](https://github.com/phoxal/framework/pull/496))
+- *(release)* update package versions ([#495](https://github.com/phoxal/framework/pull/495))
+- Add repository CI and the maintainer release entry point ([#494](https://github.com/phoxal/framework/pull/494))
+- Pass the effective registry index to every Cargo invocation ([#493](https://github.com/phoxal/framework/pull/493))
+- Typed scenario payload enums and call-shaped brain outputs ([#492](https://github.com/phoxal/framework/pull/492))
+- Retain the complete reachable schema in generated adapters
+- Consolidate public contracts, authoring namespaces, and SDK features
+- Big refactor, temporary
+- remove deprecated registry-related code and reinforce source validations
+- remove obsolete components and build artifacts
+- remove unused examples and associated files
+- remove unused examples and associated files
+- remove redundant workspace policy runner
+- *(cargo-phoxal)* cover public command surfaces ([#488](https://github.com/phoxal/framework/pull/488))
+- Convert versioned schema discriminators to internally-tagged enums ([#486](https://github.com/phoxal/framework/pull/486))
+- *(release)* update package versions ([#480](https://github.com/phoxal/framework/pull/480))
+- *(workspace)* relocate macro/build/mujoco support packages (Unit 6)
+- *(sdk)* make the robotics codegen real feature-gating and add the dependency-aware output variant (Unit 5 cleanup)
+- *(sdk)* consolidate phoxal-port and phoxal-robotics into the SDK (Unit 5)
+- *(cleanup)* remove phoxal::test_router from the SDK public surface
+- *(ownership)* move server-state and server transport out of SDK into supervisor (Unit 4.2+4.3)
+- *(sdk)* split phoxal::communication_transport into client/server halves (Unit 4.2+4.3 step 1)
+- *(sdk)* extract PublicOperation / PublicRouteKind / PublicRoute into communication::route (Unit 4.1)
+- *(tools)* collapse phoxal-project + phoxal-installation into cargo-phoxal modules (Unit 3.4)
+- *(scenario)* add four rejection-path tests for the case-host protocol
+- *(scenario)* split harness from case host via control channel (Unit 2 §9)
+- *(scenario)* generic quantum correction
+- *(artifact-format)* scaffold new crate, move simulation evidence records
+- lifecycle-owned case host drives the supervised simulation
+- disconnect synthetic in-process driver; lifecycle-owned terminal evidence
+- run_harness drives an in-process SDK case-host lifecycle
+- retain scenario instance, gate TerminalEvidence via builder
+- fix selector boundary, expose verify fn, drive case-host seam
+- add driver seam and end-to-end self-driving case-host test
+- exercise real macro registration and rename phase-loop test
+- macro entry returns PlannedScenario; case host drives lifecycle
+- nanosecond-exact quantum comparison and owned port signatures
+- *(results)* require lifecycle-recorded terminal evidence to seal
+- *(framework)* rustfmt + clippy cleanups across P1-P6 surface
+- [**breaking**] checkpoint runtime ownership and simulation protocol
+- remove residual Webots authoring references
+- add hardware driver runtime fixture
+- repair rewritten public API links
+- [**breaking**] remove legacy authoring and model surfaces
+- remove retired harness fixture
+- [**breaking**] remove legacy participant and bus surfaces
+- [**breaking**] delete legacy schema and codec surfaces
+- retain runtime artifact contract in supervisor proof
+- keep supervisor transport fixtures bus-owned
+- classify framework registry packages
+- decouple framework package releases
+- prove generated contract boundaries
+
 ## [0.68.0](https://github.com/phoxal/framework/compare/v0.67.1...v0.68.0) - 2026-09-06
 
 ### Added
