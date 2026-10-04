@@ -59,12 +59,12 @@ Supervisor process tests and tool acquisition/compiler tests live with those app
 
 Versions remain independent package release selections.
 Compatibility follows the interfaces each application consumes, rather than an equal-version release train.
-Package archives are prepared through the reviewed Phoxal registry publication workflow.
+Package archives are published to crates.io through standard release-plz workflows.
 
 ## Publication
 
-Review and merge package version changes normally before publication.
-Dispatch the publication workflow on the approved revision, selecting one package and an independently released publication-tool version.
-The workflow verifies its archive and submits it for registry review; a pending registry review is not a published release.
-Packages retain independent versions, and compatibility follows the interfaces consumed by each operation.
+Review and merge release-plz package version and generated changelog PRs before publication.
+The release job runs after successful main-branch CI and publishes to crates.io using the organization publication credential.
 Publish `phoxal-macros` and `phoxal-build` before the `phoxal` package that depends on them.
+Verify the public archives and clean consumer builds before releasing applications that consume a new SDK.
+Packages retain independent versions, and compatibility follows the interfaces consumed by each operation.
