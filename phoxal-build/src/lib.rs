@@ -25,9 +25,6 @@ pub use prepared::{
     read_descriptor_bytes, read_prepared, read_prepared_for, validate_prepared_key, write_prepared,
 };
 
-/// Version of the build helper generating the SDK and consumer bindings.
-pub const GENERATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Rust path of a built-in payload identity in generated robot code.
 #[must_use]
 pub fn sdk_type_path(fqn: &str) -> Option<String> {

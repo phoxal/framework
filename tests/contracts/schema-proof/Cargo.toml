@@ -30,3 +30,7 @@ prost-types = { workspace = true }
 
 [lints]
 workspace = true
+
+# These are used directly by the independent protoc reference build script.
+[package.metadata.cargo-machete]
+ignored = ["prost-build", "protoc-bin-vendored"]

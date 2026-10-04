@@ -6,10 +6,6 @@
 //! from cfg fragments.
 
 fn main() {
-    println!(
-        "cargo:rustc-env=PHOXAL_API_GENERATOR_VERSION={}",
-        phoxal_build::GENERATOR_VERSION
-    );
     let target = std::env::var("TARGET").unwrap_or_else(|error| {
         eprintln!("Cargo did not provide TARGET to the phoxal build script: {error}");
         std::process::exit(1);

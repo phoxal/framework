@@ -26,7 +26,7 @@ default = ["runtime"]
 
 # Synchronous participant authoring and its runner/transport.
 runtime = [
-    "dep:anyhow", "dep:clap", "dep:prost-reflect", "dep:serde_yaml",
+    "dep:anyhow", "dep:clap", "dep:serde_yaml",
     "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:zenoh",
 ]
 
@@ -64,16 +64,7 @@ zenoh = { workspace = true, optional = true }
 
 phoxal-build = { workspace = true, optional = true }
 prost = { workspace = true }
-prost-reflect = { workspace = true, optional = true }
 prost-types = { workspace = true }
-
-[build-dependencies]
-phoxal-build.workspace = true
-
-# `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
-# cannot see dependencies named only inside attributes.
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
 
 # docs.rs builds every profile, so every host item carries an "available on
 # crate feature …" badge.

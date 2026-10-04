@@ -2038,7 +2038,6 @@ dependencies = [
  "phoxal-build",
  "phoxal-macros",
  "prost",
- "prost-reflect",
  "prost-types",
  "schemars 1.2.2",
  "serde",
@@ -2089,7 +2088,6 @@ name = "phoxal-foreign-reading-fixture"
 version = "0.1.0"
 dependencies = [
  "phoxal",
- "serde",
 ]
 
 [[package]]

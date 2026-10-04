@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["runtime"] }
-serde = { workspace = true }
 
 [lints]
 workspace = true

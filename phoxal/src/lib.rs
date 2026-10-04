@@ -78,28 +78,9 @@ macro_rules! api {
     };
 }
 
-/// Implementation dependencies used by generated API code.
-///
-/// Generated bindings reference this module for their Protobuf runtime and
-/// the build-helper version marker; it is not application API.
+/// Protobuf runtime used by generated API code.
 pub mod generated {
     pub use prost;
-
-    const fn version_marker(version: &str) -> u64 {
-        let bytes = version.as_bytes();
-        let mut hash = 0xcbf29ce484222325_u64;
-        let mut index = 0;
-        while index < bytes.len() {
-            hash ^= bytes[index] as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-            index += 1;
-        }
-        hash
-    }
-
-    // Package versions are independent. Compare the generator used to build
-    // this SDK with the generator emitting the consumer bindings.
-    pub const API_GENERATOR_MARKER: u64 = version_marker(env!("PHOXAL_API_GENERATOR_VERSION"));
 }
 
 /// Generates bindings from local prepared contracts and component capabilities.
