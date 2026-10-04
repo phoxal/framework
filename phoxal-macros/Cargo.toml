@@ -1,10 +1,10 @@
 [package]
 name = "phoxal-macros"
-version = "0.0.0-dev.8"
+version = "0.69.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = ["phoxal"]
+publish = true
 description = "Proc-macros for the Phoxal Runtime API and typed application definitions."
 documentation.workspace = true
 homepage.workspace = true

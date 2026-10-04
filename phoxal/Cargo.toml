@@ -1,11 +1,11 @@
 [package]
 name = "phoxal"
-version = "0.0.0-dev.8"
+version = "0.69.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 autotests = false
-publish = ["phoxal"]
+publish = true
 description = "Phoxal - the framework runtime, protocol contracts, typed ports, and public sessions."
 documentation.workspace = true
 homepage.workspace = true

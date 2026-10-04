@@ -21,8 +21,8 @@ pub use api::{BuildApiConfig, api};
 
 pub use prepared::{
     CONTRACT_FILE, CONTRACT_GENERATION, DESCRIPTORS_FILE, PREPARED_ROOT, PreparedContract,
-    PreparedContractFile, PreparedExecutable, PreparedPublication, PreparedSelection, prepared_dir,
-    prepared_key, read_descriptor_bytes, read_prepared, read_prepared_for, validate_prepared_key,
+    PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_key,
+    read_descriptor_bytes, read_prepared, read_prepared_for, validate_prepared_key, write_prepared,
 };
 
 /// Version of the build helper generating the SDK and consumer bindings.

@@ -26,7 +26,7 @@ pub struct BuildApiConfig {
 /// Generates the current package's API under Cargo's `OUT_DIR`.
 ///
 /// This function reads local prepared contract products and component capabilities only.
-/// Run `cargo phoxal prepare` first for registry and Git selections.
+/// Run `cargo phoxal prepare` first for authored selections.
 pub fn api(_config: BuildApiConfig) -> Result<(), Error> {
     let package = std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
@@ -135,7 +135,6 @@ struct Selection {
 #[serde(untagged)]
 enum Source {
     Path(PathSource),
-    Package(PackageSourceWrapper),
     Git(GitSourceWrapper),
 }
 
@@ -147,22 +146,8 @@ struct PathSource {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PackageSourceWrapper {
-    package: PackageSource,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct GitSourceWrapper {
     git: GitSource,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PackageSource {
-    name: String,
-    version: String,
-    registry: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -748,40 +733,6 @@ fn add_selection(
         ));
     }
     let (root, label, prepared_dir, selection_identity) = match source {
-        Source::Package(PackageSourceWrapper {
-            package: ref source,
-        }) => {
-            if !identifier(&source.name)
-                || !semver::Version::parse(&source.version)
-                    .is_ok_and(|parsed| parsed.to_string() == source.version)
-                || source
-                    .registry
-                    .as_ref()
-                    .is_some_and(|registry| !identifier(registry))
-            {
-                return Err(input(
-                    robot_path,
-                    format!("{instance} has an invalid package source"),
-                ));
-            }
-            let registry = source.registry.as_deref().unwrap_or("phoxal");
-            let tree = package_root
-                .join(".phoxal/registry")
-                .join(registry)
-                .join(&source.name)
-                .join(&source.version);
-            let identity = crate::prepared::PreparedSelection::Registry {
-                registry: registry.to_owned(),
-                name: source.name.clone(),
-                version: source.version.clone(),
-            };
-            (
-                tree.clone(),
-                format!("{} {}", source.name, source.version),
-                crate::prepared::prepared_dir(package_root, &identity, binary),
-                identity,
-            )
-        }
         Source::Git(GitSourceWrapper { git: ref source }) => {
             if !identifier(&source.name)
                 || source.url.trim().is_empty()
@@ -1287,10 +1238,6 @@ mod tests {
         )
         .expect("Git selection");
         assert!(matches!(selected.source, Source::Git(_)));
-        let invalid = serde_yaml::from_str::<Selection>(
-            "source:\n  path: ../motion\n  package: { name: acme-motion, version: '1.2.3' }\n",
-        );
-        assert!(invalid.is_err());
     }
 }
 

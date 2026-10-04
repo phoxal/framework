@@ -101,15 +101,6 @@ pub enum PreparedSelection {
         /// The authored relative path, verbatim.
         path: String,
     },
-    /// A registry package at an exact version.
-    Registry {
-        /// Registry short name (`phoxal`).
-        registry: String,
-        /// Package name.
-        name: String,
-        /// Exact version.
-        version: String,
-    },
     /// A Git repository pinned to a full commit.
     Git {
         /// Repository short name.
@@ -234,18 +225,6 @@ pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> Stri
                 binary_suffix
             )
         }
-        PreparedSelection::Registry {
-            registry,
-            name,
-            version,
-        } => format!(
-            "registry-{}-{}@{}-{}{}",
-            readable_segment(registry),
-            readable_segment(name),
-            readable_segment(version),
-            digest,
-            binary_suffix
-        ),
         PreparedSelection::Git { name, revision, .. } => format!(
             "git-{}@{}-{}{}",
             readable_segment(name),
@@ -354,10 +333,10 @@ impl PreparedContract {
 /// Exclusive publication ownership for a prepared contract/descriptor pair.
 /// Readers use the shared side of the same stable sibling lock so a pair
 /// replacement cannot expose missing or mixed files.
-pub struct PreparedPublication(std::fs::File);
+struct PreparedPublication(std::fs::File);
 impl PreparedPublication {
     /// Acquires the writer side, creating the stable parent when necessary.
-    pub fn acquire(contract_dir: &Path) -> Result<Self, Error> {
+    fn acquire(contract_dir: &Path) -> Result<Self, Error> {
         Self::lock(contract_dir, true)
     }
     fn lock(contract_dir: &Path, exclusive: bool) -> Result<Self, Error> {
@@ -396,12 +375,119 @@ impl Drop for PreparedPublication {
     }
 }
 
+/// Publishes a compiled contract and descriptor closure as one prepared product.
+/// Returns false when the selection and contract content are unchanged, preserving
+/// bindings across implementation-only rebuilds. Executable metadata is provenance.
+/// Publication and recovery are serialized with readers through the stable lock.
+pub fn write_prepared(
+    contract_dir: &Path,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+    executable: &PreparedExecutable,
+    runtime: serde_json::Value,
+    descriptors: &FileDescriptorSet,
+) -> Result<bool, Error> {
+    let file = PreparedContractFile {
+        generation: CONTRACT_GENERATION,
+        selection: selection.clone(),
+        binary: binary.map(str::to_owned),
+        executable: executable.clone(),
+        runtime,
+    };
+    validate_prepared_key(contract_dir, &file)?;
+    serde_json::from_value::<PreparedRuntime>(file.runtime.clone()).map_err(|error| {
+        Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!("prepared runtime metadata is invalid: {error}"),
+        }
+    })?;
+    let bytes = serde_json::to_vec_pretty(&file).map_err(|error| Error::ApiInput {
+        path: contract_dir.to_owned(),
+        message: error.to_string(),
+    })?;
+    let descriptor_bytes = descriptors.encode_to_vec();
+    let _guard = PreparedPublication::acquire(contract_dir)?;
+    let parent = contract_dir.parent().unwrap_or_else(|| Path::new("."));
+    let previous = previous_directory(contract_dir);
+    let io = |path: &Path, source| Error::Path {
+        path: path.to_owned(),
+        source,
+    };
+    // A crash between directory renames leaves the previous coherent pair here.
+    if !contract_dir.exists() && previous.exists() {
+        fs::rename(&previous, contract_dir).map_err(|e| io(contract_dir, e))?;
+    }
+    let existing = fs::read(contract_dir.join(CONTRACT_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PreparedContractFile>(&bytes).ok());
+    if existing.is_some_and(|old| {
+        old.generation == file.generation
+            && old.selection == file.selection
+            && old.binary == file.binary
+            && old.runtime == file.runtime
+    }) && fs::read(readable_directory(contract_dir).join(DESCRIPTORS_FILE))
+        .ok()
+        .as_deref()
+        == Some(descriptor_bytes.as_slice())
+    {
+        if previous.exists() {
+            fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+        }
+        return Ok(false);
+    }
+    let staged = tempfile::Builder::new()
+        .prefix(".phoxal-prepared-")
+        .tempdir_in(parent)
+        .map_err(|e| io(parent, e))?;
+    let candidate = staged.path().join("candidate");
+    fs::create_dir(&candidate).map_err(|e| io(&candidate, e))?;
+    for (name, content) in [(CONTRACT_FILE, bytes), (DESCRIPTORS_FILE, descriptor_bytes)] {
+        let path = candidate.join(name);
+        fs::write(&path, content).map_err(|e| io(&path, e))?;
+    }
+    if previous.exists() {
+        fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+    }
+    if contract_dir.exists() {
+        fs::rename(contract_dir, &previous).map_err(|e| io(contract_dir, e))?;
+    }
+    if let Err(source) = fs::rename(&candidate, contract_dir) {
+        if previous.exists() {
+            fs::rename(&previous, contract_dir).map_err(|e| io(&previous, e))?;
+        }
+        return Err(io(contract_dir, source));
+    }
+    if previous.exists() {
+        fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+    }
+    Ok(true)
+}
+
+fn previous_directory(contract_dir: &Path) -> PathBuf {
+    let name = contract_dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    contract_dir.with_file_name(format!(".{name}.previous"))
+}
+
+fn readable_directory(contract_dir: &Path) -> PathBuf {
+    let previous = previous_directory(contract_dir);
+    if !contract_dir.exists() && previous.exists() {
+        previous
+    } else {
+        contract_dir.to_owned()
+    }
+}
+
 /// Reads the prepared descriptor set bytes.
 pub fn read_descriptor_bytes(contract_dir: &Path) -> Result<Vec<u8>, Error> {
     let _guard = PreparedPublication::lock(contract_dir, false)?;
-    fs::read(contract_dir.join(DESCRIPTORS_FILE)).map_err(|source| Error::Path {
-        path: contract_dir.join(DESCRIPTORS_FILE),
-        source,
+    fs::read(readable_directory(contract_dir).join(DESCRIPTORS_FILE)).map_err(|source| {
+        Error::Path {
+            path: contract_dir.join(DESCRIPTORS_FILE),
+            source,
+        }
     })
 }
 
@@ -411,7 +497,8 @@ pub fn read_descriptor_bytes(contract_dir: &Path) -> Result<Vec<u8>, Error> {
 /// the recorded complete identity.
 pub fn read_prepared(contract_dir: &Path) -> Result<PreparedContract, Error> {
     let _guard = PreparedPublication::lock(contract_dir, false)?;
-    let contract_path = contract_dir.join(CONTRACT_FILE);
+    let directory = readable_directory(contract_dir);
+    let contract_path = directory.join(CONTRACT_FILE);
     let file: PreparedContractFile =
         serde_json::from_slice(&fs::read(&contract_path).map_err(|source| Error::Path {
             path: contract_path.clone(),
@@ -436,7 +523,7 @@ pub fn read_prepared(contract_dir: &Path) -> Result<PreparedContract, Error> {
             path: contract_path.clone(),
             message: format!("prepared runtime metadata is invalid: {error}"),
         })?;
-    let descriptors_path = contract_dir.join(DESCRIPTORS_FILE);
+    let descriptors_path = directory.join(DESCRIPTORS_FILE);
     let descriptors = FileDescriptorSet::decode(
         fs::read(&descriptors_path)
             .map_err(|source| Error::Path {
@@ -840,6 +927,98 @@ pub fn emit_prepared_methods(
 mod tests {
     use super::*;
 
+    #[test]
+    fn publication_changes_only_contract_content_and_recovers_interruption() {
+        let home = tempfile::tempdir().expect("directory");
+        let selection = PreparedSelection::Path {
+            path: "../participant".into(),
+        };
+        let dir = prepared_dir(home.path(), &selection, None);
+        let mut provenance = PreparedExecutable {
+            package: "participant".into(),
+            version: Some("1.0.0".into()),
+        };
+        let mut descriptors = FileDescriptorSet::default();
+        let runtime = serde_json::json!({ "inputs": [], "outputs": [] });
+        assert!(
+            write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("first write")
+        );
+        let before = fs::metadata(dir.join(CONTRACT_FILE))
+            .expect("metadata")
+            .modified()
+            .expect("time");
+        provenance.version = Some("2.0.0".into());
+        assert!(
+            !write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("same interface")
+        );
+        assert_eq!(
+            before,
+            fs::metadata(dir.join(CONTRACT_FILE))
+                .expect("metadata")
+                .modified()
+                .expect("time")
+        );
+        let previous = previous_directory(&dir);
+        fs::rename(&dir, &previous).expect("simulate interrupted publication");
+        let recovered =
+            read_prepared_for(&dir, &selection, None).expect("read previous coherent pair");
+        assert_eq!(recovered.file.executable.version.as_deref(), Some("1.0.0"));
+        assert!(
+            !write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("recover")
+        );
+        assert!(dir.is_dir());
+        assert!(!previous.exists());
+        descriptors.file.push(prost_types::FileDescriptorProto {
+            name: Some("new.proto".into()),
+            ..Default::default()
+        });
+        assert!(
+            write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("changed descriptor")
+        );
+        assert_eq!(read_prepared(&dir).expect("pair").descriptors, descriptors);
+        fs::remove_file(dir.join(DESCRIPTORS_FILE)).expect("remove product");
+        assert!(
+            write_prepared(&dir, &selection, None, &provenance, runtime, &descriptors)
+                .expect("repair incomplete pair")
+        );
+        assert_eq!(
+            read_prepared(&dir).expect("repaired pair").descriptors,
+            descriptors
+        );
+    }
+
     fn path_selection(path: &str) -> PreparedSelection {
         PreparedSelection::Path {
             path: path.to_owned(),
@@ -860,44 +1039,12 @@ mod tests {
                 assert_ne!(key, other, "selection identities must stay distinct");
             }
         }
-        let registry = |name: &str, version: &str| {
-            prepared_key(
-                &PreparedSelection::Registry {
-                    registry: "phoxal".to_owned(),
-                    name: name.to_owned(),
-                    version: version.to_owned(),
-                },
-                None,
-            )
-        };
-        assert_ne!(registry("pkg", "0.1.0"), registry("pkg", "0-1-0"));
-        assert_ne!(
-            registry("pkg", "0.1.0"),
-            prepared_key(
-                &PreparedSelection::Git {
-                    name: "pkg".to_owned(),
-                    url: "https://example.invalid/pkg.git".to_owned(),
-                    path: None,
-                    revision: "0.1.0-alpha-prerelease-metadata0000000000000000".to_owned(),
-                },
-                None
-            )
-        );
     }
 
     #[test]
     fn prepared_keys_are_readable_and_distinct_per_binary() {
-        let key = prepared_key(
-            &PreparedSelection::Registry {
-                registry: "phoxal".to_owned(),
-                name: "phoxal-service-motion".to_owned(),
-                version: "0.0.0-dev.4".to_owned(),
-            },
-            None,
-        );
-        // Readable first: the identity is legible in the name, with the
-        // complete-identity digest guaranteeing distinctness after it.
-        assert!(key.starts_with("registry-phoxal-phoxal-service-motion@0.0.0-dev.4-"));
+        let key = prepared_key(&path_selection("../services/motion"), None);
+        assert!(key.starts_with("path-services-motion-"));
         assert!(key.ends_with("--bin-default"));
         let alpha = prepared_key(&path_selection("vendor/provider"), Some("alpha"));
         let beta = prepared_key(&path_selection("vendor/provider"), Some("beta"));
@@ -927,21 +1074,7 @@ mod tests {
 
     #[test]
     fn complete_identity_keys_separate_fold_colliding_sources() {
-        // Registry versions and names whose separators fold together,
-        // and Git revisions sharing a twelve-character prefix, are
-        // distinct identities and must never share a directory.
-        let registry = |name: &str, version: &str| {
-            prepared_key(
-                &PreparedSelection::Registry {
-                    registry: "phoxal".to_owned(),
-                    name: name.to_owned(),
-                    version: version.to_owned(),
-                },
-                None,
-            )
-        };
-        assert_ne!(registry("pkg", "1.0.0+meta"), registry("pkg", "1.0.0-meta"));
-        assert_ne!(registry("a-b", "0.1.0"), registry("a_b", "0.1.0"));
+        // The full revision separates sources sharing a readable prefix.
         let git = |revision: &str| {
             prepared_key(
                 &PreparedSelection::Git {

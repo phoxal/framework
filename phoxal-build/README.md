@@ -14,3 +14,8 @@ Production messages, including the SDK protocols, are authored with `#[phoxal::m
 Their compiler-resolved schema records provide standard Protobuf descriptors.
 The build helper consumes prepared descriptors and never invokes protoc.
 Independent Protobuf reference compilation belongs only to the schema-proof test fixture.
+
+Prepared contract publication and reading share the `phoxal-build` boundary.
+`write_prepared` receives source selection, executable provenance, runtime metadata, and standard descriptors.
+It owns serialization, a stable publication lock, coherent pair replacement, and interrupted-publication recovery.
+Unchanged contract and descriptor content preserves the prepared files even after an implementation-only rebuild.

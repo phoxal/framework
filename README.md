@@ -11,7 +11,7 @@ Full four-wheel native qualification belongs to [robot-rover](https://github.com
 ## Robot authoring
 
 A robot selects its supervisor and participants through `robot.yaml`.
-The supervisor uses the same path, exact registry package, or pinned Git source selection as participants and is acquired independently of the robot's Rust library dependencies.
+The supervisor uses the same local path or pinned Git source selection as participants and is acquired independently of the robot's Rust library dependencies.
 Prepare the selections with `cargo phoxal prepare`, then use the ordinary Cargo build and test workflow.
 The build helper reads only local authored inputs and prepared contracts; it never acquires packages or invokes Cargo.
 Framework and participant wire messages share Rust authoring macros, standard Protobuf encoding, and compiler-resolved schema records.
