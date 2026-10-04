@@ -32,18 +32,35 @@ jobs:
   release-pr:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
     concurrency:
       group: release-pr-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: main
           fetch-depth: 0
           persist-credentials: false
+      - name: Confirm the current branch passed CI
+        id: current
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "ready=$([ "$(git rev-parse HEAD)" = "$TESTED_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
+      - name: Generate release App token
+        id: app-token
+        if: steps.current.outputs.ready == 'true' && env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - uses: release-plz/action@v0.5
+        if: steps.current.outputs.ready == 'true'
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}

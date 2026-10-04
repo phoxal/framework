@@ -3,7 +3,7 @@ release_always = true
 changelog_update = true
 publish = true
 git_tag_enable = true
-git_tag_name = "{name}-v{version}"
+git_tag_name = "{{ package }}-v{{ version }}"
 git_release_enable = true
 # Breaking changes are permitted while the framework remains pre-1.0.
 semver_check = false
