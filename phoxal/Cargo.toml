@@ -1,11 +1,11 @@
 [package]
 name = "phoxal"
-version = "0.0.0-dev.8"
+version = "0.69.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 autotests = false
-publish = ["phoxal"]
+publish = true
 description = "Phoxal - the framework runtime, protocol contracts, typed ports, and public sessions."
 documentation.workspace = true
 homepage.workspace = true
@@ -26,7 +26,7 @@ default = ["runtime"]
 
 # Synchronous participant authoring and its runner/transport.
 runtime = [
-    "dep:anyhow", "dep:clap", "dep:prost-reflect", "dep:serde_yaml",
+    "dep:anyhow", "dep:clap", "dep:serde_yaml",
     "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:zenoh",
 ]
 
@@ -42,6 +42,9 @@ build = ["dep:phoxal-build"]
 [dependencies]
 phoxal-macros = { workspace = true }
 anyhow = { workspace = true, optional = true }
+# Complete JSON Schema validation of resolved instance configurations at
+# shared admission; the artifact records carry full schemars-emitted schemas.
+jsonschema = { workspace = true }
 base64 = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 getrandom = { workspace = true }
@@ -61,16 +64,7 @@ zenoh = { workspace = true, optional = true }
 
 phoxal-build = { workspace = true, optional = true }
 prost = { workspace = true }
-prost-reflect = { workspace = true, optional = true }
 prost-types = { workspace = true }
-
-[build-dependencies]
-phoxal-build.workspace = true
-
-# `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
-# cannot see dependencies named only inside attributes.
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
 
 # docs.rs builds every profile, so every host item carries an "available on
 # crate feature …" badge.

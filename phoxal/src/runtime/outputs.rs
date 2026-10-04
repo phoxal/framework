@@ -10,7 +10,6 @@ pub mod read;
 use super::StepContext;
 use super::input::TransportValue;
 use crate::contracts::{Call, MethodSignature, Withdraw};
-use crate::port::PortSignature;
 use activation::ActivationKey;
 use prost::Message;
 use std::marker::PhantomData;
@@ -30,8 +29,7 @@ pub struct Outputs {
     next_ordinal: usize,
     /// Field ownership records for calls staged through the direct
     /// `#[complete]` path in this candidate; promoted into the runtime's
-    /// pending-call ledger when a later invocation proves this candidate
-    /// was accepted.
+    /// pending-call ledger when the owner accepts the complete candidate.
     direct_owners: Vec<(u128, &'static str)>,
     /// Tickets of calls staged through the tree-owned path in this
     /// candidate with their owning tree generations, promoted with the
@@ -321,7 +319,7 @@ pub struct OutputField {
     /// Public port name for served outputs.
     pub port: Option<&'static str>,
     /// Complete generated descriptor identity for a bound served port.
-    pub port_signature: Option<PortSignature>,
+    pub port_signature: Option<MethodSignature>,
     /// Local input field selected by a reply, activation, or worker.
     pub input: Option<&'static str>,
     /// Projection method selected by an offered read.
@@ -386,7 +384,7 @@ pub trait OutputSet: 'static {
     fn encode_transport(
         &self,
         _context: StepContext,
-        _resolve_input_port: &dyn Fn(&str) -> Option<PortSignature>,
+        _resolve_input_port: &dyn Fn(&str) -> Option<MethodSignature>,
         _source: &str,
     ) -> crate::Result<Vec<super::transport::PreparedOutput>> {
         Ok(Vec::new())
@@ -399,7 +397,7 @@ impl OutputSet for Outputs {
     fn encode_transport(
         &self,
         context: StepContext,
-        _resolve_input_port: &dyn Fn(&str) -> Option<PortSignature>,
+        _resolve_input_port: &dyn Fn(&str) -> Option<MethodSignature>,
         source: &str,
     ) -> crate::Result<Vec<super::transport::PreparedOutput>> {
         self.operations
@@ -412,14 +410,7 @@ impl OutputSet for Outputs {
                     ticket,
                     payload,
                 } => {
-                    let port = generated_port_signature(
-                        *signature,
-                        if signature.lease.is_some() {
-                            crate::port::PortKind::Setpoint
-                        } else {
-                            crate::port::PortKind::Commands
-                        },
-                    );
+                    let port = *signature;
                     let sequence = wire_sequence(*ticket);
                     if let Some(lease) = signature.lease {
                         super::transport::PreparedOutput::encoded_response(
@@ -470,7 +461,7 @@ impl OutputSet for Outputs {
                         )
                     })?;
                     Ok(super::transport::PreparedOutput::withdrawal(
-                        generated_port_signature(*signature, crate::port::PortKind::Setpoint),
+                        *signature,
                         super::transport::setpoint_metadata(
                             source,
                             context,
@@ -484,13 +475,6 @@ impl OutputSet for Outputs {
             })
             .collect()
     }
-}
-
-fn generated_port_signature(
-    signature: MethodSignature,
-    kind: crate::port::PortKind,
-) -> PortSignature {
-    PortSignature::from_method(signature, kind)
 }
 
 impl OutputSet for () {
@@ -509,7 +493,7 @@ pub trait OutputBindings: super::Runtime + 'static {
         &self,
         _state: &Self::State,
         _context: StepContext,
-        _resolve_input_port: &dyn Fn(&str) -> Option<PortSignature>,
+        _resolve_input_port: &dyn Fn(&str) -> Option<MethodSignature>,
         _source: &str,
     ) -> crate::Result<Vec<super::transport::PreparedOutput>> {
         Ok(Vec::new())

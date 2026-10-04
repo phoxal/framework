@@ -1,16 +1,77 @@
 use phoxal::artifact::RuntimeRecord;
+use phoxal::runtime::RegisteredRuntime;
 use phoxal::runtime::input::{Events, Read, ReadError, ReadStatus};
 use phoxal::runtime::{
     Activation, ExecutionDuration, ExecutionTime, InitContext, ObservationStamp, Runtime,
     StepContext, initialize, invoke,
 };
 
-const COUNTER_STATUS: phoxal::macro_support::State<CounterStatus> =
-    phoxal::macro_support::State::new("counter-status");
-const COUNTER_READ: phoxal::macro_support::Read<CounterReadRequest, CounterReadResponse> =
-    phoxal::macro_support::Read::new("counter-read");
-const READER_STATUS: phoxal::macro_support::State<ReaderStatus> =
-    phoxal::macro_support::State::new("reader-status");
+// These fixtures exercise private engine transactions directly. Authored
+// attachment behavior is covered by the inherent runtimes in runtime_authoring.
+macro_rules! engine_fixture {
+    ($($runtime:ty),* $(,)?) => {
+        $(impl RegisteredRuntime for $runtime {
+            const SPEC: phoxal::runtime::RuntimeSpec =
+                phoxal::runtime::RuntimeSpec::from_millis(20, 100, 1_000);
+            fn retain_artifact_metadata() {}
+        })*
+    };
+}
+engine_fixture!(
+    Counter,
+    PeriodicReader,
+    OnceReader,
+    IncrementalSum,
+    ScrambledOrder
+);
+
+fn engine_record<R: RegisteredRuntime + phoxal::runtime::outputs::OutputBindings>()
+-> phoxal::runtime::artifact::ArtifactRecord
+where
+    R::Inputs: phoxal::runtime::input::InputSet,
+{
+    phoxal::runtime::artifact::runtime_record(
+        R::SPEC,
+        <R::Config as phoxal::runtime::Config>::SCHEMA_JSON,
+        "[]",
+        <R::Inputs as phoxal::runtime::input::InputSet>::FIELDS,
+        <R::Outputs as phoxal::runtime::outputs::OutputSet>::FIELDS,
+        <R as phoxal::runtime::outputs::OutputBindings>::FIELDS,
+    )
+}
+
+const COUNTER_STATUS: phoxal::contracts::ObservationMethod<CounterStatus> =
+    phoxal::contracts::ObservationMethod::new(
+        "phoxal.tests.runtime.Service",
+        "CounterStatus",
+        "counter-status",
+        "google.protobuf.Empty",
+        <CounterStatus as phoxal::schema::MessageSchema>::WIRE_NAME,
+        true,
+        None,
+        &[],
+    );
+const COUNTER_READ: phoxal::contracts::CallMethod<CounterReadRequest, CounterReadResponse> =
+    phoxal::contracts::CallMethod::new(
+        "phoxal.tests.runtime.Service",
+        "CounterRead",
+        "counter-read",
+        <CounterReadRequest as phoxal::schema::MessageSchema>::WIRE_NAME,
+        <CounterReadResponse as phoxal::schema::MessageSchema>::WIRE_NAME,
+        None,
+        &[],
+    );
+const READER_STATUS: phoxal::contracts::ObservationMethod<ReaderStatus> =
+    phoxal::contracts::ObservationMethod::new(
+        "phoxal.tests.runtime.Service",
+        "ReaderStatus",
+        "reader-status",
+        "google.protobuf.Empty",
+        <ReaderStatus as phoxal::schema::MessageSchema>::WIRE_NAME,
+        true,
+        None,
+        &[],
+    );
 
 #[phoxal::message(package = "phoxal.tests.runtime")]
 struct CounterStatus {
@@ -54,7 +115,6 @@ struct CounterInputs {
     increments: Events<Increment>,
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for Counter {
     type Config = ();
     type State = u64;
@@ -135,7 +195,6 @@ struct PeriodicReaderInputs {
     counter: Read<CounterReadKey, CounterReadRequest, CounterReadResponse>,
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for PeriodicReader {
     type Config = ();
     type State = PeriodicReaderState;
@@ -211,7 +270,6 @@ struct OnceReaderInputs {
     counter: Read<CounterReadKey, CounterReadRequest, CounterReadResponse>,
 }
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for OnceReader {
     type Config = ();
     type State = OnceReaderState;
@@ -284,8 +342,17 @@ impl OnceReader {
 }
 
 const VALUES: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-const SUM_STATUS: phoxal::macro_support::State<SumStatus> =
-    phoxal::macro_support::State::new("sum-status");
+const SUM_STATUS: phoxal::contracts::ObservationMethod<SumStatus> =
+    phoxal::contracts::ObservationMethod::new(
+        "phoxal.tests.runtime.Service",
+        "SumStatus",
+        "sum-status",
+        "google.protobuf.Empty",
+        <SumStatus as phoxal::schema::MessageSchema>::WIRE_NAME,
+        true,
+        None,
+        &[],
+    );
 
 #[phoxal::message(package = "phoxal.tests.runtime")]
 struct SumStatus {
@@ -317,7 +384,6 @@ impl SumState {
 #[phoxal::runtime::inputs]
 struct SumInputs {}
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for IncrementalSum {
     type Config = ();
     type State = SumState;
@@ -507,7 +573,8 @@ fn read_status_distinguishes_pending_and_completed_inputs() {
 
 #[test]
 fn compiled_input_records_retain_concrete_owner_message_names() {
-    let bytes = phoxal_runtime_periodic_reader::ARTIFACT.as_bytes();
+    let artifact = engine_record::<PeriodicReader>();
+    let bytes = artifact.as_bytes();
     let record: RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
     let RuntimeRecord::V0 { inputs, .. } = &record;
     let input = &inputs[0];
@@ -520,7 +587,7 @@ fn compiled_input_records_retain_concrete_owner_message_names() {
         Some("phoxal.tests.runtime.CounterReadResponse")
     );
     let counter: RuntimeRecord =
-        serde_json::from_slice(&phoxal_runtime_counter::ARTIFACT.as_bytes()[12..]).unwrap();
+        serde_json::from_slice(&engine_record::<Counter>().as_bytes()[12..]).unwrap();
     let RuntimeRecord::V0 { inputs, .. } = &counter;
     assert_eq!(
         inputs[0].response_fqn.as_deref(),
@@ -535,16 +602,12 @@ struct ScrambledConfig {
 }
 
 /// An implementation whose members appear in a deliberately scrambled
-/// order — the arrangement an IDE member-order quick fix produces when it
-/// reorders authored source. The runtime attachment accepts any authored
-/// order; only its own expansion places generated associated types before
-/// methods.
+/// order. The execution trait accepts ordinary Rust member ordering.
 struct ScrambledOrder;
 
 #[phoxal::runtime::outputs]
 impl ScrambledOrder {}
 
-#[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for ScrambledOrder {
     fn step(
         &self,

@@ -1,0 +1,1222 @@
+//! Prepared Rust-contract products and the client generation from them.
+//!
+//! `cargo phoxal prepare` builds selected participant artifacts, extracts
+//! their compiled contracts (endpoint metadata plus assembled descriptor
+//! closures), and writes them under the robot's `.phoxal/` tree. This
+//! module reads those exact products so a composing brain generates its
+//! external instance bindings from extracted artifacts — never from the
+//! participant's source tree.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use heck::{ToShoutySnakeCase, ToSnakeCase};
+use prost::Message;
+use prost_types::FileDescriptorSet;
+use serde::{Deserialize, Serialize};
+
+use crate::Error;
+
+/// Narrow read-model of one retained input record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedInput {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    delivery: String,
+    #[serde(default)]
+    request_fqn: Option<String>,
+    #[serde(default)]
+    response_fqn: Option<String>,
+    #[serde(default)]
+    signature: Option<PreparedSignature>,
+}
+
+/// Narrow read-model of one retained output record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedOutput {
+    #[serde(default)]
+    signature: Option<PreparedSignature>,
+}
+
+/// Narrow read-model of one retained method signature.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedSignature {
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub shape: String,
+    #[serde(default)]
+    pub request: String,
+    #[serde(default)]
+    pub response: String,
+    #[serde(default)]
+    pub retained_latest: bool,
+    #[serde(default)]
+    pub lease_valid_for_ms: Option<u64>,
+}
+
+/// Narrow read-model of one retained runtime record.
+///
+/// The authoritative model is `phoxal::artifact`; this read-model carries
+/// only the fields client generation consumes, deserialized from the same
+/// retained JSON bytes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedRuntime {
+    #[serde(default)]
+    inputs: Vec<PreparedInput>,
+    #[serde(default)]
+    outputs: Vec<PreparedOutput>,
+}
+
+/// The prepared product files of one participant contract. One
+/// directory under `.phoxal/prepared/` carries both files as a single
+/// replaceable product: `contract.json` owns the runtime metadata, the
+/// complete selection identity, and package provenance; `descriptors.pb` is the standard Protobuf
+/// `FileDescriptorSet` (not a Phoxal schema format).
+pub const DESCRIPTORS_FILE: &str = "descriptors.pb";
+pub const CONTRACT_FILE: &str = "contract.json";
+
+/// The prepared-contract layout generation. Readers reject products
+/// recorded under any other generation instead of guessing at a
+/// different shape.
+pub const CONTRACT_GENERATION: u32 = 1;
+
+/// The root directory holding every prepared contract of one project.
+pub const PREPARED_ROOT: &str = ".phoxal/prepared";
+
+/// The complete identity of one selection, recorded inside
+/// `contract.json` so a shortened key component can always be validated
+/// against the full identity it abbreviates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PreparedSelection {
+    /// A robot-local relative path source.
+    Path {
+        /// The authored relative path, verbatim.
+        path: String,
+    },
+    /// A Git repository pinned to a full commit.
+    Git {
+        /// Repository short name.
+        name: String,
+        /// The full 40-character commit.
+        revision: String,
+        /// The authored repository URL.
+        url: String,
+        /// Optional package directory in the repository.
+        path: Option<String>,
+    },
+}
+
+/// The executable a prepared contract was extracted from.
+///
+/// Provenance only: executable contents are trusted and never digested;
+/// product freshness compares contract and descriptor content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedExecutable {
+    /// The package the executable was built from.
+    pub package: String,
+    /// The package version, when the source carries one.
+    pub version: Option<String>,
+}
+
+/// The `contract.json` envelope: one coherent record of what this
+/// product is, what it was extracted from, and the runtime metadata
+/// itself.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedContractFile {
+    /// The layout generation this product belongs to.
+    pub generation: u32,
+    /// The complete selection identity.
+    pub selection: PreparedSelection,
+    /// The explicit `binary:` key of the selection, when one was set.
+    pub binary: Option<String>,
+    /// The executable the products were extracted from.
+    pub executable: PreparedExecutable,
+    /// The retained runtime record, verbatim, so consumers observe the
+    /// exact artifact metadata rather than a lossy re-encoding.
+    pub runtime: serde_json::Value,
+}
+
+/// Sanitizes one readable key segment: lowercase letters, digits, and
+/// dashes survive; everything else folds to `-` runs.
+fn readable_segment(text: &str) -> String {
+    // Dots survive: they are filesystem-safe everywhere and folding
+    // them into dashes would collide distinct versions (`0.1.0` and
+    // `0-1-0`).
+    let mut segment = String::with_capacity(text.len());
+    let mut previous_dash = false;
+    for character in text.chars() {
+        let folded = if character.is_ascii_alphanumeric() || character == '.' {
+            character.to_ascii_lowercase().to_string()
+        } else {
+            "-".to_owned()
+        };
+        if folded == "-" {
+            if !previous_dash && !segment.is_empty() {
+                segment.push('-');
+            }
+            previous_dash = true;
+        } else {
+            segment.push_str(&folded);
+            previous_dash = false;
+        }
+    }
+    // Edge dots and dashes fold away: a leading `..` from a relative
+    // path must never reach the directory name, and the trailing digest
+    // already guarantees distinctness.
+    segment
+        .trim_matches(|c: char| c == '-' || c == '.')
+        .to_owned()
+}
+
+/// A twelve-hex digest of the COMPLETE selection identity — the
+/// structured selection plus the exact binary key — so distinct
+/// identities that fold to the same readable slug (including binary
+/// names that differ only in folded characters, an absent versus an
+/// explicit `default` binary, registry versions whose separators fold
+/// together, and Git revisions sharing a twelve-character prefix)
+/// always occupy distinct directories, and the recorded identity can
+/// always be validated against it.
+fn identity_digest(selection: &PreparedSelection, binary: Option<&str>) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"phoxal-prepared/v0");
+    let identity = serde_json::to_vec(&(selection, binary))
+        .unwrap_or_else(|error| unreachable!("string-only selection encoding failed: {error}"));
+    hasher.update(identity);
+    let digest = hasher.finalize();
+    digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The readable, injective directory key of one complete selection.
+///
+/// The slug is the primary readable interface (`registry-<name>@<version>`,
+/// `git-<name>@<rev12>`, `path-<slug>`), and the trailing digest of the
+/// complete structured identity — selection plus exact binary key —
+/// guarantees distinctness for everything the readable fold merges.
+#[must_use]
+pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> String {
+    let digest = identity_digest(selection, binary);
+    let binary_suffix = match binary {
+        Some(name) => format!("--bin-{}", readable_segment(name)),
+        None => "--bin-default".to_owned(),
+    };
+    match selection {
+        PreparedSelection::Path { path } => {
+            let slug = readable_segment(&path.replace('/', "-"));
+            format!(
+                "path-{}-{}{}",
+                if slug.is_empty() {
+                    "root".to_owned()
+                } else {
+                    slug
+                },
+                digest,
+                binary_suffix
+            )
+        }
+        PreparedSelection::Git { name, revision, .. } => format!(
+            "git-{}@{}-{}{}",
+            readable_segment(name),
+            &revision[..revision.len().min(12)],
+            digest,
+            binary_suffix
+        ),
+    }
+}
+
+/// The prepared-contract directory of one selection under a project's
+/// `.phoxal/prepared/` root. Equivalent selections resolve to one
+/// directory, so repeated selections prepare once.
+#[must_use]
+pub fn prepared_dir(
+    project_root: &Path,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+) -> PathBuf {
+    project_root
+        .join(PREPARED_ROOT)
+        .join(prepared_key(selection, binary))
+}
+
+/// Reads one prepared contract and requires that its recorded complete
+/// identity — selection and binary key — equals the identity the caller
+/// resolved the directory for. A directory whose readable slug or
+/// folded binary suffix collides with another selection can never be
+/// consumed on that selection's behalf.
+pub fn read_prepared_for(
+    contract_dir: &Path,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+) -> Result<PreparedContract, Error> {
+    let contract = read_prepared(contract_dir)?;
+    validate_requested_identity(contract_dir, &contract.file, selection, binary)?;
+    Ok(contract)
+}
+
+/// Compares a prepared file's recorded complete identity against the
+/// identity the caller resolved the directory for. Structured
+/// comparison only — readable folds never decide identity.
+pub fn validate_requested_identity(
+    contract_dir: &Path,
+    file: &PreparedContractFile,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+) -> Result<(), Error> {
+    if file.selection != *selection || file.binary.as_deref() != binary {
+        return Err(Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!(
+                "prepared contract at `{}` records a different selection than the one requested ({:?} vs {selection:?}, binary {:?} vs {binary:?})",
+                contract_dir.display(),
+                file.selection,
+                file.binary,
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validates that a prepared-contract directory's key matches its
+/// recorded complete identity — the shortened digest inside the key is
+/// never trusted on its own.
+pub fn validate_prepared_key(
+    contract_dir: &Path,
+    file: &PreparedContractFile,
+) -> Result<(), Error> {
+    let recorded = prepared_key(&file.selection, file.binary.as_deref());
+    let actual = contract_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if actual != recorded {
+        return Err(Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!(
+                "prepared contract directory `{actual}` does not match its recorded identity (expected `{recorded}`)"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// One participant's prepared contract as the build helper consumes it.
+#[derive(Debug, Clone)]
+pub struct PreparedContract {
+    /// The complete `contract.json` envelope.
+    pub file: PreparedContractFile,
+    /// The endpoint and policy metadata parsed from the verbatim
+    /// record; the narrow read-model guiding generation.
+    runtime: PreparedRuntime,
+    /// The assembled standard descriptor closure.
+    pub descriptors: FileDescriptorSet,
+}
+
+impl PreparedContract {
+    /// The endpoint and policy metadata retained from the artifact.
+    #[must_use]
+    pub fn runtime(&self) -> &PreparedRuntime {
+        &self.runtime
+    }
+}
+
+/// Exclusive publication ownership for a prepared contract/descriptor pair.
+/// Readers use the shared side of the same stable sibling lock so a pair
+/// replacement cannot expose missing or mixed files.
+struct PreparedPublication(std::fs::File);
+impl PreparedPublication {
+    /// Acquires the writer side, creating the stable parent when necessary.
+    fn acquire(contract_dir: &Path) -> Result<Self, Error> {
+        Self::lock(contract_dir, true)
+    }
+    fn lock(contract_dir: &Path, exclusive: bool) -> Result<Self, Error> {
+        let parent = contract_dir.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|source| Error::Path {
+            path: parent.to_owned(),
+            source,
+        })?;
+        let name = contract_dir.file_name().ok_or_else(|| Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: "prepared product must name a directory".into(),
+        })?;
+        let path = parent.join(format!(".{}.lock", name.to_string_lossy()));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| Error::Path {
+                path: path.clone(),
+                source,
+            })?;
+        let result = if exclusive {
+            fs4::FileExt::lock(&file)
+        } else {
+            fs4::FileExt::lock_shared(&file)
+        };
+        result.map_err(|source| Error::Path { path, source })?;
+        Ok(Self(file))
+    }
+}
+impl Drop for PreparedPublication {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self.0);
+    }
+}
+
+/// Publishes a compiled contract and descriptor closure as one prepared product.
+/// Returns false when the selection and contract content are unchanged, preserving
+/// bindings across implementation-only rebuilds. Executable metadata is provenance.
+/// Publication and recovery are serialized with readers through the stable lock.
+pub fn write_prepared(
+    contract_dir: &Path,
+    selection: &PreparedSelection,
+    binary: Option<&str>,
+    executable: &PreparedExecutable,
+    runtime: serde_json::Value,
+    descriptors: &FileDescriptorSet,
+) -> Result<bool, Error> {
+    let file = PreparedContractFile {
+        generation: CONTRACT_GENERATION,
+        selection: selection.clone(),
+        binary: binary.map(str::to_owned),
+        executable: executable.clone(),
+        runtime,
+    };
+    validate_prepared_key(contract_dir, &file)?;
+    serde_json::from_value::<PreparedRuntime>(file.runtime.clone()).map_err(|error| {
+        Error::ApiInput {
+            path: contract_dir.to_owned(),
+            message: format!("prepared runtime metadata is invalid: {error}"),
+        }
+    })?;
+    let bytes = serde_json::to_vec_pretty(&file).map_err(|error| Error::ApiInput {
+        path: contract_dir.to_owned(),
+        message: error.to_string(),
+    })?;
+    let descriptor_bytes = descriptors.encode_to_vec();
+    let _guard = PreparedPublication::acquire(contract_dir)?;
+    let parent = contract_dir.parent().unwrap_or_else(|| Path::new("."));
+    let previous = previous_directory(contract_dir);
+    let io = |path: &Path, source| Error::Path {
+        path: path.to_owned(),
+        source,
+    };
+    // A crash between directory renames leaves the previous coherent pair here.
+    if !contract_dir.exists() && previous.exists() {
+        fs::rename(&previous, contract_dir).map_err(|e| io(contract_dir, e))?;
+    }
+    let existing = fs::read(contract_dir.join(CONTRACT_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PreparedContractFile>(&bytes).ok());
+    if existing.is_some_and(|old| {
+        old.generation == file.generation
+            && old.selection == file.selection
+            && old.binary == file.binary
+            && old.runtime == file.runtime
+    }) && fs::read(readable_directory(contract_dir).join(DESCRIPTORS_FILE))
+        .ok()
+        .as_deref()
+        == Some(descriptor_bytes.as_slice())
+    {
+        if previous.exists() {
+            fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+        }
+        return Ok(false);
+    }
+    let staged = tempfile::Builder::new()
+        .prefix(".phoxal-prepared-")
+        .tempdir_in(parent)
+        .map_err(|e| io(parent, e))?;
+    let candidate = staged.path().join("candidate");
+    fs::create_dir(&candidate).map_err(|e| io(&candidate, e))?;
+    for (name, content) in [(CONTRACT_FILE, bytes), (DESCRIPTORS_FILE, descriptor_bytes)] {
+        let path = candidate.join(name);
+        fs::write(&path, content).map_err(|e| io(&path, e))?;
+    }
+    if previous.exists() {
+        fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+    }
+    if contract_dir.exists() {
+        fs::rename(contract_dir, &previous).map_err(|e| io(contract_dir, e))?;
+    }
+    if let Err(source) = fs::rename(&candidate, contract_dir) {
+        if previous.exists() {
+            fs::rename(&previous, contract_dir).map_err(|e| io(&previous, e))?;
+        }
+        return Err(io(contract_dir, source));
+    }
+    if previous.exists() {
+        fs::remove_dir_all(&previous).map_err(|e| io(&previous, e))?;
+    }
+    Ok(true)
+}
+
+fn previous_directory(contract_dir: &Path) -> PathBuf {
+    let name = contract_dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    contract_dir.with_file_name(format!(".{name}.previous"))
+}
+
+fn readable_directory(contract_dir: &Path) -> PathBuf {
+    let previous = previous_directory(contract_dir);
+    if !contract_dir.exists() && previous.exists() {
+        previous
+    } else {
+        contract_dir.to_owned()
+    }
+}
+
+/// Reads the prepared descriptor set bytes.
+pub fn read_descriptor_bytes(contract_dir: &Path) -> Result<Vec<u8>, Error> {
+    let _guard = PreparedPublication::lock(contract_dir, false)?;
+    fs::read(readable_directory(contract_dir).join(DESCRIPTORS_FILE)).map_err(|source| {
+        Error::Path {
+            path: contract_dir.join(DESCRIPTORS_FILE),
+            source,
+        }
+    })
+}
+
+/// Reads one prepared contract directory: the `contract.json` envelope
+/// and the `descriptors.pb` closure as one coherent product, rejecting
+/// foreign layout generations and directories whose key does not match
+/// the recorded complete identity.
+pub fn read_prepared(contract_dir: &Path) -> Result<PreparedContract, Error> {
+    let _guard = PreparedPublication::lock(contract_dir, false)?;
+    let directory = readable_directory(contract_dir);
+    let contract_path = directory.join(CONTRACT_FILE);
+    let file: PreparedContractFile =
+        serde_json::from_slice(&fs::read(&contract_path).map_err(|source| Error::Path {
+            path: contract_path.clone(),
+            source,
+        })?)
+        .map_err(|error| Error::ApiInput {
+            path: contract_path.clone(),
+            message: format!("prepared contract metadata is invalid: {error}"),
+        })?;
+    if file.generation != CONTRACT_GENERATION {
+        return Err(Error::ApiInput {
+            path: contract_path,
+            message: format!(
+                "prepared contract generation {} is not supported (expected {CONTRACT_GENERATION}); re-run `cargo phoxal prepare`",
+                file.generation
+            ),
+        });
+    }
+    validate_prepared_key(contract_dir, &file)?;
+    let runtime: PreparedRuntime =
+        serde_json::from_value(file.runtime.clone()).map_err(|error| Error::ApiInput {
+            path: contract_path.clone(),
+            message: format!("prepared runtime metadata is invalid: {error}"),
+        })?;
+    let descriptors_path = directory.join(DESCRIPTORS_FILE);
+    let descriptors = FileDescriptorSet::decode(
+        fs::read(&descriptors_path)
+            .map_err(|source| Error::Path {
+                path: descriptors_path.clone(),
+                source,
+            })?
+            .as_slice(),
+    )
+    .map_err(|error| Error::ApiInput {
+        path: contract_dir.to_owned(),
+        message: format!("prepared descriptors are invalid: {error}"),
+    })?;
+    Ok(PreparedContract {
+        file,
+        runtime,
+        descriptors,
+    })
+}
+
+/// The Rust module path segments a Protobuf package maps to.
+fn package_modules(package: &str) -> Result<Vec<String>, Error> {
+    package
+        .split('.')
+        .map(|segment| {
+            if segment.is_empty()
+                || !segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(Error::ApiInput {
+                    path: PathBuf::new(),
+                    message: format!("invalid Protobuf package `{package}`"),
+                });
+            }
+            Ok(segment.to_snake_case())
+        })
+        .collect()
+}
+
+/// One external endpoint a composed brain or client can bind.
+pub enum PreparedEndpoint {
+    /// An observation source.
+    Observation {
+        /// Endpoint name.
+        name: String,
+        /// Fully-qualified response message.
+        response: String,
+        /// Leased authority interval, if any.
+        lease_valid_for_ms: Option<u64>,
+    },
+    /// A callable operation.
+    Call {
+        /// Endpoint name.
+        name: String,
+        /// Fully-qualified request message.
+        request: String,
+        /// Fully-qualified response message.
+        response: String,
+        /// Leased authority interval, if any.
+        lease_valid_for_ms: Option<u64>,
+    },
+}
+
+impl PreparedContract {
+    /// Normalizes the retained records into brain-bindable endpoints.
+    pub fn endpoints(&self) -> Vec<PreparedEndpoint> {
+        let mut endpoints = Vec::new();
+        for output in self.runtime.outputs.iter() {
+            let Some(signature) = &output.signature else {
+                continue;
+            };
+            if signature.shape == "call" {
+                // A method-role leased output binds as a leased call whose
+                // request is the published payload.
+                endpoints.push(PreparedEndpoint::Call {
+                    name: signature.endpoint.clone(),
+                    request: signature.request.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            } else {
+                endpoints.push(PreparedEndpoint::Observation {
+                    name: signature.endpoint.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            }
+        }
+        for input in &self.runtime.inputs {
+            let Some(signature) = &input.signature else {
+                continue;
+            };
+            if input.delivery == "leased_value" {
+                // A replaceable leased input binds as a leased call whose
+                // request is the leased payload.
+                endpoints.push(PreparedEndpoint::Call {
+                    name: signature.endpoint.clone(),
+                    request: signature.request.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            } else if input.delivery == "call_ingress" {
+                // A served operation binds as a plain call.
+                endpoints.push(PreparedEndpoint::Call {
+                    name: signature.endpoint.clone(),
+                    request: signature.request.clone(),
+                    response: signature.response.clone(),
+                    lease_valid_for_ms: signature.lease_valid_for_ms,
+                });
+            }
+        }
+        endpoints
+    }
+
+    /// The response identity of one latest input, when it is a plain
+    /// (unleased) latest input.
+    pub fn input_response(&self, endpoint: &str) -> Option<String> {
+        self.runtime.inputs.iter().find_map(|input| {
+            if input.name != endpoint || input.delivery != "observation_latest" {
+                return None;
+            }
+            input.response_fqn.clone()
+        })
+    }
+
+    /// The response identity of one served data output.
+    pub fn output_response(&self, endpoint: &str) -> Option<String> {
+        self.runtime.outputs.iter().find_map(|output| {
+            output
+                .signature
+                .as_ref()
+                .filter(|signature| signature.endpoint == endpoint)
+                .map(|signature| signature.response.clone())
+        })
+    }
+
+    /// The serialized descriptor closure, as prepared.
+    pub fn descriptor_bytes(&self) -> Vec<u8> {
+        use prost::Message as _;
+        self.descriptors.encode_to_vec()
+    }
+
+    /// The call-shaped endpoint signatures this contract provides: the
+    /// operations it serves on its call ingress, which a composed brain
+    /// may name as provider descriptor markers.
+    pub fn runtime_call_signatures(&self) -> impl Iterator<Item = &PreparedSignature> {
+        self.runtime
+            .inputs
+            .iter()
+            .filter(|input| input.delivery == "call_ingress")
+            .filter_map(|input| input.signature.as_ref())
+            .filter(|signature| signature.shape == "call")
+    }
+
+    fn signatures(&self) -> impl Iterator<Item = (&'static str, &PreparedSignature)> {
+        self.runtime
+            .outputs
+            .iter()
+            .filter_map(|output| {
+                output
+                    .signature
+                    .as_ref()
+                    .map(|signature| ("method", signature))
+            })
+            .chain(self.runtime.inputs.iter().filter_map(|input| {
+                input
+                    .signature
+                    .as_ref()
+                    .map(|signature| ("input", signature))
+            }))
+    }
+}
+
+/// Resolves the Rust path of one message through the descriptor closure.
+pub fn rust_message_path(
+    pool: &prost_reflect::DescriptorPool,
+    fqn: &str,
+    module_root: &str,
+) -> Result<String, Error> {
+    if let Some(path) = crate::sdk_type_path(fqn) {
+        return Ok(path);
+    }
+    // A payload may be a message or an enumeration: both generate typed
+    // Rust items in the same package modules.
+    let (file_package, item_name) = if let Some(message) = pool.get_message_by_name(fqn) {
+        (
+            message.parent_file().package_name().to_owned(),
+            message.name().to_owned(),
+        )
+    } else if let Some(enumeration) = pool.get_enum_by_name(fqn) {
+        (
+            enumeration.parent_file().package_name().to_owned(),
+            enumeration.name().to_owned(),
+        )
+    } else {
+        return Err(Error::ApiInput {
+            path: PathBuf::new(),
+            message: format!("prepared closure does not define `{fqn}`"),
+        });
+    };
+    let mut segments = vec![module_root.to_owned()];
+    segments.extend(package_modules(&file_package)?);
+    segments.push(item_name);
+    Ok(segments.join("::"))
+}
+
+/// Generates the composed client module for one bound instance from its
+/// prepared contract.
+pub fn emit_instance_module(
+    instance: &str,
+    prepared: &PreparedContract,
+    pool: &prost_reflect::DescriptorPool,
+    types_root: &str,
+    methods_root: &str,
+) -> Result<String, Error> {
+    let module = instance.to_snake_case();
+    if [
+        "types",
+        "calls",
+        "projections",
+        "service_methods",
+        "operations",
+    ]
+    .contains(&module.as_str())
+    {
+        return Err(Error::ApiInput {
+            path: PathBuf::from("robot.yaml"),
+            message: format!(
+                "API instance `{instance}` collides with the fixed generated module `{module}`"
+            ),
+        });
+    }
+    let mut output = String::new();
+    let mut message_types: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut endpoint_lines = Vec::new();
+    for input in &prepared.runtime.inputs {
+        for fqn in [input.request_fqn.as_deref(), input.response_fqn.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|fqn| *fqn != "google.protobuf.Empty")
+        {
+            let path = rust_message_path(pool, fqn, types_root)?;
+            message_types
+                .entry(fqn.rsplit('.').next().unwrap_or(fqn).to_owned())
+                .or_default()
+                .insert(path);
+        }
+    }
+    for endpoint in prepared.endpoints() {
+        match endpoint {
+            PreparedEndpoint::Observation {
+                name,
+                response,
+                lease_valid_for_ms: _,
+            } => {
+                let constant = name.to_shouty_snake_case();
+                let response_path = rust_message_path(pool, &response, types_root)?;
+                message_types
+                    .entry(response.rsplit('.').next().unwrap_or(&response).to_owned())
+                    .or_default()
+                    .insert(response_path.clone());
+                endpoint_lines.push(format!(
+                    "    /// The typed contract method behind [`{name}`].\n    pub const {constant}: ::phoxal::contracts::ObservationMethod<{response_path}> = {methods_root}::{constant};\n    #[must_use]\n    pub fn {name}() -> ::phoxal::contracts::Observation<{response_path}> {{\n        {methods_root}::{constant}.bind({instance:?})\n    }}\n",
+                ));
+            }
+            PreparedEndpoint::Call {
+                name,
+                request,
+                response,
+                lease_valid_for_ms,
+            } => {
+                let constant = name.to_shouty_snake_case();
+                let request_path = rust_message_path(pool, &request, types_root)?;
+                let response_path = rust_message_path(pool, &response, types_root)?;
+                for (short, path) in [
+                    (
+                        request.rsplit('.').next().unwrap_or(&request),
+                        &request_path,
+                    ),
+                    (
+                        response.rsplit('.').next().unwrap_or(&response),
+                        &response_path,
+                    ),
+                ] {
+                    if short != "Empty" {
+                        message_types
+                            .entry(short.to_owned())
+                            .or_default()
+                            .insert(path.clone());
+                    }
+                }
+                let lease =
+                    lease_valid_for_ms.map_or_else(String::new, |value| format!("Some({value})"));
+                endpoint_lines.push(format!(
+                    "    /// The typed contract method behind [`{name}`].\n    pub const {constant}: ::phoxal::contracts::CallMethod<{request_path}, {response_path}> = {methods_root}::{constant};\n    #[must_use]\n    pub fn {name}(request: {request_path}) -> ::phoxal::contracts::Call<{request_path}, {response_path}> {{\n        {methods_root}::{constant}.bind({instance:?}, request)\n    }}\n",
+                ));
+                if !lease.is_empty() {
+                    endpoint_lines.push(format!(
+                        "    #[must_use]\n    pub fn withdraw_{name}() -> ::phoxal::contracts::Withdraw<{request_path}, {response_path}> {{\n        {methods_root}::{constant}.withdraw({instance:?})\n    }}\n",
+                    ));
+                }
+            }
+        }
+    }
+    // Expose reachable payload vocabulary through the instance API as well.
+    // Authors should not navigate generated private wire namespaces to name
+    // a field's message or enum type.
+    let roots: BTreeSet<_> = message_types.values().flatten().cloned().collect();
+    let mut pending = pool
+        .all_messages()
+        .filter_map(|message| {
+            rust_message_path(pool, message.full_name(), types_root)
+                .ok()
+                .filter(|path| roots.contains(path))
+                .map(|_| message)
+        })
+        .collect::<Vec<_>>();
+    let mut visited = BTreeSet::new();
+    while let Some(message) = pending.pop() {
+        if !visited.insert(message.full_name().to_owned()) {
+            continue;
+        }
+        for field in message.fields() {
+            let (name, identity) = match field.kind() {
+                prost_reflect::Kind::Message(message) => {
+                    pending.push(message.clone());
+                    (message.name().to_owned(), message.full_name().to_owned())
+                }
+                prost_reflect::Kind::Enum(enumeration) => (
+                    enumeration.name().to_owned(),
+                    enumeration.full_name().to_owned(),
+                ),
+                _ => continue,
+            };
+            if identity != "google.protobuf.Empty" {
+                message_types
+                    .entry(name)
+                    .or_default()
+                    .insert(rust_message_path(pool, &identity, types_root)?);
+            }
+        }
+    }
+    output.push_str(&format!("pub mod {module} {{\n"));
+    for paths in message_types.values() {
+        if let Some(path) = (paths.len() == 1).then(|| paths.iter().next()).flatten() {
+            output.push_str(&format!("    pub use {path};\n"));
+        }
+    }
+    for line in endpoint_lines {
+        output.push_str(&line);
+    }
+    output.push_str("}\n");
+    Ok(output)
+}
+
+/// Generates the endpoint method constants module for one prepared contract.
+pub fn emit_prepared_methods(
+    prepared: &PreparedContract,
+    pool: &prost_reflect::DescriptorPool,
+    types_root: &str,
+) -> Result<String, Error> {
+    let mut output = String::from("// @generated by phoxal-build; do not edit.\n");
+    for (kind, signature) in prepared.signatures() {
+        let constant = signature.endpoint.to_shouty_snake_case();
+        let lease = signature
+            .lease_valid_for_ms
+            .map_or_else(|| "None".to_owned(), |value| format!("Some({value})"));
+        if kind == "method" && signature.shape == "observation" {
+            let response_path = rust_message_path(pool, &signature.response, types_root)?;
+            output.push_str(&format!(
+                "pub const {constant}: ::phoxal::contracts::ObservationMethod<{response_path}> = ::phoxal::contracts::ObservationMethod::new({:?}, {:?}, {:?}, \"google.protobuf.Empty\", {:?}, {}, {}, &[]);\n",
+                signature.service,
+                signature.endpoint,
+                signature.endpoint,
+                signature.response,
+                signature.retained_latest,
+                lease,
+            ));
+        } else if signature.shape == "call" {
+            let request_path = rust_message_path(pool, &signature.request, types_root)?;
+            let response_path = rust_message_path(pool, &signature.response, types_root)?;
+            let lease_literal = if signature.lease_valid_for_ms.is_some() {
+                lease
+            } else {
+                "None".to_owned()
+            };
+            output.push_str(&format!(
+                "pub const {constant}: ::phoxal::contracts::CallMethod<{request_path}, {response_path}> = ::phoxal::contracts::CallMethod::new({:?}, {:?}, {:?}, {:?}, {:?}, {lease_literal}, &[]);\n",
+                signature.service,
+                signature.endpoint,
+                signature.endpoint,
+                signature.request,
+                signature.response,
+            ));
+        }
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publication_changes_only_contract_content_and_recovers_interruption() {
+        let home = tempfile::tempdir().expect("directory");
+        let selection = PreparedSelection::Path {
+            path: "../participant".into(),
+        };
+        let dir = prepared_dir(home.path(), &selection, None);
+        let mut provenance = PreparedExecutable {
+            package: "participant".into(),
+            version: Some("1.0.0".into()),
+        };
+        let mut descriptors = FileDescriptorSet::default();
+        let runtime = serde_json::json!({ "inputs": [], "outputs": [] });
+        assert!(
+            write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("first write")
+        );
+        let before = fs::metadata(dir.join(CONTRACT_FILE))
+            .expect("metadata")
+            .modified()
+            .expect("time");
+        provenance.version = Some("2.0.0".into());
+        assert!(
+            !write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("same interface")
+        );
+        assert_eq!(
+            before,
+            fs::metadata(dir.join(CONTRACT_FILE))
+                .expect("metadata")
+                .modified()
+                .expect("time")
+        );
+        let previous = previous_directory(&dir);
+        fs::rename(&dir, &previous).expect("simulate interrupted publication");
+        let recovered =
+            read_prepared_for(&dir, &selection, None).expect("read previous coherent pair");
+        assert_eq!(recovered.file.executable.version.as_deref(), Some("1.0.0"));
+        assert!(
+            !write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("recover")
+        );
+        assert!(dir.is_dir());
+        assert!(!previous.exists());
+        descriptors.file.push(prost_types::FileDescriptorProto {
+            name: Some("new.proto".into()),
+            ..Default::default()
+        });
+        assert!(
+            write_prepared(
+                &dir,
+                &selection,
+                None,
+                &provenance,
+                runtime.clone(),
+                &descriptors
+            )
+            .expect("changed descriptor")
+        );
+        assert_eq!(read_prepared(&dir).expect("pair").descriptors, descriptors);
+        fs::remove_file(dir.join(DESCRIPTORS_FILE)).expect("remove product");
+        assert!(
+            write_prepared(&dir, &selection, None, &provenance, runtime, &descriptors)
+                .expect("repair incomplete pair")
+        );
+        assert_eq!(
+            read_prepared(&dir).expect("repaired pair").descriptors,
+            descriptors
+        );
+    }
+
+    fn path_selection(path: &str) -> PreparedSelection {
+        PreparedSelection::Path {
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn prepared_keys_are_injective_across_identity_lookalikes() {
+        // Path separators, hyphens, and underscores must never collapse
+        // onto one another, and distinct versions must not fold
+        // together.
+        let a = prepared_key(&path_selection("a/b"), None);
+        let b = prepared_key(&path_selection("a-b"), None);
+        let c = prepared_key(&path_selection("a_b"), None);
+        let keys = [a, b, c];
+        for (index, key) in keys.iter().enumerate() {
+            for other in keys.iter().skip(index + 1) {
+                assert_ne!(key, other, "selection identities must stay distinct");
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_keys_are_readable_and_distinct_per_binary() {
+        let key = prepared_key(&path_selection("../services/motion"), None);
+        assert!(key.starts_with("path-services-motion-"));
+        assert!(key.ends_with("--bin-default"));
+        let alpha = prepared_key(&path_selection("vendor/provider"), Some("alpha"));
+        let beta = prepared_key(&path_selection("vendor/provider"), Some("beta"));
+        assert!(alpha.ends_with("--bin-alpha"));
+        assert_ne!(alpha, beta);
+    }
+
+    #[test]
+    fn complete_identity_keys_separate_fold_colliding_binaries() {
+        // Binary names that fold to the same readable suffix, and an
+        // absent versus explicit `default` binary, are distinct
+        // selections and must never share a directory.
+        let selection = path_selection("provider");
+        assert_ne!(
+            prepared_key(&selection, Some("sensor-a")),
+            prepared_key(&selection, Some("sensor_a"))
+        );
+        assert_ne!(
+            prepared_key(&selection, None),
+            prepared_key(&selection, Some("default"))
+        );
+        assert_ne!(
+            prepared_key(&selection, Some("alpha")),
+            prepared_key(&selection, Some("beta"))
+        );
+    }
+
+    #[test]
+    fn complete_identity_keys_separate_fold_colliding_sources() {
+        // The full revision separates sources sharing a readable prefix.
+        let git = |revision: &str| {
+            prepared_key(
+                &PreparedSelection::Git {
+                    name: "pkg".to_owned(),
+                    url: "https://example.invalid/pkg.git".to_owned(),
+                    path: None,
+                    revision: revision.to_owned(),
+                },
+                None,
+            )
+        };
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let cousin = "0123456789abffffffffffffffffffffffffffffff";
+        assert_ne!(git(revision), git(cousin));
+    }
+
+    #[test]
+    fn read_prepared_for_rejects_a_requested_identity_the_file_does_not_record() {
+        // The exact reproduction: a file recording binary `sensor_a`
+        // must not be consumed through the directory requested for
+        // `sensor-a`, even when the directory name itself matches the
+        // recorded (lossy) key.
+        let file = PreparedContractFile {
+            generation: CONTRACT_GENERATION,
+            selection: path_selection("provider"),
+            binary: Some("sensor_a".to_owned()),
+            executable: PreparedExecutable {
+                package: "provider".to_owned(),
+                version: None,
+            },
+            runtime: serde_json::json!({}),
+        };
+        let dir = Path::new("/robot/.phoxal/prepared").join("tampered-directory");
+        // With complete-identity keys these selections no longer share a
+        // directory at all; the remaining hazard is a misplaced or
+        // tampered file, which the structured comparison on read
+        // rejects regardless of directory naming.
+        let check =
+            |file: &PreparedContractFile, selection: &PreparedSelection, binary: Option<&str>| {
+                validate_requested_identity(&dir, file, selection, binary)
+            };
+        assert!(check(&file, &path_selection("provider"), Some("sensor_a")).is_ok());
+        assert!(check(&file, &path_selection("provider"), Some("sensor-a")).is_err());
+        assert!(check(&file, &path_selection("provider/other"), Some("sensor_a")).is_err());
+        let mut unkeyed = file.clone();
+        unkeyed.binary = None;
+        assert!(check(&unkeyed, &path_selection("provider"), Some("default")).is_err());
+        assert!(check(&unkeyed, &path_selection("provider"), None).is_ok());
+    }
+
+    #[test]
+    fn prepared_key_validation_rejects_directory_identity_mismatches() {
+        let file = PreparedContractFile {
+            generation: CONTRACT_GENERATION,
+            selection: path_selection("components/ddsm115"),
+            binary: None,
+            executable: PreparedExecutable {
+                package: "phoxal-component-ddsm115".to_owned(),
+                version: Some("0.0.0-dev.4".to_owned()),
+            },
+            runtime: serde_json::json!({}),
+        };
+        let correct =
+            Path::new("/robot/.phoxal/prepared").join(prepared_key(&file.selection, None));
+        assert!(validate_prepared_key(&correct, &file).is_ok());
+        // A directory named after a DIFFERENT path must be rejected even
+        // though it looks structurally valid: the shortened digest is
+        // always checked against the recorded complete identity.
+        let impostor = Path::new("/robot/.phoxal/prepared")
+            .join(prepared_key(&path_selection("components/vl53l1x"), None));
+        assert!(validate_prepared_key(&impostor, &file).is_err());
+    }
+
+    fn contract_with_outputs(runtime_json: &str) -> PreparedContract {
+        PreparedContract {
+            file: PreparedContractFile {
+                generation: CONTRACT_GENERATION,
+                selection: path_selection("participant"),
+                binary: None,
+                executable: PreparedExecutable {
+                    package: "participant".to_owned(),
+                    version: None,
+                },
+                runtime: serde_json::from_str(runtime_json).expect("runtime record"),
+            },
+            runtime: serde_json::from_str(runtime_json).expect("runtime record"),
+            descriptors: FileDescriptorSet::default(),
+        }
+    }
+
+    #[test]
+    fn endpoints_classify_outputs_by_their_public_shape() {
+        // A method-role leased output carries a call signature; its typed
+        // helper must bind as a leased call, not an observation.
+        let contract = contract_with_outputs(
+            r#"{
+                "outputs": [
+                    {
+                        "signature": {
+                            "endpoint": "manual",
+                            "service": "phoxal.motion.v1.MotionApi",
+                            "shape": "call",
+                            "request": "phoxal.motion.v1.MotionIntent",
+                            "response": "google.protobuf.Empty",
+                            "retained_latest": true,
+                            "lease_valid_for_ms": 100
+                        }
+                    }
+                ,
+                    {
+                        "signature": {
+                            "endpoint": "status",
+                            "service": "phoxal.motion.v1.MotionApi",
+                            "shape": "observation",
+                            "request": "google.protobuf.Empty",
+                            "response": "phoxal.motion.v1.MotionStatus",
+                            "retained_latest": true
+                        }
+                    }
+                ]
+            }"#,
+        );
+        let endpoints = contract.endpoints();
+        assert_eq!(endpoints.len(), 2, "both outputs bind as endpoints");
+        assert!(matches!(
+            &endpoints[0],
+            PreparedEndpoint::Call {
+                name,
+                request,
+                response,
+                lease_valid_for_ms: Some(100),
+            } if name == "manual"
+                && request == "phoxal.motion.v1.MotionIntent"
+                && response == "google.protobuf.Empty"
+        ));
+        assert!(matches!(
+            &endpoints[1],
+            PreparedEndpoint::Observation {
+                name,
+                response,
+                lease_valid_for_ms: None,
+            } if name == "status" && response == "phoxal.motion.v1.MotionStatus"
+        ));
+    }
+}

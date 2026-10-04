@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::bootstrap::{SessionOffer, SessionOffers};
 
 /// The only public session protocol implemented by the first cutover.
-pub const SESSION_PROTOCOL: &str = "phoxal.session.v1";
+pub const SESSION_PROTOCOL: &str = "phoxal.session.v1.r1";
 /// Maximum encoded bootstrap response size.
 pub const MAX_BOOTSTRAP_BYTES: usize = 16 * 1024;
 /// Maximum number of offered public session protocols.
@@ -209,6 +209,18 @@ mod tests {
         let target = target();
         let offers = SessionOffers {
             sessions: vec![offer("phoxal.session.v2", &target.session_prefix())],
+        };
+        assert_eq!(
+            validate_session_offers(&target, 64, &offers),
+            Err(BootstrapError::UnsupportedSessionProtocol)
+        );
+    }
+
+    #[test]
+    fn the_previous_open_enum_protocol_is_not_negotiated() {
+        let target = target();
+        let offers = SessionOffers {
+            sessions: vec![offer("phoxal.session.v1", &target.session_prefix())],
         };
         assert_eq!(
             validate_session_offers(&target, 64, &offers),

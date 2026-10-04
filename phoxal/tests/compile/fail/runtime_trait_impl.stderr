@@ -1,0 +1,10 @@
+error: #[phoxal::runtime] requires an inherent impl with contract = ...; manual Runtime implementations are not an authoring API
+  --> tests/compile/fail/runtime_trait_impl.rs:4:1
+   |
+ 4 | / impl phoxal::runtime::Runtime for Service {
+ 5 | |     type Config = ();
+ 6 | |     type State = ();
+ 7 | |     type Inputs = ();
+...  |
+17 | | }
+   | |_^

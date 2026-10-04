@@ -130,7 +130,7 @@ pub(super) async fn bind(
     let callers: BTreeMap<_, _> = manifest
         .command_ranks(instance)?
         .into_iter()
-        .filter_map(|((port, caller), rank)| (port == signature.name).then_some((caller, rank)))
+        .filter_map(|((port, caller), rank)| (port == signature.endpoint).then_some((caller, rank)))
         .collect();
     anyhow::ensure!(
         callers.len() <= 64,
@@ -149,7 +149,11 @@ pub(super) async fn bind(
     ] {
         let subscriber = bus
             .session()?
-            .declare_subscriber(bus.full_key(&transport::port_key(instance, signature.name, leg)))
+            .declare_subscriber(bus.full_key(&transport::port_key(
+                instance,
+                signature.endpoint,
+                leg,
+            )))
             .with(zenoh::handlers::FifoChannel::new(capacity))
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -158,7 +162,7 @@ pub(super) async fn bind(
                 super::declare_execution_subscriber(
                     bus,
                     instance,
-                    &format!("read-reply-ack/{}", signature.name),
+                    &format!("read-reply-ack/{}", signature.endpoint),
                 )
                 .await?,
             )
@@ -206,7 +210,7 @@ struct Endpoint {
     bus: Connection,
     instance: String,
     field: &'static str,
-    signature: crate::port::PortSignature,
+    signature: crate::contracts::MethodSignature,
     max_request_bytes: u64,
     callers: BTreeMap<String, u64>,
     views: SharedViews,
@@ -308,6 +312,7 @@ impl Endpoint {
         timeout: Duration,
         generation: &CancellationToken,
     ) -> crate::Result<Option<PreparedOutput>> {
+        output = output.for_immutable_read(true);
         let metadata = sample.metadata();
         let Some(execution) = metadata.execution_id.as_deref() else {
             tokio::select! {
@@ -379,7 +384,7 @@ impl Endpoint {
         .identity(
             sample,
             &format!("{}.{}", self.instance, self.field),
-            self.signature.name,
+            self.signature.endpoint,
             "request",
         )?;
         tokio::select! {
@@ -410,7 +415,7 @@ impl Endpoint {
         .identity(
             sample,
             &format!("{}.{}", self.instance, self.field),
-            self.signature.name,
+            self.signature.endpoint,
             "request",
         )?;
         tokio::select! {
@@ -450,7 +455,7 @@ impl Endpoint {
     }
 
     async fn run(self, subscriber: super::input::RuntimeSubscription) -> crate::Result<()> {
-        let binding = transport::PortBinding::from_signature(self.signature);
+        let binding = transport::MethodBinding::from_method(self.signature);
         let mut active: Option<ActiveQuery> = None;
         let mut deadline = tokio::time::Instant::now();
         let mut completed = BTreeMap::<String, CachedReply>::new();

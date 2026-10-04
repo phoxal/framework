@@ -61,36 +61,10 @@ pub trait Operation: Sized + Send + Sync + 'static {
     }
 }
 
-/// Canonical generated representation of `google.protobuf.Empty`.
-#[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
+/// Canonical Rust-authored representation of `google.protobuf.Empty`.
+#[phoxal::message(package = "google.protobuf")]
+#[derive(Eq)]
 pub struct Empty {}
-
-impl prost::Name for Empty {
-    const NAME: &'static str = "Empty";
-    const PACKAGE: &'static str = "google.protobuf";
-
-    fn full_name() -> prost::alloc::string::String {
-        "google.protobuf.Empty".into()
-    }
-
-    fn type_url() -> prost::alloc::string::String {
-        "/google.protobuf.Empty".into()
-    }
-}
-
-impl crate::schema::MessageSchema for Empty {
-    const RECORD: crate::schema::SchemaRecord<'static> =
-        crate::schema::SchemaRecord::Message(crate::schema::MessageRecord {
-            package: "google.protobuf",
-            name: "Empty",
-            fields: &[],
-        });
-    const WIRE_NAME: &'static str = "google.protobuf.Empty";
-
-    fn retain_schema() -> usize {
-        0
-    }
-}
 
 /// Public method shape derived from Protobuf cardinality.
 /// The transport codec capability of one endpoint payload type.
@@ -128,29 +102,11 @@ pub trait ProstPayload: Sized + crate::schema::MessageSchema + Send + Sync + 'st
     }
 }
 
-/// Implements [`ProstPayload`] for a message that is its own wire form.
-macro_rules! wire_payload {
-    ($($ty:ty),* $(,)?) => {
-        $(
-            impl ProstPayload for $ty {
-                type Wire = Self;
-
-                fn to_wire(&self) -> Self {
-                    <Self as Clone>::clone(self)
-                }
-
-                fn try_from_wire(wire: Self) -> Result<Self, prost::DecodeError> {
-                    Ok(wire)
-                }
-            }
-        )*
-    };
-}
-
-wire_payload!(Empty);
-
 /// Public method shape derived from Protobuf cardinality.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, Hash, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum MethodShape {
     /// One unary request and one unary response.
     Call,
@@ -236,6 +192,92 @@ impl MethodSignature {
     #[must_use]
     pub const fn descriptor_set(self) -> &'static [u8] {
         self.descriptor_set
+    }
+}
+
+/// Complete method identity for one generated public port.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedMethodSignature {
+    /// Stable endpoint name.
+    pub endpoint: String,
+    /// Fully-qualified Protobuf service name.
+    pub service: String,
+    /// Protobuf method name.
+    pub method: String,
+    /// Cardinality-derived public method shape.
+    pub shape: MethodShape,
+    /// Fully-qualified request message name.
+    pub request: String,
+    /// Fully-qualified response message name.
+    pub response: String,
+    /// Whether observation admission replays the latest accepted value.
+    pub retained_latest: bool,
+    /// Optional contract-owned validity interval.
+    pub lease_valid_for_ms: Option<u64>,
+}
+
+impl From<MethodSignature> for OwnedMethodSignature {
+    fn from(method: MethodSignature) -> Self {
+        Self::from_method(method)
+    }
+}
+
+impl OwnedMethodSignature {
+    /// Copies the canonical generated contract for a resolved or serialized consumer.
+    #[must_use]
+    pub fn from_method(method: MethodSignature) -> Self {
+        Self {
+            endpoint: method.endpoint.to_owned(),
+            service: method.service.to_owned(),
+            method: method.method.to_owned(),
+            shape: method.shape,
+            request: method.request.to_owned(),
+            response: method.response.to_owned(),
+            retained_latest: method.retained_latest,
+            lease_valid_for_ms: method.lease.map(Lease::valid_for_ms),
+        }
+    }
+
+    /// Compares the payload contract while retaining each route's source identity.
+    /// Delivery retention is admitted separately for each source route.
+    #[must_use]
+    pub fn same_wire_contract(&self, other: &Self) -> bool {
+        self.shape == other.shape
+            && self.service == other.service
+            && self.request == other.request
+            && self.response == other.response
+            && self.lease_valid_for_ms == other.lease_valid_for_ms
+    }
+
+    /// Whether this contract describes a canonical positively leased call ingress.
+    #[must_use]
+    pub fn is_leased_call(&self) -> bool {
+        self.shape == MethodShape::Call
+            && self.response == "google.protobuf.Empty"
+            && self.lease_valid_for_ms.is_some_and(|lease| lease > 0)
+    }
+
+    /// Whether this contract describes an ordinary call without a lease.
+    #[must_use]
+    pub fn is_plain_call(&self) -> bool {
+        self.shape == MethodShape::Call && self.lease_valid_for_ms.is_none()
+    }
+
+    /// Whether this contract describes an observation with a canonical empty request.
+    #[must_use]
+    pub fn is_observation(&self) -> bool {
+        self.shape == MethodShape::Observation
+            && self.request == "google.protobuf.Empty"
+            && self.lease_valid_for_ms.is_none_or(|lease| lease > 0)
+    }
+
+    /// Whether this contract permits explicit withdrawal of a retained or leased value.
+    #[must_use]
+    pub fn permits_withdrawal(&self) -> bool {
+        self.is_leased_call()
+            || (self.is_observation()
+                && (self.retained_latest || self.lease_valid_for_ms.is_some()))
     }
 }
 

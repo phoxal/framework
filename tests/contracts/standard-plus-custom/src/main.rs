@@ -1,6 +1,11 @@
 //! A component combining a derived standard encoder endpoint with a
 //! component-specific calibration operation in one Runtime contract.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
+phoxal::api!();
+
 use phoxal::contracts::{Empty, RequestReply};
 
 /// The component-specific endpoint surface: the derived standard encoder
@@ -46,13 +51,12 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::phoxal_runtime_fixture::Adapter;
-    use phoxal::runtime::Runtime;
+    use phoxal::runtime::RuntimeContract;
+    type Outputs = <super::FixtureApi as RuntimeContract>::Outputs;
 
     #[test]
     fn standard_and_custom_endpoints_compose_in_one_contract() {
-        use phoxal::runtime::outputs::OutputSet;
-        let mut outputs: Vec<&str> = <Adapter as Runtime>::Outputs::FIELDS
+        let mut outputs: Vec<&str> = <Outputs as phoxal::runtime::outputs::OutputSet>::FIELDS
             .iter()
             .map(|field| field.name)
             .collect();
@@ -63,7 +67,7 @@ mod tests {
             "the derived standard output and the component-specific operation compose"
         );
         assert!(
-            <Adapter as Runtime>::Outputs::FIELDS
+            <Outputs as phoxal::runtime::outputs::OutputSet>::FIELDS
                 .iter()
                 .any(|field| field.name == "encoder" && field.port_signature.is_some()),
             "the derived endpoint carries its typed signature"

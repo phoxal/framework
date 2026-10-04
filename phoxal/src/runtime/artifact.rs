@@ -47,17 +47,13 @@ impl ArtifactRecord {
 }
 
 /// Builds the one runtime record retained by a registered service.
-///
-/// `role` names a hosted secondary runtime (for example a robot
-/// executable's conversion role); `None` marks the executable's primary
-/// record.
 pub const fn runtime_record(
     spec: RuntimeSpec,
     config_schema: &str,
+    conversions: &str,
     inputs: &[InputField],
     transient_outputs: &[OutputField],
     service_outputs: &[OutputField],
-    role: Option<&str>,
 ) -> ArtifactRecord {
     let mut record = RecordBuilder::new();
     record.push_bytes(&ARTIFACT_MAGIC);
@@ -66,10 +62,6 @@ pub const fn runtime_record(
     record.push_str("{\"schema\":");
     record.push_quoted(ARTIFACT_SCHEMA);
     record.push_str(",\"record\":\"runtime\"");
-    if let Some(role) = role {
-        record.push_str(",\"role\":");
-        record.push_quoted(role);
-    }
     record.push_str(",\"period_ms\":");
     record.push_u64(spec.period.as_millis());
     record.push_str(",\"timeout_ms\":");
@@ -78,12 +70,13 @@ pub const fn runtime_record(
     record.push_u64(spec.init_timeout.as_millis());
     record.push_str(",\"config_schema\":");
     record.push_raw_json(config_schema);
+    record.push_str(",\"conversions\":");
+    record.push_raw_json(conversions);
     record.push_str(",\"inputs\":[");
-    record.push_inputs(inputs);
-    record.push_str("],\"transient_outputs\":[");
-    record.push_outputs(transient_outputs);
-    record.push_str("],\"service_outputs\":[");
-    record.push_outputs(service_outputs);
+    record.push_inputs(inputs, transient_outputs, service_outputs);
+    record.push_str("],\"outputs\":[");
+    let count = record.push_outputs(transient_outputs, 0);
+    record.push_outputs(service_outputs, count);
     record.push_str("]}");
     record.push_byte(b'\n');
     record.write_length(length_start);
@@ -212,7 +205,7 @@ impl RecordBuilder {
         }
     }
 
-    const fn push_input_role(&mut self, kind: InputKind) {
+    const fn push_input_delivery(&mut self, kind: InputKind) {
         self.push_quoted(match kind {
             InputKind::Latest => "observation_latest",
             InputKind::Samples | InputKind::Events | InputKind::Stream => "observation_history",
@@ -220,32 +213,18 @@ impl RecordBuilder {
             InputKind::Commands => "call_ingress",
             InputKind::Read => "call_result",
             InputKind::Request => "call_target",
-            InputKind::Operation => "operation_result",
+            InputKind::Operation => panic!("local operation has no public endpoint"),
             InputKind::Completions => "call_completions",
         });
     }
 
-    const fn push_output_role(&mut self, kind: OutputKind) {
-        self.push_quoted(match kind {
-            OutputKind::State
-            | OutputKind::Sample
-            | OutputKind::Event
-            | OutputKind::Stream
-            | OutputKind::Setpoint
-            | OutputKind::Read => "method",
-            OutputKind::Reply => "reply",
-            OutputKind::Activate => "activation",
-            OutputKind::Operation => "operation",
-        });
-    }
-
-    const fn push_signature(&mut self, signature: Option<crate::port::PortSignature>) {
+    const fn push_signature(&mut self, signature: Option<crate::contracts::MethodSignature>) {
         let Some(signature) = signature else {
             self.push_str("null");
             return;
         };
         self.push_str("{\"endpoint\":");
-        self.push_quoted(signature.name);
+        self.push_quoted(signature.endpoint);
         self.push_str(",\"service\":");
         self.push_quoted(signature.service);
         self.push_str(",\"method\":");
@@ -262,21 +241,40 @@ impl RecordBuilder {
         self.push_str(",\"retained_latest\":");
         self.push_bool(signature.retained_latest);
         self.push_str(",\"lease_valid_for_ms\":");
-        self.push_optional_u64(signature.lease_valid_for_ms);
+        self.push_optional_u64(match signature.lease {
+            Some(lease) => Some(lease.valid_for_ms()),
+            None => None,
+        });
         self.push_byte(b'}');
     }
 
-    const fn push_inputs(&mut self, fields: &[InputField]) {
+    const fn push_inputs(
+        &mut self,
+        fields: &[InputField],
+        transient: &[OutputField],
+        services: &[OutputField],
+    ) {
         let mut index = 0;
+        let mut emitted = 0;
         while index < fields.len() {
-            if index != 0 {
+            let field = fields[index];
+            index += 1;
+            if matches!(field.kind, InputKind::Operation) {
+                continue;
+            }
+            if emitted != 0 {
                 self.push_byte(b',');
             }
-            let field = fields[index];
+            emitted += 1;
             self.push_str("{\"name\":");
-            self.push_quoted(field.name);
-            self.push_str(",\"role\":");
-            self.push_input_role(field.kind);
+            // Required endpoints belong to the consumer graph slot;
+            // served call/setpoint ingress belongs to its public method.
+            self.push_quoted(match (field.kind, field.port) {
+                (InputKind::Commands | InputKind::Setpoint, Some(port)) => port,
+                _ => field.name,
+            });
+            self.push_str(",\"delivery\":");
+            self.push_input_delivery(field.kind);
             self.push_str(",\"max_age_ms\":");
             self.push_optional_u64(field.max_age_ms);
             self.push_str(",\"max_items\":");
@@ -294,22 +292,32 @@ impl RecordBuilder {
             self.push_message_type(field.request_type);
             self.push_str(",\"response_fqn\":");
             self.push_message_type(field.response_type);
+            let reply = reply_bounds(field.name, transient, services);
+            self.push_str(",\"response_max_bytes\":");
+            self.push_optional_u64(reply.0);
+            self.push_str(",\"response_max_items\":");
+            self.push_optional_u64(reply.1);
             self.push_byte(b'}');
-            index += 1;
         }
     }
 
-    const fn push_outputs(&mut self, fields: &[OutputField]) {
+    const fn push_outputs(&mut self, fields: &[OutputField], mut emitted: usize) -> usize {
         let mut index = 0;
         while index < fields.len() {
-            if index != 0 {
+            let field = fields[index];
+            index += 1;
+            if field.port_signature.is_none() {
+                continue;
+            }
+            if emitted != 0 {
                 self.push_byte(b',');
             }
-            let field = fields[index];
+            emitted += 1;
             self.push_str("{\"name\":");
-            self.push_quoted(field.name);
-            self.push_str(",\"role\":");
-            self.push_output_role(field.kind);
+            self.push_quoted(match field.port {
+                Some(port) => port,
+                None => panic!("provided method has no endpoint"),
+            });
             self.push_str(",\"port\":");
             match field.port {
                 Some(port) => self.push_quoted(port),
@@ -317,16 +325,6 @@ impl RecordBuilder {
             }
             self.push_str(",\"signature\":");
             self.push_signature(field.port_signature);
-            self.push_str(",\"input\":");
-            match field.input {
-                Some(input) => self.push_quoted(input),
-                None => self.push_str("null"),
-            }
-            self.push_str(",\"project\":");
-            match field.project {
-                Some(project) => self.push_quoted(project),
-                None => self.push_str("null"),
-            }
             self.push_str(",\"max_items\":");
             self.push_optional_u64(field.max_items);
             self.push_str(",\"max_bytes\":");
@@ -335,19 +333,13 @@ impl RecordBuilder {
             self.push_optional_u64(field.max_request_bytes);
             self.push_str(",\"every_steps\":");
             self.push_optional_u64(field.every_steps);
-            self.push_str(",\"on_change\":");
-            self.push_bool(field.on_change);
             self.push_str(",\"bootstrap\":");
             self.push_bool(field.bootstrap);
-            self.push_str(",\"valid_for_ms\":");
-            self.push_optional_u64(field.valid_for_ms);
             self.push_str(",\"timeout_ms\":");
             self.push_optional_u64(field.timeout_ms);
-            self.push_str(",\"cancel_grace_ms\":");
-            self.push_optional_u64(field.cancel_grace_ms);
             self.push_byte(b'}');
-            index += 1;
         }
+        emitted
     }
 
     const fn position(&self) -> usize {
@@ -373,5 +365,151 @@ impl RecordBuilder {
             len: self.position as u32,
             bytes: self.bytes,
         }
+    }
+}
+
+// Private Rust reply association is resolved here and never serialized.
+const fn reply_bounds(
+    name: &str,
+    transient: &[OutputField],
+    services: &[OutputField],
+) -> (Option<u64>, Option<u64>) {
+    let groups = [transient, services];
+    let mut group = 0;
+    let mut found = false;
+    let mut bounds = (None, None);
+    while group < groups.len() {
+        let mut index = 0;
+        while index < groups[group].len() {
+            let output = groups[group][index];
+            if matches!(output.kind, OutputKind::Reply)
+                && let Some(input) = output.input
+                && same_name(name, input)
+            {
+                assert!(!found, "call ingress has multiple reply bounds");
+                found = true;
+                bounds = (output.max_bytes, output.max_items);
+            }
+            index += 1;
+        }
+        group += 1;
+    }
+    bounds
+}
+const fn same_name(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_contract_resolves_private_call_associations_and_hides_local_operations() {
+        let signature = crate::contracts::MethodSignature::new(
+            "fixture.Service",
+            "Command",
+            "command",
+            crate::contracts::MethodShape::Call,
+            "fixture.Request",
+            "fixture.Response",
+            false,
+            None,
+            &[],
+        );
+        let input = InputField {
+            name: "private_command_queue",
+            kind: InputKind::Commands,
+            max_age_ms: None,
+            max_items: Some(2),
+            max_bytes: Some(128),
+            port: Some("command"),
+            port_signature: Some(signature),
+            request_type: None,
+            response_type: None,
+        };
+        let reply = OutputField {
+            name: "private_reply_batch",
+            kind: OutputKind::Reply,
+            port: None,
+            port_signature: None,
+            input: Some(input.name),
+            project: None,
+            max_items: Some(2),
+            max_bytes: Some(256),
+            max_request_bytes: None,
+            every_steps: None,
+            on_change: false,
+            bootstrap: false,
+            valid_for_ms: None,
+            timeout_ms: None,
+            cancel_grace_ms: None,
+        };
+        let read = OutputField {
+            name: "private_projection_method",
+            kind: OutputKind::Read,
+            port: Some("read"),
+            port_signature: Some(crate::contracts::MethodSignature::new(
+                "fixture.Service",
+                "Read",
+                "read",
+                crate::contracts::MethodShape::Call,
+                "fixture.Request",
+                "fixture.Response",
+                false,
+                None,
+                &[],
+            )),
+            input: None,
+            project: Some("private_project_fn"),
+            max_request_bytes: Some(128),
+            ..reply
+        };
+        let local = InputField {
+            name: "private_operation",
+            kind: InputKind::Operation,
+            port: None,
+            port_signature: None,
+            ..input
+        };
+        let bytes = runtime_record(
+            RuntimeSpec::from_millis(20, 100, 1000),
+            "null",
+            "[]",
+            &[input, local],
+            &[reply],
+            &[read],
+        );
+        let json = &bytes.as_bytes()[12..];
+        assert!(!std::str::from_utf8(json).unwrap().contains("private_"));
+        let record: crate::artifact::RuntimeRecord = serde_json::from_slice(json).unwrap();
+        let crate::artifact::RuntimeRecord::V0 {
+            inputs, outputs, ..
+        } = record;
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "command");
+        assert_eq!(inputs[0].response_max_bytes, Some(256));
+        assert_eq!(inputs[0].response_max_items, Some(2));
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "read");
+        let value: serde_json::Value = serde_json::from_slice(json).unwrap();
+        let output = value["outputs"][0].as_object().unwrap();
+        for private in ["role", "input", "project", "on_change", "cancel_grace_ms"] {
+            assert!(!output.contains_key(private), "private field {private}");
+        }
+        assert!(value.get("transient_outputs").is_none());
+        assert!(value.get("service_outputs").is_none());
     }
 }

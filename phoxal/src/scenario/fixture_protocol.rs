@@ -130,14 +130,6 @@ pub(crate) fn run(test_identity: &str, scene: &Path, plan: Plan) -> crate::Resul
         )
     })?;
     let endpoint = PathBuf::from(endpoint);
-    #[cfg(not(unix))]
-    {
-        let _ = (test_identity, scene, plan, endpoint);
-        return Err(crate::anyhow!(
-            "simulation fixture execution is currently supported only on Unix hosts"
-        ));
-    }
-    #[cfg(unix)]
     {
         let mut stream = std::os::unix::net::UnixStream::connect(&endpoint).map_err(|error| {
             crate::anyhow!(
@@ -362,7 +354,6 @@ mod tests {
         assert!(read_message::<ClientMessage>(&mut disconnected).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn simultaneous_clients_with_repeated_test_names_keep_results_isolated() {
         use std::os::unix::net::UnixStream;

@@ -77,9 +77,20 @@ fn file_name(package: &str) -> String {
 pub fn assemble_file_descriptors(records: &[DecodedRecord]) -> Result<FileDescriptorSet, Error> {
     let mut by_identity = BTreeMap::<String, DecodedRecord>::new();
     for record in records {
+        let mut record = record.clone();
+        // Declaration order does not change a Protobuf definition. Prepared
+        // APIs and owner declarations can retain the same fields in different
+        // orders; compare their canonical wire definitions.
+        match &mut record {
+            DecodedRecord::Message(message) => message.fields.sort_by_key(|field| field.number),
+            DecodedRecord::Enum(enumeration) => {
+                enumeration.values.sort_by_key(|value| value.number);
+            }
+            DecodedRecord::Oneof(oneof) => oneof.variants.sort_by_key(|field| field.number),
+        }
         let identity = record.identity();
         match by_identity.get(&identity) {
-            Some(existing) if existing == record => {}
+            Some(existing) if existing == &record => {}
             Some(_) => return Err(Error::Conflict(identity)),
             None => {
                 by_identity.insert(identity, record.clone());
@@ -457,6 +468,19 @@ mod tests {
         let duplicate = doubled[0].clone();
         doubled.push(duplicate);
         assemble_file_descriptors(&doubled).expect("identical duplicates collapse");
+        let mut reordered = records();
+        for mut record in records() {
+            match &mut record {
+                DecodedRecord::Message(message) => message.fields.reverse(),
+                DecodedRecord::Enum(enumeration) => enumeration.values.reverse(),
+                DecodedRecord::Oneof(oneof) => oneof.variants.reverse(),
+            }
+            reordered.push(record);
+        }
+        assert_eq!(
+            assemble_file_descriptors(&reordered).expect("declaration order is immaterial"),
+            assemble_file_descriptors(&records()).unwrap()
+        );
 
         let mut conflicting = records();
         let mut mutated = conflicting[0].clone();

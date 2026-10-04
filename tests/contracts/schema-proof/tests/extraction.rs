@@ -111,3 +111,26 @@ fn retained_records_match_the_compile_time_records() {
         );
     }
 }
+
+#[test]
+fn protocol_descriptors_are_extractable_without_executing_the_binary() {
+    let binary = std::fs::read(env!("CARGO_BIN_EXE_phoxal-schema-proof-fixture")).unwrap();
+    let records = schema_sections(&binary)
+        .iter()
+        .flat_map(|section| phoxal::schema::decode_section(section).unwrap())
+        .filter(|record| {
+            [
+                "phoxal.bootstrap.v1",
+                "phoxal.session.v1",
+                "phoxal.execution.v1",
+                "phoxal.simulation.v1",
+            ]
+            .contains(&record.package())
+        })
+        .collect::<Vec<_>>();
+    let extracted = phoxal::schema::assemble_file_descriptors(&records).unwrap();
+    assert_eq!(
+        extracted,
+        phoxal::communication::file_descriptor_set().unwrap()
+    );
+}

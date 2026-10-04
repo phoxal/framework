@@ -1,28 +1,10 @@
-# Release-plz prepares independent package versions and a reviewable release
-# pull request.
-#
-# Publication is intentionally disabled here. The `phoxal` registry is a
-# static sparse registry with an admission review path, not a Cargo upload
-# endpoint that release-plz can publish to. The owner workflow packages and
-# verifies the exact changed archives, while registry admission remains a
-# separate reviewed publication step.
 [workspace]
-# Only packages whose own commits require a release are included. A service
-# change therefore does not create unrelated SDK, tool, or simulator releases.
-release_always = false
-dependencies_update = false
-# Changelogs are repository-generated release output. Release-plz still
-# updates package versions and prepares its PR, but this workspace does not
-# ask it to edit CHANGELOG.md files as part of that operation.
-changelog_update = false
-# No release-plz Cargo publication exists for the alternate registry. Keep
-# package processing enabled so release-plz still plans independent versions.
-publish = false
-# Tags anchor each package's published baseline so the release-plz
-# history walk never reaches the pre-migration commits whose generated
-# path dependencies break in gitignore-respecting worktrees.
+release_always = true
+changelog_update = true
+publish = true
 git_tag_enable = true
 git_tag_name = "{name}-v{version}"
-git_release_enable = false
-semver_check = true
+git_release_enable = true
+# Breaking changes are permitted while the framework remains pre-1.0.
+semver_check = false
 pr_name = "chore(release): update package versions"

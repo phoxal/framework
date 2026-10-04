@@ -12,7 +12,7 @@ mod assembly;
 mod codec;
 mod decoded;
 
-pub use assembly::assemble_file_descriptors;
+pub use assembly::{Error as AssemblyError, assemble_file_descriptors};
 pub use codec::{
     PhoxalWire, encode_repeated, merge_fresh_default, merge_repeated, missing_variant_error,
     repeated_len, singular_encode, singular_len, unknown_enum_value_error, unknown_oneof_tag,

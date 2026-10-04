@@ -16,6 +16,9 @@
 //! The harness covers local state-transition and admission evidence only;
 //! it is not transport, supervisor, or simulation-timeline evidence.
 
+mod commands;
+pub use commands::HarnessCommands;
+
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
@@ -27,7 +30,7 @@ use super::core::{
 };
 use super::input::{CallResponse, CommandId, InputSet};
 use super::outputs::OutputSet;
-use crate::port::PortSignature;
+use crate::contracts::MethodSignature;
 
 /// Upper bound of releases one `advance_to` operation may execute before
 /// reporting work exhaustion. Accepted progress is preserved; the caller
@@ -57,6 +60,7 @@ where
     /// Builds the owner driver from the configuration's JSON document.
     fn harness_driver(
         config: serde_json::Value,
+        now: ExecutionTime,
     ) -> crate::Result<HarnessDriver<Self::Inputs, Self::Outputs>>;
 
     /// Freezes the staged inputs into one invocation's input cut, stamping
@@ -73,7 +77,11 @@ where
 
     /// Stores one encoded state publication, keyed by its output field
     /// name; the generated view decodes it lazily in its accessor.
-    fn store_state_record(view: &mut Self::HarnessView, field: &'static str, bytes: Vec<u8>);
+    fn store_state_record(
+        view: &mut Self::HarnessView,
+        field: &'static str,
+        bytes: Option<Vec<u8>>,
+    );
 
     /// Takes the encoded reply for one call correlation, if it has been
     /// accepted.
@@ -105,6 +113,11 @@ where
     fn clear(view: &mut Self::HarnessView);
 }
 
+pub(crate) struct HarnessPublication {
+    field: &'static str,
+    bytes: Option<Vec<u8>>,
+}
+
 /// Object-safe operations over the real runtime owner, hiding the adapter
 /// behind the input and output transaction types the harness already
 /// knows.
@@ -123,7 +136,7 @@ pub(crate) trait OwnerOps<Inputs, Outputs> {
         &mut self,
         context: StepContext,
         inputs: &Inputs,
-        ports: &[(&'static str, Option<PortSignature>)],
+        ports: &[(&'static str, Option<MethodSignature>)],
         validate: &(dyn Fn(&Outputs) -> crate::Result<()> + '_),
     ) -> crate::Result<Outputs>;
 
@@ -146,9 +159,9 @@ pub(crate) trait OwnerOps<Inputs, Outputs> {
     fn state_records(
         &self,
         context: StepContext,
-        ports: &[(&'static str, Option<PortSignature>)],
+        ports: &[(&'static str, Option<MethodSignature>)],
         bootstrap: bool,
-    ) -> crate::Result<Vec<(&'static str, Vec<u8>)>>;
+    ) -> crate::Result<Vec<HarnessPublication>>;
 }
 
 /// Encodes one candidate state's publications through the real bounded
@@ -157,7 +170,7 @@ fn owner_encode_check<A>(
     owner: &A,
     state: &<A as Runtime>::State,
     context: StepContext,
-    ports: &[(&'static str, Option<PortSignature>)],
+    ports: &[(&'static str, Option<MethodSignature>)],
 ) -> crate::Result<()>
 where
     A: RegisteredRuntime + super::outputs::OutputBindings,
@@ -188,7 +201,7 @@ where
         &mut self,
         context: StepContext,
         inputs: &A::Inputs,
-        ports: &[(&'static str, Option<PortSignature>)],
+        ports: &[(&'static str, Option<MethodSignature>)],
         validate: &(dyn Fn(&A::Outputs) -> crate::Result<()> + '_),
     ) -> crate::Result<A::Outputs> {
         let mut admission = HarnessAdmission {
@@ -231,9 +244,9 @@ where
     fn state_records(
         &self,
         context: StepContext,
-        ports: &[(&'static str, Option<PortSignature>)],
+        ports: &[(&'static str, Option<MethodSignature>)],
         bootstrap: bool,
-    ) -> crate::Result<Vec<(&'static str, Vec<u8>)>> {
+    ) -> crate::Result<Vec<HarnessPublication>> {
         let Some(state) = self.state_ref() else {
             return crate::Result::Ok(Vec::new());
         };
@@ -262,15 +275,83 @@ where
             else {
                 continue;
             };
-            if metadata.kind != super::outputs::OutputKind::State {
+            if !matches!(
+                metadata.kind,
+                super::outputs::OutputKind::State | super::outputs::OutputKind::Setpoint
+            ) {
                 continue;
             }
             if bootstrap && !metadata.bootstrap {
                 continue;
             }
-            captured.push((field, record.payload_bytes().to_vec()));
+            captured.push(HarnessPublication {
+                field,
+                bytes: (!record.is_withdrawal()).then(|| record.payload_bytes().to_vec()),
+            });
         }
         crate::Result::Ok(captured)
+    }
+}
+
+/// Bounded queued inputs used by generated harness endpoint bindings.
+/// Payload-only enqueue stamps at admission; an injected sample retains
+/// its original capture time, source, and revision in the same FIFO.
+pub struct HarnessQueue<T> {
+    values: Vec<(T, Option<super::ObservationStamp>)>,
+    bytes: usize,
+}
+
+impl<T> Default for HarnessQueue<T> {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            bytes: 0,
+        }
+    }
+}
+
+impl<T: crate::contracts::ProstPayload> HarnessQueue<T> {
+    /// Admits a queued item against its endpoint's complete pending bounds.
+    pub fn push(
+        &mut self,
+        item: T,
+        stamp: Option<super::ObservationStamp>,
+        endpoint: &'static str,
+        max_items: u64,
+        max_bytes: u64,
+    ) -> Result<(), HarnessError> {
+        let bytes = item
+            .encode_payload()
+            .map_err(|_| HarnessError::PendingUnencodable { endpoint })?
+            .len();
+        if self.values.len() as u64 >= max_items
+            || self.bytes.saturating_add(bytes) as u64 > max_bytes
+        {
+            return Err(HarnessError::PendingFull { endpoint });
+        }
+        self.bytes += bytes;
+        self.values.push((item, stamp));
+        Ok(())
+    }
+
+    /// Freezes the admitted FIFO, preserving explicit capture provenance.
+    pub fn freeze(&mut self, now: ExecutionTime, source: &'static str) -> Vec<super::Sample<T>> {
+        self.bytes = 0;
+        self.values
+            .drain(..)
+            .map(|(item, stamp)| {
+                super::Sample::new(
+                    item,
+                    stamp.unwrap_or_else(|| super::ObservationStamp::new(source, now, None)),
+                )
+            })
+            .collect()
+    }
+
+    /// Clears the pending queue and its reserved byte capacity on reset.
+    pub fn clear(&mut self) {
+        self.values.clear();
+        self.bytes = 0;
     }
 }
 
@@ -291,6 +372,7 @@ impl<Inputs, Outputs> HarnessDriver<Inputs, Outputs> {
 /// authored tests never name the adapter.
 pub fn new_harness_driver<A>(
     config: serde_json::Value,
+    now: ExecutionTime,
 ) -> crate::Result<HarnessDriver<A::Inputs, A::Outputs>>
 where
     A: RegisteredRuntime + super::outputs::OutputBindings + Default + Send + Sync + 'static,
@@ -299,7 +381,7 @@ where
     <A as Runtime>::State: Send,
 {
     let config = decode_harness_config::<A>(config)?;
-    let owner = RuntimeOwner::new(A::default(), ExecutionTime::default(), config)?;
+    let owner = RuntimeOwner::new(A::default(), now, config)?;
     Ok(HarnessDriver {
         owner: Box::new(owner),
     })
@@ -332,6 +414,9 @@ where
     previous_release: Option<ExecutionTime>,
     next_index: u64,
     now: ExecutionTime,
+    outgoing: std::collections::VecDeque<CapturedRequest>,
+    outstanding: std::collections::BTreeMap<u128, u64>,
+    completions: Vec<super::input::TransportCallCompletion>,
 }
 
 /// Allocates harness owner identities so a call token from one harness can
@@ -345,16 +430,28 @@ where
 {
     /// Initializes the runtime and captures its bootstrap publication.
     pub fn new(config: impl serde::Serialize) -> crate::Result<Self> {
+        Self::new_at(config, Duration::ZERO)
+    }
+
+    /// Initializes at an explicit logical clock origin, preserving the
+    /// ordinary cadence without executing releases before that origin.
+    pub fn new_at(config: impl serde::Serialize, origin: Duration) -> crate::Result<Self> {
+        let now = ExecutionTime::from_nanos(
+            u64::try_from(origin.as_nanos())
+                .map_err(|_| crate::anyhow!(HarnessError::ClockOverflow))?,
+        );
         let config = serde_json::to_value(config)
             .map_err(|error| crate::anyhow!("harness configuration is not encodable: {error}"))?;
-        let mut driver = R::harness_driver(config)?;
+        let mut driver = R::harness_driver(config, now)?;
         let owner_id = HARNESS_OWNERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut view = R::HarnessView::default();
         R::bind_harness(&mut view, owner_id);
         let period = driver.as_ops().period();
         let ports = input_ports::<R>();
-        let context = StepContext::first(ExecutionTime::default(), period);
-        for (field, bytes) in driver.as_ops().state_records(context, &ports, true)? {
+        let context = StepContext::first(now, period);
+        for HarnessPublication { field, bytes } in
+            driver.as_ops().state_records(context, &ports, true)?
+        {
             R::store_state_record(&mut view, field, bytes);
         }
         Ok(Self {
@@ -362,10 +459,13 @@ where
             view,
             owner_id,
             period,
-            next_release: ExecutionTime::default(),
+            next_release: now,
             previous_release: None,
             next_index: 0,
-            now: ExecutionTime::default(),
+            now,
+            outgoing: Default::default(),
+            outstanding: Default::default(),
+            completions: Vec::new(),
         })
     }
 
@@ -380,7 +480,10 @@ where
     /// resumes the outstanding releases. A failed invocation or admission
     /// makes the harness execution terminal; later advancement neither
     /// invokes nor reserves again.
-    pub fn advance_to(&mut self, target: Duration) -> Result<u64, HarnessError> {
+    pub fn advance_to(&mut self, target: Duration) -> Result<u64, HarnessError>
+    where
+        R::Inputs: super::input::TransportInputSink,
+    {
         let target_nanos =
             u64::try_from(target.as_nanos()).map_err(|_| HarnessError::ClockOverflow)?;
         if target_nanos < self.now.as_nanos() {
@@ -424,14 +527,46 @@ where
                 .as_nanos()
                 .checked_add(self.period.as_nanos())
                 .ok_or(HarnessError::ClockOverflow)?;
-            let inputs = R::build_inputs(&mut self.view, self.next_release);
+            let mut inputs = R::build_inputs(&mut self.view, self.next_release);
+            super::input::TransportInputSink::set_call_completions(
+                &mut inputs,
+                std::mem::take(&mut self.completions),
+            )
+            .map_err(|source| HarnessError::Terminal { source })?;
             let view = &self.view;
-            let validate = move |outputs: &R::Outputs| R::validate_retention(view, outputs);
+            let outstanding = self.outstanding.len();
+            let retained_bytes: usize = self
+                .outgoing
+                .iter()
+                .map(|request| request.bytes.len())
+                .sum();
+            let validate = |outputs: &R::Outputs| {
+                R::validate_retention(view, outputs)?;
+                let requests = capture_requests::<R>(outputs, context, &ports)?;
+                if outstanding + requests.len() > super::pending::MAX_PENDING_CALLS
+                    || retained_bytes
+                        + requests
+                            .iter()
+                            .map(|request| request.bytes.len())
+                            .sum::<usize>()
+                        > MAX_REQUEST_BYTES
+                {
+                    return Err(crate::anyhow!(HarnessError::RetainedFull));
+                }
+                Ok(())
+            };
             let outputs = self
                 .driver
                 .as_ops()
                 .accept(context, &inputs, &ports, &validate)
                 .map_err(|source| HarnessError::Terminal { source })?;
+            for request in capture_requests::<R>(&outputs, context, &ports)
+                .map_err(|source| HarnessError::Terminal { source })?
+            {
+                self.outstanding
+                    .insert(request.ticket, request.response_max_bytes);
+                self.outgoing.push_back(request);
+            }
             R::capture_outputs(&mut self.view, &outputs).map_err(|source| {
                 self.driver.as_ops().fail();
                 HarnessError::Terminal { source }
@@ -444,7 +579,7 @@ where
                     self.driver.as_ops().fail();
                     HarnessError::Terminal { source }
                 })?;
-            for (field, bytes) in records {
+            for HarnessPublication { field, bytes } in records {
                 R::store_state_record(&mut self.view, field, bytes);
             }
             self.previous_release = Some(self.next_release);
@@ -453,6 +588,93 @@ where
             executed += 1;
         }
         Ok(executed)
+    }
+
+    /// Takes one accepted outgoing request for a declared call field.
+    /// The opaque token can complete only this harness's current execution.
+    pub fn take_request<Request, Response>(
+        &mut self,
+        field: &str,
+    ) -> crate::Result<Option<HarnessRequest<Request, Response>>>
+    where
+        Request: crate::contracts::ProstPayload,
+        Response: crate::contracts::ProstPayload,
+    {
+        let Some(index) = self
+            .outgoing
+            .iter()
+            .position(|request| request.field == field)
+        else {
+            return Ok(None);
+        };
+        let request = &self.outgoing[index];
+        if request.signature.request != <Request as crate::schema::MessageSchema>::WIRE_NAME
+            || request.signature.response != <Response as crate::schema::MessageSchema>::WIRE_NAME
+        {
+            return Err(crate::anyhow!(
+                "harness request types do not match call field `{field}`"
+            ));
+        }
+        let payload = Request::decode_payload(&request.bytes)?;
+        let request = self
+            .outgoing
+            .remove(index)
+            .ok_or_else(|| crate::anyhow!("accepted harness request disappeared"))?;
+        Ok(Some(HarnessRequest {
+            request: payload,
+            ticket: request.ticket,
+            owner: self.owner_id,
+            response: std::marker::PhantomData,
+        }))
+    }
+
+    /// Stages a correlated outgoing result for the next declared release.
+    /// Reset, foreign-owner, duplicate, and oversized results are refused.
+    pub fn complete_request<Request, Response>(
+        &mut self,
+        request: &HarnessRequest<Request, Response>,
+        result: Result<Response, super::input::RequestError>,
+    ) -> crate::Result<()>
+    where
+        Response: crate::contracts::ProstPayload,
+    {
+        if request.owner != self.owner_id {
+            return Err(crate::anyhow!(HarnessError::ForeignCall));
+        }
+        let maximum = self
+            .outstanding
+            .get(&request.ticket)
+            .ok_or_else(|| crate::anyhow!("harness request was retired by completion or reset"))?;
+        let encoded = match result {
+            Ok(value) => {
+                let bytes = value.encode_payload()?;
+                if bytes.len() as u64 > *maximum {
+                    return Err(crate::anyhow!(
+                        "harness response exceeds its declared byte bound"
+                    ));
+                }
+                Ok(bytes)
+            }
+            Err(error) => Err(error),
+        };
+        let completion = super::input::TransportCallCompletion {
+            ticket: request.ticket,
+            result: encoded,
+        };
+        if self.completions.len() >= super::input::MAX_RETAINED_COMPLETIONS
+            || self
+                .completions
+                .iter()
+                .map(|value| value.retained_bytes())
+                .sum::<usize>()
+                + completion.retained_bytes()
+                > super::input::MAX_RETAINED_COMPLETION_BYTES
+        {
+            return Err(crate::anyhow!(HarnessError::RetainedFull));
+        }
+        self.outstanding.remove(&request.ticket);
+        self.completions.push(completion);
+        Ok(())
     }
 
     /// Returns the typed correlated reply for one enqueued call.
@@ -514,13 +736,92 @@ where
             }
         };
         R::clear(&mut self.view);
-        for (field, bytes) in records {
+        self.outgoing.clear();
+        self.outstanding.clear();
+        self.completions.clear();
+        for HarnessPublication { field, bytes } in records {
             R::store_state_record(&mut self.view, field, bytes);
         }
         self.next_release = self.now;
         self.previous_release = None;
         self.next_index = 0;
         Ok(())
+    }
+}
+
+const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+
+struct CapturedRequest {
+    field: String,
+    signature: MethodSignature,
+    ticket: u128,
+    bytes: Vec<u8>,
+    response_max_bytes: u64,
+}
+
+fn capture_requests<R: HarnessAttachment>(
+    outputs: &R::Outputs,
+    context: StepContext,
+    ports: &[(&'static str, Option<MethodSignature>)],
+) -> crate::Result<Vec<CapturedRequest>>
+where
+    R::Inputs: InputSet,
+    R::Outputs: OutputSet,
+{
+    let records = outputs.encode_transport(
+        context,
+        &|name| {
+            ports
+                .iter()
+                .find(|(field, _)| *field == name)
+                .and_then(|(_, signature)| *signature)
+        },
+        "phoxal-harness",
+    )?;
+    let mut requests = Vec::new();
+    for record in records {
+        let Some((field, signature, ticket, _, true)) = record.generated_identity() else {
+            continue;
+        };
+        let metadata = <R::Inputs as InputSet>::FIELDS
+            .iter()
+            .find(|input| input.name == field && input.kind == super::input::InputKind::Completions)
+            .ok_or_else(|| {
+                crate::anyhow!("outgoing harness request has no declared call field `{field}`")
+            })?;
+        let expected = metadata
+            .port_signature
+            .ok_or_else(|| crate::anyhow!("call field has no declared method contract"))?;
+        super::transport::validate_binding_identity(
+            &super::transport::MethodBinding::from_method(signature),
+            expected,
+        )?;
+        requests.push(CapturedRequest {
+            field,
+            signature,
+            ticket,
+            bytes: record.payload_bytes().to_vec(),
+            response_max_bytes: metadata
+                .max_bytes
+                .ok_or_else(|| crate::anyhow!("call field has no response byte bound"))?,
+        });
+    }
+    Ok(requests)
+}
+
+/// One accepted outgoing request, carrying its typed payload and correlation.
+/// Constructed only by [`Harness::take_request`].
+pub struct HarnessRequest<Request, Response> {
+    request: Request,
+    ticket: u128,
+    owner: u64,
+    response: std::marker::PhantomData<fn() -> Response>,
+}
+
+impl<Request, Response> HarnessRequest<Request, Response> {
+    /// The request accepted by the real runtime owner.
+    pub fn request(&self) -> &Request {
+        &self.request
     }
 }
 
@@ -597,6 +898,21 @@ pub enum HarnessError {
         /// The endpoint whose staged queue is full.
         endpoint: &'static str,
     },
+    /// No fresh call correlation is representable.
+    #[error("harness call correlation space is exhausted")]
+    CorrelationExhausted,
+    /// A command with the same wire correlation is already outstanding on this endpoint.
+    #[error("pending command for `{endpoint}` duplicates an outstanding correlation")]
+    DuplicateCommand {
+        /// The endpoint receiving the duplicate command.
+        endpoint: &'static str,
+    },
+    /// A leased input has no positive validity interval within its declared bound.
+    #[error("pending lease for `{endpoint}` has an invalid validity interval")]
+    InvalidLease {
+        /// The leased endpoint whose interval was refused.
+        endpoint: &'static str,
+    },
     /// A staged input could not be encoded against its contract bounds.
     #[error("pending input for `{endpoint}` could not be encoded")]
     PendingUnencodable {
@@ -623,7 +939,7 @@ fn outstanding_releases(next: ExecutionTime, target: u64, period: ExecutionDurat
     (span / period_nanos) + 1
 }
 
-fn input_ports<R: HarnessAttachment>() -> Vec<(&'static str, Option<PortSignature>)>
+fn input_ports<R: HarnessAttachment>() -> Vec<(&'static str, Option<MethodSignature>)>
 where
     R::Inputs: InputSet,
     R::Outputs: OutputSet,
@@ -641,7 +957,7 @@ where
 /// publication.
 struct HarnessAdmission<'a, O> {
     context: StepContext,
-    ports: Vec<(&'static str, Option<PortSignature>)>,
+    ports: Vec<(&'static str, Option<MethodSignature>)>,
     validate: &'a (dyn Fn(&O) -> crate::Result<()> + 'a),
 }
 

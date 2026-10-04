@@ -7,8 +7,9 @@ use super::{
     InputDirection, InputSource, ResolvedInputRoute, RuntimeInputReceipt, RuntimeLaunchManifest,
     parse_graph_endpoint,
 };
+use crate::communication::execution as execution_wire;
 use crate::runtime::core::RegisteredRuntime;
-use crate::runtime::execution_protocol::{self, wire as execution_wire};
+use crate::runtime::execution_protocol;
 use crate::runtime::input::{InputSnapshot, TransportInputSet, TransportKeyLookup, TransportValue};
 use crate::runtime::schedule::HardwareInvocation;
 use crate::runtime::transport::{self, TransportError, WireSample};
@@ -53,32 +54,17 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) observed_attempts: BTreeMap<&'static str, u64>,
     pub(super) stream_terminal: BTreeSet<&'static str>,
     pub(super) last_input_receipts: Vec<RuntimeInputReceipt>,
-    pub(super) arrivals: Option<Arc<tokio::sync::Notify>>,
     pub(super) stopped: bool,
     pub(super) _runtime: PhantomData<fn() -> R>,
-}
-
-/// The encoded response bytes one retained completion holds.
-fn retained_bytes(completion: &crate::runtime::input::TransportCallCompletion) -> usize {
-    match &completion.result {
-        Ok(bytes) => bytes.len(),
-        Err(error) => match error {
-            crate::runtime::input::RequestError::NotSent(detail)
-            | crate::runtime::input::RequestError::OutcomeUnknown(detail)
-            | crate::runtime::input::RequestError::RejectedBeforeAdmission(detail)
-            | crate::runtime::input::RequestError::Integrity(detail) => detail.len(),
-            crate::runtime::input::RequestError::Oversized
-            | crate::runtime::input::RequestError::Timeout => 0,
-        },
-    }
 }
 
 pub(super) type RuntimeSubscription =
     zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
 
 pub(super) struct BoundSubscription {
+    pub(super) input_kind: crate::runtime::input::InputKind,
     pub(super) field: &'static str,
-    pub(super) binding: crate::runtime::transport::PortBinding,
+    pub(super) binding: crate::runtime::transport::MethodBinding,
     pub(super) direction: InputDirection,
     pub(super) max_items: u64,
     pub(super) max_bytes: u64,
@@ -475,9 +461,6 @@ pub(super) struct DeliveryReceiver {
     pub(super) ack_leg: String,
     pub(super) cancel: CancellationToken,
     pub(super) reply_admission: Option<ReplyAdmission>,
-    /// Signaled after an unstamped hardware delivery is admitted so an
-    /// arrival-aligned runtime can convert without waiting for its tick.
-    pub(super) arrivals: Option<Arc<tokio::sync::Notify>>,
 }
 
 pub(super) struct ReplyAdmission {
@@ -538,7 +521,6 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
         ack_leg,
         cancel,
         reply_admission,
-        arrivals,
     } = receiver;
     loop {
         let sample = tokio::select! {
@@ -598,13 +580,10 @@ pub(super) async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::
                 Ok(queue) => queue,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            if queue.admit_untracked(wire).is_ok() {
-                if let Some(reply) = &reply_admission {
-                    reply.admit(reply_identity.0, reply_identity.1);
-                }
-                if let Some(arrivals) = &arrivals {
-                    arrivals.notify_one();
-                }
+            if queue.admit_untracked(wire).is_ok()
+                && let Some(reply) = &reply_admission
+            {
+                reply.admit(reply_identity.0, reply_identity.1);
             }
             continue;
         }
@@ -905,7 +884,7 @@ async fn generated_reply_receive_loop(
 }
 
 pub(super) fn validate_controlled_request_source(
-    metadata: &crate::runtime::transport::RuntimeWireMetadata,
+    metadata: &crate::communication::execution::RuntimeWireMetadata,
     source: &str,
     port: &str,
     expected_callers: &BTreeSet<String>,
@@ -969,12 +948,33 @@ pub(super) async fn publish_delivery_ack(
 }
 
 pub(super) struct CollectedInput {
+    pub(super) input_kind: crate::runtime::input::InputKind,
     pub(super) field: &'static str,
-    pub(super) binding: crate::runtime::transport::PortBinding,
+    pub(super) binding: crate::runtime::transport::MethodBinding,
     pub(super) direction: InputDirection,
     pub(super) max_items: u64,
     pub(super) max_bytes: u64,
     pub(super) samples: Vec<WireSample>,
+}
+
+impl CollectedInput {
+    pub(super) fn merge_source(
+        &mut self,
+        binding: &transport::MethodBinding,
+        direction: InputDirection,
+        samples: Vec<WireSample>,
+    ) -> crate::Result<()> {
+        if !self.binding.same_wire_contract(binding) || self.direction != direction {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!(
+                    "input field `{}` received conflicting source bindings",
+                    self.field
+                ),
+            }));
+        }
+        self.samples.extend(samples);
+        Ok(())
+    }
 }
 
 impl<R> ExecutionInputAdapter<R> {
@@ -988,32 +988,32 @@ impl<R> ExecutionInputAdapter<R> {
         completion: crate::runtime::input::TransportCallCompletion,
     ) -> crate::Result<()> {
         if !self.retained_completions.contains_key(&completion.ticket)
-            && self.retained_completions.len() >= super::exchange::MAX_RETAINED_COMPLETIONS
+            && self.retained_completions.len() >= crate::runtime::input::MAX_RETAINED_COMPLETIONS
         {
             return Err(anyhow::anyhow!(
                 crate::runtime::transport::TransportError::BatchTooLarge {
                     port: "generated-completions".to_owned(),
                     what: "retained completion count",
                     actual: (self.retained_completions.len() + 1) as u64,
-                    maximum: super::exchange::MAX_RETAINED_COMPLETIONS as u64,
+                    maximum: crate::runtime::input::MAX_RETAINED_COMPLETIONS as u64,
                 }
             ));
         }
         if let Some(previous) = self.retained_completions.get(&completion.ticket) {
             self.retained_completions_bytes = self
                 .retained_completions_bytes
-                .saturating_sub(retained_bytes(previous));
+                .saturating_sub(previous.retained_bytes());
         }
-        let bytes = retained_bytes(&completion);
+        let bytes = completion.retained_bytes();
         if self.retained_completions_bytes.saturating_add(bytes)
-            > super::exchange::MAX_RETAINED_COMPLETION_BYTES
+            > crate::runtime::input::MAX_RETAINED_COMPLETION_BYTES
         {
             return Err(anyhow::anyhow!(
                 crate::runtime::transport::TransportError::BatchTooLarge {
                     port: "generated-completions".to_owned(),
                     what: "retained completion encoded bytes",
                     actual: (self.retained_completions_bytes + bytes) as u64,
-                    maximum: super::exchange::MAX_RETAINED_COMPLETION_BYTES as u64,
+                    maximum: crate::runtime::input::MAX_RETAINED_COMPLETION_BYTES as u64,
                 }
             ));
         }
@@ -1029,8 +1029,11 @@ impl<R> ExecutionInputAdapter<R> {
     pub(super) fn retain_surviving_completions(&mut self, surviving: &BTreeSet<u128>) {
         self.retained_completions
             .retain(|ticket, _| surviving.contains(ticket));
-        self.retained_completions_bytes =
-            self.retained_completions.values().map(retained_bytes).sum();
+        self.retained_completions_bytes = self
+            .retained_completions
+            .values()
+            .map(crate::runtime::input::TransportCallCompletion::retained_bytes)
+            .sum();
     }
 
     pub(super) fn unbound() -> Self {
@@ -1055,18 +1058,9 @@ impl<R> ExecutionInputAdapter<R> {
             observed_attempts: BTreeMap::new(),
             stream_terminal: BTreeSet::new(),
             last_input_receipts: Vec::new(),
-            arrivals: None,
             stopped: false,
             _runtime: PhantomData,
         }
-    }
-
-    /// Shares one arrival signal with every delivery worker, so the
-    /// transport loop can pull the next release forward when a sample is
-    /// admitted (only consulted for arrival-aligned runtimes).
-    pub(super) fn with_arrivals(mut self, arrivals: Arc<tokio::sync::Notify>) -> Self {
-        self.arrivals = Some(arrivals);
-        self
     }
 
     pub(super) fn with_shared_state(
@@ -1133,7 +1127,7 @@ impl<R> ExecutionInputAdapter<R> {
                     })?;
                 let capacity = usize::try_from(route.max_items).map_err(|_| {
                     anyhow::anyhow!(TransportError::BatchTooLarge {
-                        port: route.binding.name.clone(),
+                        port: route.binding.endpoint.clone(),
                         what: "item count",
                         actual: route.max_items,
                         maximum: usize::MAX as u64,
@@ -1156,23 +1150,22 @@ impl<R> ExecutionInputAdapter<R> {
                 let worker_callers = if route.direction == InputDirection::Request {
                     command_ranks
                         .iter()
-                        .filter(|((port, _caller), _rank)| port == &route.binding.name)
+                        .filter(|((port, _caller), _rank)| port == &route.binding.endpoint)
                         .map(|((_port, caller), _rank)| caller.clone())
                         .collect()
                 } else {
                     BTreeSet::new()
                 };
                 let ack_leg = if route.direction == InputDirection::Reply
-                    && route.binding.kind == crate::port::PortKind::Read
+                    && route.input_kind == crate::runtime::input::InputKind::Read
                 {
                     format!("read-reply-ack/{}", route.source_port)
                 } else {
                     "delivery-ack".to_owned()
                 };
-                let worker_target = format!("{}.{}", manifest.instance_id, route.field);
-                let worker_port = route.binding.name.clone();
+                let worker_target = format!("{}.{}", manifest.instance_id, route.target_endpoint);
+                let worker_port = route.binding.endpoint.clone();
                 let worker_direction = route.direction.key_direction().to_owned();
-                let worker_arrivals = self.arrivals.clone();
                 let reply_admission = if route.direction == InputDirection::Reply {
                     self.correlations.as_ref().zip(route.caller_rank).map(
                         |(correlations, caller_rank)| ReplyAdmission {
@@ -1198,7 +1191,6 @@ impl<R> ExecutionInputAdapter<R> {
                         ack_leg,
                         cancel: worker_cancel,
                         reply_admission,
-                        arrivals: worker_arrivals,
                     })
                     .await;
                     if let Err(error) = result {
@@ -1213,7 +1205,7 @@ impl<R> ExecutionInputAdapter<R> {
                 if let Err(worker) = bus.register_named_worker(
                     format!(
                         "delivery-receiver-{}-{}",
-                        route.source_instance, route.binding.name
+                        route.source_instance, route.binding.endpoint
                     ),
                     Arc::clone(&expected),
                     worker,
@@ -1224,6 +1216,7 @@ impl<R> ExecutionInputAdapter<R> {
                     )));
                 }
                 subscriptions.push(BoundSubscription {
+                    input_kind: route.input_kind,
                     field: route.field,
                     binding: route.binding,
                     direction: route.direction,
@@ -1332,7 +1325,7 @@ impl<R> ExecutionInputAdapter<R> {
             let max_bytes = field.max_bytes.unwrap_or(u64::MAX);
             let key = bus.full_key(&transport::port_key(
                 instance,
-                signature.name,
+                signature.endpoint,
                 direction.key_direction(),
             ));
             let key_expr = zenoh::key_expr::OwnedKeyExpr::new(key.clone()).map_err(|error| {
@@ -1342,7 +1335,7 @@ impl<R> ExecutionInputAdapter<R> {
             })?;
             let capacity = usize::try_from(max_items).map_err(|_| {
                 anyhow::anyhow!(TransportError::BatchTooLarge {
-                    port: signature.name.to_owned(),
+                    port: signature.endpoint.to_owned(),
                     what: "item count",
                     actual: max_items,
                     maximum: usize::MAX as u64,
@@ -1354,8 +1347,9 @@ impl<R> ExecutionInputAdapter<R> {
                 .await
                 .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
             subscriptions.push(BoundSubscription {
+                input_kind: field.kind,
                 field: field.name,
-                binding: crate::runtime::transport::PortBinding::from_signature(signature),
+                binding: crate::runtime::transport::MethodBinding::from_method(signature),
                 direction,
                 max_items,
                 max_bytes,
@@ -1476,7 +1470,7 @@ impl<R> ExecutionInputAdapter<R> {
                 }
                 if let Some(expected) = self
                     .command_ranks
-                    .get(&(batch.binding.name.clone(), caller.clone()))
+                    .get(&(batch.binding.endpoint.clone(), caller.clone()))
                     && *expected != caller_rank
                 {
                     return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
@@ -1487,12 +1481,12 @@ impl<R> ExecutionInputAdapter<R> {
                 } else if !self.command_ranks.is_empty()
                     && !self
                         .command_ranks
-                        .contains_key(&(batch.binding.name.clone(), caller.clone()))
+                        .contains_key(&(batch.binding.endpoint.clone(), caller.clone()))
                 {
                     return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
                         format!(
                             "caller `{caller}` is not connected to Commands port `{}`",
-                            batch.binding.name
+                            batch.binding.endpoint
                         ),
                     )));
                 }
@@ -1833,14 +1827,14 @@ where
                 let key = (
                     subscription.field.to_owned(),
                     source.to_owned(),
-                    subscription.binding.name.clone(),
+                    subscription.binding.endpoint.clone(),
                 );
                 let receipt = input_receipts
                     .entry(key)
                     .or_insert_with(|| RuntimeInputReceipt {
                         input: subscription.field.to_owned(),
                         source: source.to_owned(),
-                        port: subscription.binding.name.clone(),
+                        port: subscription.binding.endpoint.clone(),
                         sequence,
                         items: 0,
                         bytes: 0,
@@ -1849,8 +1843,8 @@ where
                 receipt.items = receipt.items.saturating_add(1);
                 receipt.bytes = receipt.bytes.saturating_add(sample.payload().len() as u64);
             }
-            let has_retained_commands = subscription.binding.kind
-                == crate::port::PortKind::Commands
+            let has_retained_commands = subscription.input_kind
+                == crate::runtime::input::InputKind::Commands
                 && subscription.direction == InputDirection::Request
                 && self
                     .future_commands
@@ -1864,17 +1858,10 @@ where
                 .iter_mut()
                 .find(|batch| batch.field == subscription.field)
             {
-                if batch.binding != effective_binding || batch.direction != subscription.direction {
-                    return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
-                        detail: format!(
-                            "input field `{}` received conflicting source bindings",
-                            subscription.field
-                        ),
-                    }));
-                }
-                batch.samples.extend(samples);
+                batch.merge_source(&effective_binding, subscription.direction, samples)?;
             } else {
                 batches.push(CollectedInput {
+                    input_kind: subscription.input_kind,
                     field: subscription.field,
                     binding: effective_binding,
                     direction: subscription.direction,
@@ -1887,7 +1874,7 @@ where
         let current_boundary = _candidate.input_boundary();
         let mut future_updates = BTreeMap::new();
         for mut batch in batches {
-            if batch.binding.kind == crate::port::PortKind::Commands
+            if batch.input_kind == crate::runtime::input::InputKind::Commands
                 && batch.direction == InputDirection::Request
             {
                 self.validate_future_command_admission(&batch)?;
@@ -1901,7 +1888,7 @@ where
                     .checked_add(batch.samples.len())
                     .ok_or_else(|| {
                         anyhow::anyhow!(TransportError::BatchTooLarge {
-                            port: batch.binding.name.clone(),
+                            port: batch.binding.endpoint.clone(),
                             what: "future command count",
                             actual: u64::MAX,
                             maximum: batch.max_items,
@@ -1915,7 +1902,7 @@ where
                     })
                     .ok_or_else(|| {
                         anyhow::anyhow!(TransportError::BatchTooLarge {
-                            port: batch.binding.name.clone(),
+                            port: batch.binding.endpoint.clone(),
                             what: "future command encoded bytes",
                             actual: u64::MAX,
                             maximum: batch.max_bytes,
@@ -1923,7 +1910,7 @@ where
                     })?;
                 if pending_count as u64 > batch.max_items {
                     return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                        port: batch.binding.name.clone(),
+                        port: batch.binding.endpoint.clone(),
                         what: "future command capacity",
                         actual: pending_count as u64,
                         maximum: batch.max_items,
@@ -1931,7 +1918,7 @@ where
                 }
                 if pending_bytes > batch.max_bytes {
                     return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                        port: batch.binding.name.clone(),
+                        port: batch.binding.endpoint.clone(),
                         what: "future command encoded bytes",
                         actual: pending_bytes,
                         maximum: batch.max_bytes,
@@ -1962,7 +1949,7 @@ where
             }
             if batch.samples.len() as u64 > batch.max_items {
                 return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                    port: batch.binding.name.clone(),
+                    port: batch.binding.endpoint.clone(),
                     what: "item count",
                     actual: batch.samples.len() as u64,
                     maximum: batch.max_items,
@@ -1976,7 +1963,7 @@ where
                 })
                 .ok_or_else(|| {
                     anyhow::anyhow!(TransportError::BatchTooLarge {
-                        port: batch.binding.name.clone(),
+                        port: batch.binding.endpoint.clone(),
                         what: "encoded bytes",
                         actual: u64::MAX,
                         maximum: batch.max_bytes,
@@ -1984,18 +1971,18 @@ where
                 })?;
             if encoded_bytes > batch.max_bytes {
                 return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                    port: batch.binding.name.clone(),
+                    port: batch.binding.endpoint.clone(),
                     what: "encoded bytes",
                     actual: encoded_bytes,
                     maximum: batch.max_bytes,
                 }));
             }
-            let stream_terminal = if batch.binding.kind == crate::port::PortKind::Stream {
+            let stream_terminal = if batch.input_kind == crate::runtime::input::InputKind::Stream {
                 Some(self.validate_stream_lifecycle(batch.field, &batch.samples)?)
             } else {
                 None
             };
-            let command_marks = if batch.binding.kind == crate::port::PortKind::Commands
+            let command_marks = if batch.input_kind == crate::runtime::input::InputKind::Commands
                 && batch.direction == InputDirection::Request
             {
                 let mut marks = Vec::with_capacity(batch.samples.len());
@@ -2041,7 +2028,7 @@ where
                             }
                             if let Some(expected) = self
                                 .command_ranks
-                                .get(&(batch.binding.name.clone(), caller.clone()))
+                                .get(&(batch.binding.endpoint.clone(), caller.clone()))
                                 && *expected != caller_rank
                             {
                                 return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
@@ -2052,12 +2039,12 @@ where
                             } else if !self.command_ranks.is_empty()
                                 && !self
                                     .command_ranks
-                                    .contains_key(&(batch.binding.name.clone(), caller.clone()))
+                                    .contains_key(&(batch.binding.endpoint.clone(), caller.clone()))
                             {
                                 return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
                                     format!(
                                         "caller `{caller}` is not connected to Commands port `{}`",
-                                        batch.binding.name
+                                        batch.binding.endpoint
                                     ),
                                 )));
                             }
@@ -2070,7 +2057,7 @@ where
                             }
                             if external_marks.len() >= MAX_EXTERNAL_COMMANDS_PER_CUT {
                                 return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                                    port: batch.binding.name.clone(),
+                                    port: batch.binding.endpoint.clone(),
                                     what: "external command count",
                                     actual: external_marks.len() as u64 + 1,
                                     maximum: MAX_EXTERNAL_COMMANDS_PER_CUT as u64,
@@ -2134,7 +2121,7 @@ where
                     > MAX_COMMAND_HIGH_WATERMARKS
                 {
                     return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                        port: batch.binding.name.clone(),
+                        port: batch.binding.endpoint.clone(),
                         what: "command caller count",
                         actual: (self.command_high_watermarks.len() + marks.len()) as u64,
                         maximum: MAX_COMMAND_HIGH_WATERMARKS as u64,

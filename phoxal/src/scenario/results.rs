@@ -1203,40 +1203,49 @@ fn capture_name(capture: &crate::scenario::plan::Capture) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::PortSignature;
+    use crate::contracts::OwnedMethodSignature;
     use crate::scenario::plan::{Action, Capture, Validity};
     use crate::scenario::program::{Program, ScheduleEntry};
 
-    fn setpoint_sig() -> PortSignature {
-        PortSignature::new(
-            "motion/cmd",
+    fn setpoint_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "Set",
-            crate::port::PortKind::Setpoint,
+            "motion/cmd",
+            crate::contracts::MethodShape::Call,
             "Req",
-            "Reply",
-        )
+            "google.protobuf.Empty",
+            false,
+            Some(100),
+            &[],
+        ))
     }
-    fn state_sig() -> PortSignature {
-        PortSignature::new(
-            "motion/state",
+    fn state_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "State",
-            crate::port::PortKind::State,
+            "motion/state",
+            crate::contracts::MethodShape::Observation,
+            "google.protobuf.Empty",
             "State",
-            "State",
-        )
+            true,
+            None,
+            &[],
+        ))
     }
 
-    fn event_sig() -> PortSignature {
-        PortSignature::new(
-            "motion/event",
+    fn event_sig() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "Event",
-            crate::port::PortKind::Event,
+            "motion/event",
+            crate::contracts::MethodShape::Observation,
+            "google.protobuf.Empty",
             "Event",
-            "Event",
-        )
+            false,
+            None,
+            &[],
+        ))
     }
 
     fn setpoint_action(byte: u8) -> Action {
@@ -1249,15 +1258,18 @@ mod tests {
         .expect("setpoint action")
     }
 
-    fn command_signature() -> PortSignature {
-        PortSignature::new(
-            "motion/do",
+    fn command_signature() -> OwnedMethodSignature {
+        OwnedMethodSignature::from_method(crate::contracts::MethodSignature::new(
             "phoxal.motion",
             "Do",
-            crate::port::PortKind::Commands,
+            "motion/do",
+            crate::contracts::MethodShape::Call,
             "DoReq",
             "DoReply",
-        )
+            false,
+            None,
+            &[],
+        ))
     }
 
     fn command_action(label: &str, byte: u8) -> Action {

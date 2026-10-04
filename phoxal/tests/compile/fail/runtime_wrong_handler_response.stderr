@@ -1,0 +1,9 @@
+error[E0308]: mismatched types
+  --> tests/compile/fail/runtime_wrong_handler_response.rs:20:1
+   |
+20 | #[phoxal::runtime(contract = contract::Api, period_ms = 20)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<Response, Error>`, found `Result<u32, Error>`
+   |
+   = note: expected enum `Result<Response, Error>`
+              found enum `Result<u32, Error>`
+   = note: this error originates in the attribute macro `phoxal::runtime` (in Nightly builds, run with -Z macro-backtrace for more info)

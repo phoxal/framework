@@ -36,6 +36,8 @@ capabilities: {}
 const MAIN_RS: &str = r#"//! Scratch component: a custom operation plus the derived standard
 //! surface of the capabilities declared in component.yaml.
 
+phoxal::api!();
+
 use phoxal::contracts::{Empty, RequestReply};
 
 #[phoxal::endpoints]
@@ -75,10 +77,10 @@ impl Fixture {
 
 fn main() -> phoxal::Result<()> {
     if std::env::args().any(|arg| arg == "--print-outputs") {
-        use phoxal::runtime::Runtime;
+        use phoxal::runtime::RuntimeContract;
         use phoxal::runtime::outputs::OutputSet;
         let mut outputs: Vec<&str> =
-            <phoxal_runtime_fixture::Adapter as Runtime>::Outputs::FIELDS
+            <<FixtureApi as RuntimeContract>::Outputs as OutputSet>::FIELDS
                 .iter()
                 .map(|field| field.name)
                 .collect();

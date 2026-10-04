@@ -1604,12 +1604,7 @@ fn validate_operation_response(
             detail: "operation response context does not match its request".to_owned(),
         });
     }
-    let outcome = OperationOutcome::try_from(response.outcome).map_err(|_| {
-        PublicTransportError::Malformed {
-            operation: operation.segment().to_owned(),
-            detail: "operation response outcome is unspecified or unknown".to_owned(),
-        }
-    })?;
+    let outcome = response.outcome;
     if outcome == OperationOutcome::Received && response.detail.is_some() {
         return Err(PublicTransportError::Malformed {
             operation: operation.segment().to_owned(),
@@ -1842,7 +1837,7 @@ fn observation_admission_accepts_absent_or_retained_initial_cursor() {
             execution_id: request.execution_id.clone(),
             timeline_id: request.timeline_id.clone(),
             revision: 0,
-            kind: RecordKind::InitialAbsent as i32,
+            kind: RecordKind::InitialAbsent,
             payload: Vec::new(),
             dropped: 0,
             detail: None,
@@ -1856,7 +1851,7 @@ fn observation_admission_accepts_absent_or_retained_initial_cursor() {
             &PublicTransportLimits::default(),
         ),
         Ok(Some(SubscriptionRecord { kind, .. }))
-            if kind == RecordKind::InitialAbsent as i32
+            if kind == RecordKind::InitialAbsent
     ));
 }
 
@@ -1884,7 +1879,7 @@ fn retained_observation_admission_accepts_initial_absence() {
             execution_id: request.execution_id.clone(),
             timeline_id: request.timeline_id.clone(),
             revision: 0,
-            kind: RecordKind::InitialAbsent as i32,
+            kind: RecordKind::InitialAbsent,
             payload: Vec::new(),
             dropped: 0,
             detail: None,
@@ -1899,7 +1894,7 @@ fn retained_observation_admission_accepts_initial_absence() {
         Ok(Some(SubscriptionRecord {
             kind,
             ..
-        })) if kind == RecordKind::InitialAbsent as i32
+        })) if kind == RecordKind::InitialAbsent
     ));
 }
 #[test]

@@ -5,14 +5,10 @@
 //! connections, port references). Reading authored YAML files,
 //! filesystem walks, source-graph validation, and Cargo resolution
 //! remain in `cargo-phoxal`'s tool layer.
-
 #![deny(unsafe_code)]
-
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-
 /// A parsed and validated `robot.yaml` document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
@@ -25,6 +21,8 @@ pub enum RobotDocument {
         /// Optional explicit binary selection for a multi-binary root package.
         #[serde(default)]
         brain: Option<BrainSelection>,
+        /// The supervisor application selection.
+        supervisor: SupervisorSelection,
         /// Explicit behavioral service instances.
         #[serde(default)]
         services: BTreeMap<String, ServiceSelection>,
@@ -33,7 +31,6 @@ pub enum RobotDocument {
         connections: BTreeMap<String, ConnectionSources>,
     },
 }
-
 impl RobotDocument {
     /// Returns every instance identity available to a connection source.
     #[must_use]
@@ -47,7 +44,6 @@ impl RobotDocument {
         ids
     }
 }
-
 /// Whether a value is valid for an authored instance, service, or target id.
 ///
 /// Hyphens are allowed because published Cargo package keys commonly use them.
@@ -60,7 +56,6 @@ pub fn is_identifier(value: &str) -> bool {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
         })
 }
-
 /// An optional explicit root-package binary selection.
 ///
 /// The brain's endpoint contract is authored in its Rust Runtime.
@@ -71,7 +66,6 @@ pub struct BrainSelection {
     #[serde(default)]
     pub binary: Option<String>,
 }
-
 /// Robot-level model and component composition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +79,6 @@ pub struct RobotSection {
     #[serde(default)]
     pub components: BTreeMap<String, ComponentInstance>,
 }
-
 /// One mounted component and its physical connection information.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,7 +97,6 @@ pub struct ComponentInstance {
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub config: Option<serde_json::Value>,
 }
-
 /// A component-owned native model and semantic capability definition.
 ///
 /// Capabilities derive standard endpoints; a driver owns any additional
@@ -124,7 +116,6 @@ pub enum ComponentDocument {
         assets: Vec<PathBuf>,
     },
 }
-
 /// The native model entry selected by a component definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,7 +125,6 @@ pub struct ComponentModel {
     /// Exactly one component-local body attached to the parent mount site.
     pub root_body: String,
 }
-
 /// A stable native target category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,7 +138,6 @@ pub enum NativeTargetKind {
     /// A compiled native camera.
     Camera,
 }
-
 /// One component-local native object selected by a semantic capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,7 +147,6 @@ pub struct NativeTarget {
     /// Component-local native object name.
     pub id: String,
 }
-
 /// A semantic capability plus the minimum native binding needed by a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityDeclaration {
@@ -176,7 +164,6 @@ pub struct CapabilityDeclaration {
     #[serde(flatten)]
     pub semantics: BTreeMap<String, serde_json::Value>,
 }
-
 /// One explicit behavioral service instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,78 +177,61 @@ pub struct ServiceSelection {
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub config: Option<serde_json::Value>,
 }
-
+/// The robot's supervisor application selection.
+///
+/// The supervisor shares the participants' source-selection type and
+/// acquisition facilities while remaining an application, never a service
+/// instance or connection participant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorSelection {
+    /// Source of the supervisor application package.
+    pub source: Source,
+    /// Binary target when the package exposes more than one executable.
+    #[serde(default)]
+    pub binary: Option<String>,
+}
 /// One authored participant source. Each variant carries its own selection identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "SourceWire", into = "SourceWire")]
 pub enum Source {
     /// Mutable local development source relative to the robot root.
     Path(String),
-    /// Exact Cargo registry package.
-    Package(PackageSourceSelection),
     /// Immutable Git revision selecting one package.
     Git(GitSourceSelection),
 }
-
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum SourceWire {
     Path(PathSourceWire),
-    Package(PackageSourceWire),
     Git(GitSourceWire),
 }
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathSourceWire {
     path: String,
 }
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PackageSourceWire {
-    package: PackageSourceSelection,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GitSourceWire {
     git: GitSourceSelection,
 }
-
 impl From<SourceWire> for Source {
     fn from(source: SourceWire) -> Self {
         match source {
             SourceWire::Path(source) => Self::Path(source.path),
-            SourceWire::Package(source) => Self::Package(source.package),
             SourceWire::Git(source) => Self::Git(source.git),
         }
     }
 }
-
 impl From<Source> for SourceWire {
     fn from(source: Source) -> Self {
         match source {
             Source::Path(path) => Self::Path(PathSourceWire { path }),
-            Source::Package(package) => Self::Package(PackageSourceWire { package }),
             Source::Git(git) => Self::Git(GitSourceWire { git }),
         }
     }
 }
-
-/// An exact Cargo registry package selection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageSourceSelection {
-    /// Cargo package name.
-    pub name: String,
-    /// Exact semantic version.
-    pub version: String,
-    /// Cargo registry name; omitted for the Phoxal registry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry: Option<String>,
-}
-
 /// An immutable Git package selection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -276,7 +246,6 @@ pub struct GitSourceSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
-
 /// One or more ordered producer endpoints for a local consuming input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -286,7 +255,6 @@ pub enum ConnectionSources {
     /// An ordered set of producer endpoints.
     Many(Vec<String>),
 }
-
 impl ConnectionSources {
     /// Returns the authored producer list without changing its order.
     #[must_use]
@@ -297,7 +265,6 @@ impl ConnectionSources {
         }
     }
 }
-
 /// A parsed `instance.port` endpoint reference.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PortReference {
@@ -306,7 +273,6 @@ pub struct PortReference {
     /// Public port or local input name.
     pub port: String,
 }
-
 /// Why an authored endpoint reference could not be parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PortReferenceError {
@@ -323,7 +289,6 @@ pub enum PortReferenceError {
     #[error("instance and port must be valid project identifiers")]
     InvalidIdentifier,
 }
-
 impl PortReference {
     /// Parses an endpoint reference containing exactly one instance separator.
     pub fn parse(value: &str) -> Result<Self, PortReferenceError> {
@@ -345,7 +310,6 @@ impl PortReference {
         })
     }
 }
-
 fn deserialize_optional_value<'de, D>(
     deserializer: D,
 ) -> Result<Option<serde_json::Value>, D::Error>
@@ -354,13 +318,10 @@ where
 {
     Ok(Some(serde_json::Value::deserialize(deserializer)?))
 }
-
 #[cfg(test)]
 mod tests {
     //! Round-trip and parse tests for the document DTO family.
-
     use super::*;
-
     #[test]
     fn robot_document_round_trips() {
         let yaml = r#"
@@ -370,15 +331,17 @@ robot:
   model: model.xml
   components:
     imu:
-      source: { package: { name: imu-package, version: 1.0.0 } }
+      source: { path: ../imu }
       mount_site: imu_mount
       config:
         rate_hz: 100
 services:
   navigation:
-    source: { package: { name: navigation-package, version: 1.0.0 } }
+    source: { path: ../navigation }
     config:
       gain: 1.5
+supervisor:
+  source: { path: ../supervisor }
 connections:
   navigation.imu: imu.sample
 "#;
@@ -387,7 +350,6 @@ connections:
         let decoded: RobotDocument = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(decoded, document);
     }
-
     #[test]
     fn instance_ids_collect_components_services_and_brain() {
         let yaml = r#"
@@ -398,6 +360,8 @@ robot:
     imu:
       source: { path: ../imu }
       mount_site: imu_mount
+supervisor:
+  source: { path: ../supervisor }
 services:
   navigation:
     source: { path: ../navigation }
@@ -408,36 +372,24 @@ services:
         assert!(ids.contains("navigation"));
         assert!(ids.contains("imu"));
     }
-
     #[test]
     fn participant_source_is_the_only_package_selection() {
         let git = "source:\n  git:\n    name: motion\n    url: https://example.test/motion.git\n    rev: 0123456789abcdef0123456789abcdef01234567\n";
         let selected: ServiceSelection = serde_yaml::from_str(git).expect("Git source parses");
         assert!(matches!(selected.source, Source::Git(_)));
-
-        let package = "source: { package: { name: motion, version: 1.2.3 } }\n";
-        let selected: ServiceSelection =
-            serde_yaml::from_str(package).expect("package source parses");
-        assert!(matches!(selected.source, Source::Package(_)));
-
         let path = "source: { path: ../motion }\n";
         let selected: ServiceSelection = serde_yaml::from_str(path).expect("path source parses");
         assert_eq!(selected.source, Source::Path("../motion".to_owned()));
-
-        assert!(
-            serde_yaml::from_str::<ServiceSelection>(
-                "package: motion\nsource: { path: ../motion }\n"
-            )
-            .is_err()
-        );
-        assert!(
-            serde_yaml::from_str::<ServiceSelection>(
-                "source: { path: ../motion, package: { name: motion, version: 1.2.3 } }\n"
-            )
-            .is_err()
-        );
     }
-
+    #[test]
+    fn supervisor_selection_is_required_and_shares_the_source_type() {
+        let git = "source:\n  git:\n    name: phoxal-supervisor\n    url: https://example.test/supervisor.git\n    rev: 0123456789abcdef0123456789abcdef01234567\n";
+        let selected: SupervisorSelection = serde_yaml::from_str(git).expect("git source parses");
+        assert!(matches!(selected.source, Source::Git(_)));
+        let path = "source: { path: ../supervisor }\n";
+        let selected: SupervisorSelection = serde_yaml::from_str(path).expect("path source parses");
+        assert_eq!(selected.source, Source::Path("../supervisor".to_owned()));
+    }
     #[test]
     fn port_reference_round_trips() {
         let reference = PortReference {
@@ -457,7 +409,6 @@ services:
             PortReferenceError::NestedSeparator
         ));
     }
-
     #[test]
     fn is_identifier_rejects_unsupported_characters() {
         assert!(is_identifier("rover"));
@@ -468,7 +419,6 @@ services:
         assert!(!is_identifier("rover.brain"));
         assert!(!is_identifier("rover brain"));
     }
-
     #[test]
     fn native_target_kind_serializes_as_snake_case() {
         for (kind, expected) in [

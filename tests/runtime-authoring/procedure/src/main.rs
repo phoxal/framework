@@ -8,6 +8,9 @@
 //! projection leases only the current stage's velocity, no device
 //! calibration is invented, and the procedure cancels cleanly on command.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Phoxal supports Linux and macOS only");
+
 use phoxal::Result;
 use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget, Control};
 use phoxal::runtime::Context;
@@ -228,185 +231,94 @@ fn main() -> Result<()> {
 /// concurrent runs, and halts on command.
 #[cfg(test)]
 mod tests {
-    use super::ProcedureDriver;
-    use super::procedure_api;
-    use super::{HaltRequest, HaltResponse, RunRequest, RunResponse};
-    use phoxal::runtime::input::{CommandOrder, Commands, InputSnapshot};
-    use phoxal::runtime::{
-        CommandId, ExecutionDuration, ExecutionTime, StepContext, initialize, invoke,
-    };
+    use super::{HaltRequest, HaltResponse, ProcedureDriver, RunRequest, RunResponse};
+    use phoxal::runtime::Harness;
+    use std::time::Duration;
 
-    struct Fixture {
-        adapter: super::phoxal_runtime_procedure_driver::Adapter,
-        service: Option<ProcedureDriver>,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            let adapter = super::phoxal_runtime_procedure_driver::Adapter::new();
-            let service =
-                initialize(&adapter, ExecutionTime::default(), ()).expect("fixture initializes");
-            Self {
-                adapter,
-                service: Some(service),
-            }
+    fn velocity(harness: &Harness<ProcedureDriver>) -> f64 {
+        let setpoint = harness
+            .setpoint()
+            .expect("the projection leases a setpoint");
+        match setpoint
+            .targets
+            .first()
+            .and_then(|target| target.control.as_ref())
+        {
+            Some(phoxal::contracts::component::actuator::Control::VelocityRadps(value)) => *value,
+            _ => panic!("the projection leases a velocity"),
         }
-
-        fn step(
-            &mut self,
-            index: u64,
-            millis: u64,
-            inputs: &procedure_api::Inputs,
-        ) -> phoxal::Result<procedure_api::Outputs> {
-            let context = StepContext::from_previous(
-                ExecutionTime::from_nanos(millis * 1_000_000),
-                ExecutionDuration::from_millis(10),
-                Some(ExecutionTime::from_nanos(
-                    millis.saturating_sub(10) * 1_000_000,
-                )),
-                0,
-                index,
-            );
-            let service = self.service.take().expect("the service exists");
-            let (service, outputs) = invoke(&self.adapter, &context, service, inputs)?;
-            self.service = Some(service);
-            Ok(outputs)
-        }
-
-        fn stage_velocity(&mut self) -> f64 {
-            self.service
-                .as_ref()
-                .and_then(|service| service.setpoint())
-                .and_then(|setpoint| setpoint.targets.first().cloned())
-                .and_then(|target| match target.control {
-                    Some(phoxal::contracts::component::actuator::Control::VelocityRadps(v)) => {
-                        Some(v)
-                    }
-                    _ => None,
-                })
-                .expect("the projection always leases a velocity")
-        }
-    }
-
-    fn run(sequence_id: u64) -> procedure_api::Inputs {
-        let mut inputs = <procedure_api::Inputs as InputSnapshot>::empty();
-        inputs.run = Commands::new(vec![phoxal::runtime::Command::with_order(
-            CommandOrder::new(1, 0, CommandId::new(1)),
-            RunRequest { sequence_id },
-        )]);
-        inputs
-    }
-
-    fn halt(sequence_id: u64) -> procedure_api::Inputs {
-        let mut inputs = <procedure_api::Inputs as InputSnapshot>::empty();
-        inputs.halt = Commands::new(vec![phoxal::runtime::Command::with_order(
-            CommandOrder::new(1, 0, CommandId::new(2)),
-            HaltRequest { sequence_id },
-        )]);
-        inputs
-    }
-
-    fn empty() -> procedure_api::Inputs {
-        <procedure_api::Inputs as InputSnapshot>::empty()
     }
 
     #[test]
     fn the_procedure_advances_one_stage_per_boundary() -> phoxal::Result<()> {
-        let mut fixture = Fixture::new();
-        let accepted = fixture.step(0, 0, &run(4))?;
-        assert!(matches!(
-            accepted.run_replies[0].response(),
-            RunResponse::Accepted
-        ));
-        assert_eq!(accepted.stages.len(), 1);
+        let mut harness = Harness::<ProcedureDriver>::new(())?;
+        let run = harness.enqueue_run(RunRequest { sequence_id: 4 })?;
+        harness.advance_to(Duration::ZERO)?;
+        assert!(matches!(harness.reply(run)?, RunResponse::Accepted));
+        assert_eq!(harness.stages().len(), 1);
 
-        // A concurrent run is refused while the procedure holds the joint.
-        let busy = fixture.step(1, 10, &run(5))?;
-        assert!(matches!(busy.run_replies[0].response(), RunResponse::Busy));
+        let busy = harness.enqueue_run(RunRequest { sequence_id: 5 })?;
+        harness.advance_to(Duration::from_millis(10))?;
+        assert!(matches!(harness.reply(busy)?, RunResponse::Busy));
+        harness.advance_to(Duration::from_millis(30))?;
+        assert!(harness.stages().is_empty());
+        assert!((velocity(&harness) - 0.0).abs() < 1e-12);
 
-        // Inside the first boundary the projection still leases stage 0.
-        let holding = fixture.step(2, 30, &empty())?;
-        assert!(holding.stages.is_empty());
-        assert!((fixture.stage_velocity() - 0.0).abs() < 1e-12);
+        harness.advance_to(Duration::from_millis(40))?;
+        let ramped = harness.stages();
+        assert_eq!(ramped.len(), 1);
+        assert_eq!(ramped[0].stage, 1);
+        assert!((velocity(&harness) - 0.2).abs() < 1e-12);
+        harness.advance_to(Duration::from_millis(80))?;
+        assert_eq!(harness.stages().last().map(|log| log.stage), Some(2));
+        assert!((velocity(&harness) - 0.2).abs() < 1e-12);
 
-        // The first boundary enters stage 1's ramp; the second holds it.
-        let ramped = fixture.step(3, 40, &empty())?;
-        assert_eq!(ramped.stages.len(), 1);
-        assert_eq!(ramped.stages[0].stage, 1);
-        assert!((fixture.stage_velocity() - 0.2).abs() < 1e-12);
-        let held = fixture.step(4, 80, &empty())?;
-        assert_eq!(held.stages.last().map(|log| log.stage), Some(2));
-        assert!((fixture.stage_velocity() - 0.2).abs() < 1e-12);
-
-        // The final boundary commands the stop and the procedure ends.
-        let stopped = fixture.step(5, 120, &empty())?;
-        assert_eq!(stopped.stages.len(), 1, "the terminal action logged once");
-        assert_eq!(stopped.stages[0].stage, 3);
-        assert!((fixture.stage_velocity() - 0.0).abs() < 1e-12);
-
-        // A finished procedure accepts a fresh run with a fresh identity.
-        let again = fixture.step(6, 130, &run(6))?;
-        assert!(matches!(
-            again.run_replies[0].response(),
-            RunResponse::Accepted
-        ));
-        assert_eq!(again.stages[0].sequence_id, 6);
+        harness.advance_to(Duration::from_millis(120))?;
+        let stopped = harness.stages();
+        assert_eq!(stopped.len(), 1, "the terminal action logged once");
+        assert_eq!(stopped[0].stage, 3);
+        assert!((velocity(&harness) - 0.0).abs() < 1e-12);
+        let again = harness.enqueue_run(RunRequest { sequence_id: 6 })?;
+        harness.advance_to(Duration::from_millis(130))?;
+        assert!(matches!(harness.reply(again)?, RunResponse::Accepted));
+        assert_eq!(harness.stages()[0].sequence_id, 6);
         Ok(())
     }
 
-    /// A halt that merges into the same invocation as its run cancels
-    /// the procedure before any stage advances: the halt observes the
-    /// running mission at its dispatch position and the leased projection
-    /// commands the stop velocity immediately.
     #[test]
     fn an_immediate_halt_in_the_run_invocation_stops_before_any_stage() -> phoxal::Result<()> {
-        let mut fixture = Fixture::new();
-        let mut inputs = run(11);
-        inputs.halt = Commands::new(vec![phoxal::runtime::Command::with_order(
-            CommandOrder::new(1, 0, CommandId::new(2)),
-            HaltRequest { sequence_id: 11 },
-        )]);
-        let merged = fixture.step(0, 0, &inputs)?;
-        assert!(matches!(
-            merged.run_replies[0].response(),
-            RunResponse::Accepted
-        ));
-        assert!(matches!(
-            merged.halt_replies[0].response(),
-            HaltResponse::Halted
-        ));
-        assert_eq!(merged.stages.len(), 2, "run and terminal stages logged");
-        assert_eq!(merged.stages.last().map(|log| log.stage), Some(3));
-        assert!((fixture.stage_velocity() - 0.0).abs() < 1e-12);
+        let mut harness = Harness::<ProcedureDriver>::new(())?;
+        let run = harness.enqueue_run(RunRequest { sequence_id: 11 })?;
+        let halt = harness.enqueue_halt(HaltRequest { sequence_id: 11 })?;
+        harness.advance_to(Duration::ZERO)?;
+        assert!(matches!(harness.reply(run)?, RunResponse::Accepted));
+        assert!(matches!(harness.reply(halt)?, HaltResponse::Halted));
+        let stages = harness.stages();
+        assert_eq!(stages.len(), 2, "run and terminal stages logged");
+        assert_eq!(stages.last().map(|log| log.stage), Some(3));
+        assert!((velocity(&harness) - 0.0).abs() < 1e-12);
         Ok(())
     }
 
     #[test]
     fn halting_cancels_the_procedure_and_leases_the_stop() -> phoxal::Result<()> {
-        let mut fixture = Fixture::new();
-        fixture.step(0, 0, &run(9))?;
-        fixture.step(1, 10, &empty())?;
+        let mut harness = Harness::<ProcedureDriver>::new(())?;
+        let run = harness.enqueue_run(RunRequest { sequence_id: 9 })?;
+        harness.advance_to(Duration::from_millis(10))?;
+        assert!(matches!(harness.reply(run)?, RunResponse::Accepted));
+        harness.stages();
+        let halt = harness.enqueue_halt(HaltRequest { sequence_id: 9 })?;
+        harness.advance_to(Duration::from_millis(20))?;
+        assert!(matches!(harness.reply(halt)?, HaltResponse::Halted));
+        assert_eq!(harness.stages().last().map(|log| log.stage), Some(3));
+        assert!((velocity(&harness) - 0.0).abs() < 1e-12);
 
-        let halted = fixture.step(2, 20, &halt(9))?;
-        assert!(matches!(
-            halted.halt_replies[0].response(),
-            HaltResponse::Halted
-        ));
-        assert_eq!(halted.stages.last().map(|log| log.stage), Some(3));
-        assert!((fixture.stage_velocity() - 0.0).abs() < 1e-12);
-
-        // A halted procedure is not running; the same halt is idempotent
-        // and a fresh run is accepted with its own identity.
-        let repeat = fixture.step(3, 30, &halt(9))?;
-        assert!(matches!(
-            repeat.halt_replies[0].response(),
-            HaltResponse::NotRunning
-        ));
-        let fresh = fixture.step(4, 40, &run(10))?;
-        assert!(matches!(
-            fresh.run_replies[0].response(),
-            RunResponse::Accepted
-        ));
+        let repeat = harness.enqueue_halt(HaltRequest { sequence_id: 9 })?;
+        harness.advance_to(Duration::from_millis(30))?;
+        assert!(matches!(harness.reply(repeat)?, HaltResponse::NotRunning));
+        let fresh = harness.enqueue_run(RunRequest { sequence_id: 10 })?;
+        harness.advance_to(Duration::from_millis(40))?;
+        assert!(matches!(harness.reply(fresh)?, RunResponse::Accepted));
         Ok(())
     }
 }

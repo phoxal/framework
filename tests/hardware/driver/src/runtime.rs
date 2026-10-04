@@ -21,16 +21,16 @@ impl RuntimeControl {
 }
 
 /// Registry of live fixture controls: the authored runtime owns its state
-/// privately inside the generated adapter, so each initialization records
+/// privately inside the canonical runtime owner, so each initialization records
 /// its control here and the test harness claims the one belonging to the
-/// runner it just constructed.
+/// owner it just constructed.
 static CONTROLS: std::sync::Mutex<Vec<std::sync::Arc<RuntimeControl>>> =
     std::sync::Mutex::new(Vec::new());
 
-/// A Runtime driver backed by the acceptance fixture's injected I/O.
+/// An authored runtime backed by the acceptance fixture's injected I/O.
 ///
 /// The default value is used by the standalone binary.  Acceptance tests
-/// clone the driver and use the private control handle to inject a stalled
+/// use the private control handle to inject a stalled
 /// computation or request a terminal stop; no production hardware behavior is
 /// implied by those controls.
 pub struct HardwareFixtureDriver {

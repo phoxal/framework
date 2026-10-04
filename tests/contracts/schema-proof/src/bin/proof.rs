@@ -2,7 +2,7 @@
 
 use phoxal_schema_proof_fixture::{Command, Control, Mode, Reason, Target, Telemetry};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = Command {
         mode: Mode::Manual,
         owner: Some("proof".to_owned()),
@@ -25,9 +25,13 @@ fn main() {
         battery: None,
         scan: None,
     };
+    let protocols = phoxal::communication::file_descriptor_set()?;
     use prost::Message as _;
     println!(
         "{}",
-        command.encode_to_vec().len() + telemetry.encode_to_vec().len()
+        command.encode_to_vec().len()
+            + telemetry.encode_to_vec().len()
+            + protocols.encode_to_vec().len()
     );
+    Ok(())
 }

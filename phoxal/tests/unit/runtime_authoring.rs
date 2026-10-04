@@ -10,6 +10,41 @@
 use phoxal::Result;
 use phoxal::runtime::Context;
 
+/// Explicit acceptance boundary for low-level generated-binding probes.
+/// These tests supply candidate states directly to inspect tree internals;
+/// both transient and projected products are encoded before committing.
+fn accept_candidate<R>(
+    runtime: &R,
+    context: &phoxal::runtime::StepContext,
+    state: R::State,
+    inputs: &R::Inputs,
+) -> phoxal::Result<(R::State, R::Outputs)>
+where
+    R: phoxal::runtime::RegisteredRuntime,
+    R::Inputs: phoxal::runtime::input::InputSet,
+{
+    use phoxal::runtime::input::InputSet;
+    use phoxal::runtime::outputs::{OutputBindings, OutputSet};
+    let resolve = |field: &str| {
+        R::Inputs::FIELDS
+            .iter()
+            .find(|input| input.name == field)
+            .and_then(|input| input.port_signature)
+    };
+    let result =
+        phoxal::runtime::invoke(runtime, context, state, inputs).and_then(|(state, outputs)| {
+            outputs.encode_transport(*context, &resolve, "unit-owner")?;
+            OutputBindings::encode_transport(runtime, &state, *context, &resolve, "unit-owner")?;
+            Ok((state, outputs))
+        });
+    if result.is_ok() {
+        runtime.accepted();
+    } else {
+        runtime.discarded();
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // Countdown: the complete standalone provider from the runtime-authoring
 // plan, with operations, a retained state publication, and an event output.
@@ -956,7 +991,7 @@ mod tests {
     use phoxal::runtime::outputs::{OutputKind, OutputSet};
     use phoxal::runtime::{
         ExecutionDuration, ExecutionTime, InvocationError, ObservationStamp, OutputAdmission,
-        RegisteredRuntime, RuntimeOwner, RuntimeStatus, Sample, StepContext, initialize, invoke,
+        RegisteredRuntime, RuntimeOwner, RuntimeStatus, Sample, StepContext, initialize,
     };
 
     type CountdownOwner = RuntimeOwner<phoxal_runtime_countdown::Adapter>;
@@ -1221,13 +1256,18 @@ mod tests {
         // After an accepted invocation that starts a job, the same
         // publication surface evaluates the resulting candidate state.
         let inputs = countdown_inputs(vec![ordered(1, start(4, 1_000))], Vec::new());
-        let (state, _outputs) = invoke(&adapter, &later_step(0, 1), state, &inputs)?;
+        let (state, _outputs) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(0, 1),
+            state,
+            &inputs,
+        )?;
         let publications = status_publications(&state, later_step(20, 1));
         assert_eq!(publications.len(), 1);
         let signature = publications[0]
             .signature()
             .expect("the status port is signed");
-        assert_eq!(signature.name, "status");
+        assert_eq!(signature.endpoint, "status");
         Ok(())
     }
 
@@ -2219,9 +2259,19 @@ mod tests {
         assert_eq!(state.count, 0);
 
         let empty = <ticker::ticker_api::Inputs as InputSnapshot>::empty();
-        let (state, _) = invoke(&adapter, &later_step(20, 1), state, &empty)?;
+        let (state, _) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(20, 1),
+            state,
+            &empty,
+        )?;
         assert_eq!(state.count, 1);
-        let (state, _) = invoke(&adapter, &later_step(40, 2), state, &empty)?;
+        let (state, _) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(40, 2),
+            state,
+            &empty,
+        )?;
         assert_eq!(state.count, 2);
         phoxal_runtime_ticker::Adapter::retain_artifact_metadata();
         Ok(())
@@ -2282,7 +2332,8 @@ mod tests {
             ObservationStamp::new("level-producer", at(0), None),
         );
         inputs.grant = Setpoint::new(monitor::Reading { level: 4 }, at(0), 100);
-        let (state, outputs) = invoke(&adapter, &first_step(0), state, &inputs)?;
+        let (state, outputs) =
+            crate::runtime_authoring::accept_candidate(&adapter, &first_step(0), state, &inputs)?;
         assert_eq!(state.last_fresh_level, Some(7));
         assert_eq!(state.last_valid_grant, Some(4));
         assert_eq!(outputs.beats.len(), 1);
@@ -2291,7 +2342,12 @@ mod tests {
         // still present; staging through the same context is unaffected.
         let mut inputs = <monitor::monitor_api::Inputs as InputSnapshot>::empty();
         inputs.grant = Setpoint::new(monitor::Reading { level: 4 }, at(0), 100);
-        let (state, outputs) = invoke(&adapter, &later_step(500, 1), state, &inputs)?;
+        let (state, outputs) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(500, 1),
+            state,
+            &inputs,
+        )?;
         assert_eq!(state.last_fresh_level, None);
         assert_eq!(
             state.last_valid_grant, None,
@@ -2438,7 +2494,8 @@ mod tests {
             monitor::Reading { level: 7 },
             ObservationStamp::new("level-producer", at(0), None),
         );
-        let (state, _) = invoke(&adapter, &first_step(0), state, &inputs)?;
+        let (state, _) =
+            crate::runtime_authoring::accept_candidate(&adapter, &first_step(0), state, &inputs)?;
         assert_eq!(state.consumed, 1);
         assert_eq!(state.last_fresh_level, Some(7));
 
@@ -2450,7 +2507,12 @@ mod tests {
             monitor::Reading { level: 7 },
             ObservationStamp::new("level-producer", at(0), None),
         );
-        let (state, _) = invoke(&adapter, &later_step(20, 1), state, &inputs)?;
+        let (state, _) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(20, 1),
+            state,
+            &inputs,
+        )?;
         assert_eq!(state.consumed, 1, "the drained queue retains no item");
         assert_eq!(state.last_fresh_level, Some(7));
 
@@ -2461,7 +2523,12 @@ mod tests {
             monitor::Reading { level: 7 },
             ObservationStamp::new("level-producer", at(0), None),
         );
-        let (state, _) = invoke(&adapter, &later_step(500, 2), state, &inputs)?;
+        let (state, _) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(500, 2),
+            state,
+            &inputs,
+        )?;
         assert_eq!(state.last_fresh_level, None);
 
         let mut inputs = <monitor::monitor_api::Inputs as InputSnapshot>::empty();
@@ -2469,7 +2536,12 @@ mod tests {
             monitor::Reading { level: 9 },
             ObservationStamp::new("level-producer", at(500), None),
         );
-        let (state, _) = invoke(&adapter, &later_step(520, 3), state, &inputs)?;
+        let (state, _) = crate::runtime_authoring::accept_candidate(
+            &adapter,
+            &later_step(520, 3),
+            state,
+            &inputs,
+        )?;
         assert_eq!(state.last_fresh_level, Some(9));
         assert_eq!(state.consumed, 1);
         Ok(())
@@ -2521,7 +2593,7 @@ mod tests {
 
     /// Resolves the flaky contract's reply port from its compiled input
     /// record, the way the transport adapter's manifest resolution does.
-    fn arm_port() -> Option<phoxal::macro_support::PortSignature> {
+    fn arm_port() -> Option<phoxal::contracts::MethodSignature> {
         <flaky::flaky_api::Inputs as InputSet>::FIELDS
             .iter()
             .find(|field| field.name == "arm")
@@ -2546,14 +2618,9 @@ mod tests {
                 sparks: 3,
             },
         )]);
-        let (state, outputs) = invoke(&adapter, &later_step(0, 1), state, &inputs)?;
-        assert_eq!(outputs.sparks.len(), 3);
-        let encoded = outputs.encode_transport(
-            later_step(0, 1),
-            &|name| (name == "arm").then_some(arm_port()).flatten(),
-            "authoring-test",
-        );
-        let error = match encoded {
+        let candidate =
+            crate::runtime_authoring::accept_candidate(&adapter, &later_step(0, 1), state, &inputs);
+        let error = match candidate {
             Ok(_) => panic!("three staged items must exceed the declared capacity of two"),
             Err(error) => error,
         };
@@ -2563,7 +2630,6 @@ mod tests {
                 .contains("batch exceeds item count bound: 3 > 2"),
             "the rejection is the sparks capacity bound: {error}"
         );
-        let _ = state;
         Ok(())
     }
 
@@ -2710,7 +2776,12 @@ mod tests {
         index: u64,
         inputs: &super::pilot::pilot_api::Inputs,
     ) -> phoxal::Result<Pilot> {
-        let (pilot, _outputs) = invoke(adapter, &pilot_context(millis, index), pilot, inputs)?;
+        let (pilot, _outputs) = crate::runtime_authoring::accept_candidate(
+            adapter,
+            &pilot_context(millis, index),
+            pilot,
+            inputs,
+        )?;
         Ok(pilot)
     }
 
@@ -2726,8 +2797,11 @@ mod tests {
             pilot.commanded = Some(Pilot::mission_for(modes::CAPTURE_BEFORE_REPLY)?);
             pilot = pilot_step(&adapter, pilot, 0, 0, &pilot_empty())?;
             adapter.accepted();
-            assert_eq!(adapter.captures.active_count(), 1);
-            assert_eq!(adapter.pending.len(), if completion { 2 } else { 1 });
+            assert_eq!(adapter.authoring.resources().captures.active_count(), 1);
+            assert_eq!(
+                adapter.authoring.resources().pending.len(),
+                if completion { 2 } else { 1 }
+            );
             let inputs = if completion {
                 pilot_completion(7, pilot_ticket(&adapter, 0, 1))?
             } else {
@@ -2739,8 +2813,8 @@ mod tests {
                 pilot.commanded.as_ref().unwrap().status(),
                 TreeStatus::Cancelled
             );
-            assert_eq!(adapter.captures.active_count(), 0);
-            assert_eq!(adapter.pending.len(), 0);
+            assert_eq!(adapter.authoring.resources().captures.active_count(), 0);
+            assert_eq!(adapter.authoring.resources().pending.len(), 0);
             assert_eq!(
                 adapter.behavior_diary().accepted().last().unwrap().status,
                 TreeStatus::Cancelled
@@ -2757,8 +2831,8 @@ mod tests {
         pilot.commanded = Some(Pilot::mission_for(modes::CAPTURE_BEFORE_REPLY)?);
         pilot = pilot_step(&adapter, pilot, 0, 0, &pilot_empty())?;
         adapter.accepted();
-        assert_eq!(adapter.captures.active_count(), 1);
-        assert_eq!(adapter.pending.len(), 1);
+        assert_eq!(adapter.authoring.resources().captures.active_count(), 1);
+        assert_eq!(adapter.authoring.resources().pending.len(), 1);
         let stop = pilot_command(
             "stop",
             1,
@@ -2774,12 +2848,12 @@ mod tests {
             TreeStatus::Cancelled
         );
         assert_eq!(
-            adapter.captures.active_count(),
+            adapter.authoring.resources().captures.active_count(),
             0,
             "handler cancellation releases capture"
         );
         assert_eq!(
-            adapter.pending.len(),
+            adapter.authoring.resources().pending.len(),
             1,
             "only explicit remote cancellation is still owned"
         );
@@ -3652,9 +3726,7 @@ mod review_regressions {
     };
     use phoxal::runtime::capture::{CaptureRegistry, InputDescriptor};
     use phoxal::runtime::input::{InputSnapshot, TransportInputSink};
-    use phoxal::runtime::{
-        Context, ExecutionDuration, ExecutionTime, StepContext, initialize, invoke,
-    };
+    use phoxal::runtime::{Context, ExecutionDuration, ExecutionTime, StepContext, initialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     type PilotInputs = pilot_api::Inputs;
@@ -3997,14 +4069,15 @@ mod review_regressions {
         for _cycle in 0..10 {
             let state = initialize(&adapter, ExecutionTime::default(), ())?;
             let step = context(0, 0);
-            let (_state, _outputs) = invoke(&adapter, &step, state, &inputs)?;
+            let (_state, _outputs) =
+                crate::runtime_authoring::accept_candidate(&adapter, &step, state, &inputs)?;
             assert!(
-                adapter.captures.has_active("events"),
+                adapter.authoring.resources().captures.has_active("events"),
                 "the cycle's tree activated its capture"
             );
             initialize(&adapter, ExecutionTime::default(), ())?;
             assert!(
-                !adapter.captures.has_active("events"),
+                !adapter.authoring.resources().captures.has_active("events"),
                 "reinitialization must release the prior execution's captures"
             );
         }
@@ -4406,9 +4479,7 @@ mod review7_regressions {
     use phoxal::runtime::capture::{CaptureHandle, CaptureRegistry, InputDescriptor};
     use phoxal::runtime::input::{InputSnapshot, TransportCallCompletion, TransportInputSink};
     use phoxal::runtime::outputs::compose_call_ticket;
-    use phoxal::runtime::{
-        Context, ExecutionDuration, ExecutionTime, StepContext, initialize, invoke,
-    };
+    use phoxal::runtime::{Context, ExecutionDuration, ExecutionTime, StepContext, initialize};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     type PilotInputs = pilot_api::Inputs;
@@ -4760,7 +4831,12 @@ mod review7_regressions {
                 }])?;
             }
             let step = context(invocation * 10, invocation);
-            let (next, _outputs) = invoke(&adapter, &step, service, &round_inputs)?;
+            let (next, _outputs) = crate::runtime_authoring::accept_candidate(
+                &adapter,
+                &step,
+                service,
+                &round_inputs,
+            )?;
             if next.tree.status() != TreeStatus::Running {
                 assert_eq!(
                     next.tree.status(),
@@ -4825,9 +4901,7 @@ mod review8_regressions {
     };
     use phoxal::runtime::input::{InputSnapshot, TransportCallCompletion, TransportInputSink};
     use phoxal::runtime::outputs::compose_call_ticket;
-    use phoxal::runtime::{
-        Context, ExecutionDuration, ExecutionTime, StepContext, initialize, invoke,
-    };
+    use phoxal::runtime::{Context, ExecutionDuration, ExecutionTime, StepContext, initialize};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -5062,7 +5136,12 @@ mod review8_regressions {
                 }])?;
             }
             let step = context(invocation * 10, invocation);
-            let (next, _outputs) = invoke(&adapter, &step, service, &round_inputs)?;
+            let (next, _outputs) = crate::runtime_authoring::accept_candidate(
+                &adapter,
+                &step,
+                service,
+                &round_inputs,
+            )?;
             if next.tree.status() != TreeStatus::Running {
                 assert_eq!(
                     next.tree.status(),
@@ -5543,6 +5622,331 @@ mod review9_regressions {
             "the cancellation superseded the same invocation's running snapshot"
         );
         assert_eq!(accepted[0].status, TreeStatus::Cancelled);
+        Ok(())
+    }
+}
+
+mod public_outgoing_harness {
+    use super::{Pilot, modes, pilot};
+    use phoxal::runtime::Harness;
+    use std::time::Duration;
+
+    #[test]
+    fn accepted_requests_complete_once_and_are_fenced_by_owner_and_reset() -> phoxal::Result<()> {
+        let mut host = Harness::<Pilot>::new(modes::CONCURRENT)?;
+        let mut foreign = Harness::<Pilot>::new(modes::CONCURRENT)?;
+        host.advance_to(Duration::ZERO)?;
+        let direct = host
+            .take_request::<pilot::AskRequest, pilot::AskResponse>("primary")?
+            .expect("accepted direct call");
+        let tree = host
+            .take_request::<pilot::AskRequest, pilot::AskResponse>("secondary")?
+            .expect("accepted tree call");
+        assert_eq!(direct.request().value, 7);
+        assert!(
+            foreign
+                .complete_request(&direct, Ok(pilot::AskResponse { value: 7 }))
+                .is_err()
+        );
+        assert!(
+            host.complete_request(
+                &direct,
+                Err(phoxal::runtime::input::RequestError::OutcomeUnknown(
+                    "x".repeat(256 * 1024 + 1)
+                ))
+            )
+            .is_err(),
+            "oversized failure detail does not consume the accepted correlation"
+        );
+        host.complete_request(&direct, Ok(pilot::AskResponse { value: 7 }))?;
+        assert!(
+            host.complete_request(&direct, Ok(pilot::AskResponse { value: 7 }))
+                .is_err()
+        );
+        host.complete_request(&tree, Ok(pilot::AskResponse { value: 1 }))?;
+        host.report();
+        host.advance_to(Duration::from_millis(10))?;
+        let report = host.report();
+        assert_eq!(report.last().expect("accepted report").primary_replies, 1);
+        assert_eq!(
+            report.last().expect("accepted report").secondary_replies,
+            0,
+            "tree owns its completion exclusively"
+        );
+        assert!(matches!(
+            report.last().expect("accepted report").mission_phase,
+            pilot::MissionPhase::Succeeded
+        ));
+
+        foreign.advance_to(Duration::ZERO)?;
+        let stale = foreign
+            .take_request::<pilot::AskRequest, pilot::AskResponse>("primary")?
+            .expect("accepted before reset");
+        foreign.reset(modes::CONCURRENT)?;
+        assert!(
+            foreign
+                .complete_request(&stale, Ok(pilot::AskResponse { value: 7 }))
+                .is_err()
+        );
+        foreign.advance_to(Duration::ZERO)?;
+        let fresh = foreign
+            .take_request::<pilot::AskRequest, pilot::AskResponse>("primary")?
+            .expect("accepted after reset");
+        foreign.complete_request(&fresh, Ok(pilot::AskResponse { value: 7 }))?;
+        Ok(())
+    }
+
+    #[phoxal::messages(package = "phoxal.tests.harness.leased.v1")]
+    mod leased {
+        use phoxal::contracts::Latest;
+        pub struct Value {
+            #[phoxal(tag = 1)]
+            pub count: u64,
+        }
+        #[phoxal::endpoints]
+        pub struct Api {
+            #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 64)]
+            intent: Latest<Value>,
+        }
+    }
+    struct Leased {
+        count: u64,
+    }
+    #[phoxal::runtime(contract = leased::Api, period_ms = 20)]
+    impl Leased {
+        #[init]
+        fn new(_: ()) -> phoxal::Result<Self> {
+            Ok(Self { count: 0 })
+        }
+        #[step]
+        fn step(&mut self, _: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+            self.count += 1;
+            Ok(())
+        }
+        #[publish(intent)]
+        fn intent(&self) -> Option<leased::Value> {
+            (self.count % 2 == 1).then_some(leased::Value { count: self.count })
+        }
+    }
+    #[test]
+    fn leased_projection_has_no_bootstrap_and_withdrawal_clears_the_accepted_value()
+    -> phoxal::Result<()> {
+        let mut host = Harness::<Leased>::new(())?;
+        assert!(host.intent().is_none());
+        host.advance_to(Duration::ZERO)?;
+        assert_eq!(host.intent().expect("accepted projection").count, 1);
+        host.advance_to(Duration::from_millis(20))?;
+        assert!(
+            host.intent().is_none(),
+            "withdrawal is distinct from an empty payload"
+        );
+        host.reset(())?;
+        assert!(host.intent().is_none());
+        Ok(())
+    }
+    #[phoxal::messages(package = "phoxal.tests.harness.queued.v1")]
+    mod queued {
+        use phoxal::contracts::Queue;
+        pub struct Item {
+            #[phoxal(tag = 1)]
+            pub value: u64,
+        }
+        pub struct Capture {
+            #[phoxal(tag = 1)]
+            pub value: u64,
+            #[phoxal(tag = 2)]
+            pub source: String,
+            #[phoxal(tag = 3)]
+            pub capture_ns: u64,
+            #[phoxal(tag = 4)]
+            pub revision: Option<u64>,
+        }
+        #[phoxal::endpoints]
+        pub struct Api {
+            #[phoxal::input(max_items = 2, max_bytes = 64)]
+            samples: Queue<Item>,
+            #[phoxal::output(max_items = 2, max_bytes = 256)]
+            captures: Queue<Capture>,
+        }
+    }
+    struct QueueProbe;
+    #[phoxal::runtime(contract = queued::Api, period_ms = 20)]
+    impl QueueProbe {
+        #[init]
+        fn new(_: ()) -> phoxal::Result<Self> {
+            Ok(Self)
+        }
+        #[step]
+        fn step(&mut self, ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+            let values = ctx
+                .samples()
+                .items()
+                .iter()
+                .map(|sample| queued::Capture {
+                    value: sample.payload().value,
+                    source: sample.stamp().source().to_owned(),
+                    capture_ns: sample.stamp().capture_time().as_nanos(),
+                    revision: sample.stamp().revision(),
+                })
+                .collect::<Vec<_>>();
+            for value in values {
+                ctx.emit_captures(value)?;
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn queued_injection_preserves_capture_provenance_fifo_and_shared_capacity() -> phoxal::Result<()>
+    {
+        let mut host = Harness::<QueueProbe>::new_at((), Duration::from_millis(20))?;
+        host.enqueue_samples(queued::Item { value: 1 })?;
+        host.inject_samples(phoxal::runtime::Sample::new(
+            queued::Item { value: 2 },
+            phoxal::runtime::ObservationStamp::new(
+                "encoder.front",
+                phoxal::runtime::ExecutionTime::from_nanos(7_000_000),
+                Some(33),
+            ),
+        ))?;
+        assert!(host.enqueue_samples(queued::Item { value: 3 }).is_err());
+        host.advance_to(Duration::from_millis(20))?;
+        let captures = host.captures();
+        assert_eq!(captures.len(), 2);
+        assert_eq!(
+            (
+                captures[0].value,
+                captures[0].source.as_str(),
+                captures[0].capture_ns
+            ),
+            (1, "harness.samples", 20_000_000)
+        );
+        assert_eq!(
+            (
+                captures[1].value,
+                captures[1].source.as_str(),
+                captures[1].capture_ns,
+                captures[1].revision
+            ),
+            (2, "encoder.front", 7_000_000, Some(33))
+        );
+        host.advance_to(Duration::from_millis(40))?;
+        assert!(
+            host.captures().is_empty(),
+            "accepted queue entries are not replayed"
+        );
+        host.enqueue_samples(queued::Item { value: 4 })?;
+        host.reset(())?;
+        host.advance_to(Duration::from_millis(40))?;
+        assert!(
+            host.captures().is_empty(),
+            "reset discards pending queue entries"
+        );
+        Ok(())
+    }
+    #[phoxal::messages(package = "phoxal.tests.harness.lease_ingress.v1")]
+    mod lease_ingress {
+        use phoxal::contracts::{Latest, State};
+        pub struct Intent {
+            #[phoxal(tag = 1)]
+            pub value: String,
+        }
+        pub struct Status {
+            #[phoxal(tag = 1)]
+            pub value: Option<String>,
+            #[phoxal(tag = 2)]
+            pub owner: Option<String>,
+        }
+        #[phoxal::endpoints]
+        pub struct Api {
+            #[phoxal::input(lease_ms = 100, max_bytes = 64)]
+            intent: Latest<Intent>,
+            #[phoxal::output(max_bytes = 256)]
+            status: State<Status>,
+        }
+    }
+    struct LeaseProbe {
+        status: lease_ingress::Status,
+    }
+    #[phoxal::runtime(contract = lease_ingress::Api, period_ms = 20)]
+    impl LeaseProbe {
+        #[init]
+        fn new(_: ()) -> phoxal::Result<Self> {
+            Ok(Self {
+                status: lease_ingress::Status {
+                    value: None,
+                    owner: None,
+                },
+            })
+        }
+        #[step]
+        fn step(&mut self, ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> {
+            let lease = ctx.intent();
+            self.status = lease_ingress::Status {
+                value: lease.valid().map(|value| value.value.clone()),
+                owner: lease
+                    .valid()
+                    .and_then(|_| lease.source().map(str::to_owned)),
+            };
+            Ok(())
+        }
+        #[publish(status)]
+        fn status(&self) -> lease_ingress::Status {
+            self.status.clone()
+        }
+    }
+    #[test]
+    fn injected_leases_keep_owner_expiry_and_bounds_without_renewal() -> phoxal::Result<()> {
+        use phoxal::runtime::{ExecutionTime, input::Setpoint};
+        let mut host = Harness::<LeaseProbe>::new(())?;
+        let at = ExecutionTime::from_nanos(0);
+        host.inject_intent(Setpoint::from_source(
+            lease_ingress::Intent {
+                value: "move".into(),
+            },
+            "operator",
+            at,
+            100,
+        ))?;
+        host.advance_to(Duration::from_millis(100))?;
+        let active = host.status().expect("accepted lease");
+        assert_eq!(active.value.as_deref(), Some("move"));
+        assert_eq!(active.owner.as_deref(), Some("operator"));
+        host.advance_to(Duration::from_millis(120))?;
+        assert!(host.status().expect("expired lease").value.is_none());
+        for duration in [0, 101] {
+            assert!(
+                host.inject_intent(Setpoint::new(
+                    lease_ingress::Intent {
+                        value: "invalid".into()
+                    },
+                    at,
+                    duration
+                ))
+                .is_err()
+            );
+        }
+        assert!(
+            host.inject_intent(Setpoint::new(
+                lease_ingress::Intent {
+                    value: "x".repeat(65)
+                },
+                at,
+                100
+            ))
+            .is_err()
+        );
+        host.inject_intent(Setpoint::from_source(
+            lease_ingress::Intent {
+                value: "move".into(),
+            },
+            "operator",
+            ExecutionTime::from_nanos(120_000_000),
+            100,
+        ))?;
+        host.reset(())?;
+        host.advance_to(Duration::from_millis(120))?;
+        assert!(host.status().expect("reset lease").value.is_none());
+        host.inject_intent(Setpoint::withdrawn())?;
         Ok(())
     }
 }
