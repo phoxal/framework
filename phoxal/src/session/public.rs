@@ -1043,7 +1043,7 @@ impl<Request: ProstPayload, Response: ProstPayload> CallHandle<Request, Response
                 detail: format!("request could not be encoded: {error}"),
             }
         })?;
-        let result = self.core.invoke_encoded(payload, timeout).await?;
+        let result = self.core.invoke_encoded(payload, timeout, false).await?;
         Ok(match result {
             RawOutcome::Received(payload) => match Response::decode_payload(payload.as_slice()) {
                 Ok(response) => CallOutcome::Received(response),
@@ -1053,6 +1053,40 @@ impl<Request: ProstPayload, Response: ProstPayload> CallHandle<Request, Response
             RawOutcome::Rejected(reason) => CallOutcome::RejectedBeforeAdmission(reason),
             RawOutcome::Unknown(reason) => CallOutcome::OutcomeUnknown(reason),
         })
+    }
+}
+
+impl<Request: ProstPayload> CallHandle<Request, crate::contracts::Empty> {
+    /// Withdraw this leased intent explicitly, preserving ordinary admission and authority.
+    pub async fn withdraw(
+        &self,
+        timeout: Duration,
+    ) -> Result<CallOutcome<crate::contracts::Empty>, SessionError> {
+        if !self
+            .core
+            .metadata
+            .lease_valid_for_ms
+            .is_some_and(|lease| lease > 0)
+        {
+            return Err(SessionError::InvalidPublicRequest {
+                detail: "withdraw requires a positively leased call".into(),
+            });
+        }
+        Ok(
+            match self.core.invoke_encoded(Vec::new(), timeout, true).await? {
+                RawOutcome::Received(payload) => {
+                    match crate::contracts::Empty::decode_payload(&payload) {
+                        Ok(response) => CallOutcome::Received(response),
+                        Err(error) => {
+                            CallOutcome::OutcomeUnknown(OutcomeReason::new(error.to_string()))
+                        }
+                    }
+                }
+                RawOutcome::NotSent(reason) => CallOutcome::NotSent(reason),
+                RawOutcome::Rejected(reason) => CallOutcome::RejectedBeforeAdmission(reason),
+                RawOutcome::Unknown(reason) => CallOutcome::OutcomeUnknown(reason),
+            },
+        )
     }
 }
 
@@ -1088,6 +1122,7 @@ impl MethodHandleCore {
         &self,
         payload: Vec<u8>,
         timeout: Duration,
+        withdraw_setpoint: bool,
     ) -> Result<RawOutcome, SessionError> {
         self.ensure_current("operation")?;
         if timeout.is_zero() {
@@ -1110,6 +1145,7 @@ impl MethodHandleCore {
             timeline_id: self.timeline_id.clone(),
             payload,
             timeout_ms: timeout_ms.max(1),
+            withdraw_setpoint,
         };
         let response = match self.supervisor.call(request).await {
             Ok(response) => response,

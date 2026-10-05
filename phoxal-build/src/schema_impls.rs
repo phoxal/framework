@@ -57,12 +57,8 @@ const SDK_TYPES: &[(&str, &str)] = &[
         "::phoxal::contracts::component::actuator::Control",
     ),
     (
-        "phoxal.component.actuator.v1.ActuatorTarget",
-        "::phoxal::contracts::component::actuator::ActuatorTarget",
-    ),
-    (
-        "phoxal.component.actuator.v1.ActuatorSetpoint",
-        "::phoxal::contracts::component::actuator::ActuatorSetpoint",
+        "phoxal.component.actuator.v1.ActuatorCommand",
+        "::phoxal::contracts::component::actuator::ActuatorCommand",
     ),
     (
         "phoxal.component.imu.v1.AccelerometerSample",

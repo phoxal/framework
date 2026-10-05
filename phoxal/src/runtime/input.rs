@@ -520,6 +520,15 @@ pub trait TransportInputSink {
         Vec::new()
     }
 
+    /// Marks an observation input as connected before any publication arrives.
+    fn bind_latest(&mut self, field: &str) -> crate::Result<()> {
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` cannot retain admitted connectivity"),
+            }
+        ))
+    }
+
     /// Clear a latest value when the original observation has expired.
     fn clear_latest(&mut self, field: &str) -> crate::Result<()> {
         let _ = field;
@@ -930,13 +939,17 @@ pub const MAX_OBSERVATION_FORWARD_SKEW: ExecutionDuration = ExecutionDuration::f
 /// A latest snapshot with explicit absence.
 pub struct Latest<T> {
     value: Option<Sample<T>>,
+    connected: bool,
 }
 
 impl<T> Latest<T> {
     /// Creates an unavailable snapshot.
     #[must_use]
     pub const fn unavailable() -> Self {
-        Self { value: None }
+        Self {
+            value: None,
+            connected: false,
+        }
     }
 
     /// Creates an available snapshot with its original observation stamp.
@@ -944,6 +957,7 @@ impl<T> Latest<T> {
     pub fn new(value: T, stamp: ObservationStamp) -> Self {
         Self {
             value: Some(Sample::new(value, stamp)),
+            connected: true,
         }
     }
 
@@ -952,7 +966,24 @@ impl<T> Latest<T> {
     pub fn from_sample(sample: Sample<T>) -> Self {
         Self {
             value: Some(sample),
+            connected: true,
         }
+    }
+
+    /// Whether this input has an admitted source, even before its first sample.
+    #[must_use]
+    pub const fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    /// Records admitted topology without changing the retained observation.
+    pub fn bind(&mut self) {
+        self.connected = true;
+    }
+
+    /// Removes an observation while preserving the admitted topology.
+    pub fn clear(&mut self) {
+        self.value = None;
     }
 
     /// Returns the captured snapshot, if one was admitted.
@@ -2389,6 +2420,22 @@ mod tests {
         Commands, InputKind, InputSpec, Latest, Read, ReadError, ReadStatus, Request, Samples,
     };
     use crate::runtime::{ExecutionTime, ObservationStamp, Sample};
+
+    #[test]
+    fn connected_observation_stays_required_when_its_evidence_disappears() {
+        let mut latest = Latest::<u8>::unavailable();
+        assert!(!latest.is_connected());
+        latest.bind();
+        assert!(latest.is_connected());
+        assert!(latest.sample().is_none());
+        latest = Latest::new(
+            1,
+            ObservationStamp::new("source", ExecutionTime::default(), None),
+        );
+        latest.clear();
+        assert!(latest.is_connected());
+        assert!(latest.sample().is_none());
+    }
 
     #[test]
     fn command_reply_preserves_queue_admission_identity() {

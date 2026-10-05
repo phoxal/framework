@@ -34,8 +34,10 @@
 pub mod application;
 pub mod bundle;
 pub mod document;
+pub mod output_family;
 mod record;
 pub mod simulation;
+pub mod simulation_context;
 pub mod simulation_run;
 
 pub use crate::contracts::MethodShape;

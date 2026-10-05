@@ -2,7 +2,7 @@
 //!
 //! `cargo phoxal prepare` builds selected participant artifacts, extracts
 //! their compiled contracts (endpoint metadata plus assembled descriptor
-//! closures), and writes them under the robot's `.phoxal/` tree. This
+//! closures), and writes them under Cargo's normally configured target root. This
 //! module reads those exact products so a composing brain generates its
 //! external instance bindings from extracted artifacts — never from the
 //! participant's source tree.
@@ -75,7 +75,7 @@ pub struct PreparedRuntime {
 }
 
 /// The prepared product files of one participant contract. One
-/// directory under `.phoxal/prepared/` carries both files as a single
+/// directory under `target/phoxal/prepared/` carries both files as a single
 /// replaceable product: `contract.json` owns the runtime metadata, the
 /// complete selection identity, and package provenance; `descriptors.pb` is the standard Protobuf
 /// `FileDescriptorSet` (not a Phoxal schema format).
@@ -88,7 +88,7 @@ pub const CONTRACT_FILE: &str = "contract.json";
 pub const CONTRACT_GENERATION: u32 = 1;
 
 /// The root directory holding every prepared contract of one project.
-pub const PREPARED_ROOT: &str = ".phoxal/prepared";
+pub const PREPARED_ROOT: &str = "phoxal/prepared";
 
 /// The complete identity of one selection, recorded inside
 /// `contract.json` so a shortened key component can always be validated
@@ -131,6 +131,9 @@ pub struct PreparedExecutable {
 /// itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreparedContractFile {
+    /// Configuration-bound instance identity for an expanded contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<PreparedInstance>,
     /// The layout generation this product belongs to.
     pub generation: u32,
     /// The complete selection identity.
@@ -142,6 +145,81 @@ pub struct PreparedContractFile {
     /// The retained runtime record, verbatim, so consumers observe the
     /// exact artifact metadata rather than a lossy re-encoding.
     pub runtime: serde_json::Value,
+}
+
+/// Exact instance/configuration/template correspondence of a resolved product.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedInstance {
+    /// Authored instance identity.
+    pub name: String,
+    /// Exact effective configuration used by the SDK resolver.
+    pub config: serde_json::Value,
+    /// Source contract used to resolve the output family.
+    pub template: serde_json::Value,
+}
+
+/// A separate prepared slot for an instance-expanded source contract.
+pub fn prepared_instance_dir(project_root: &Path, instance: &str) -> Result<PathBuf, Error> {
+    if instance.is_empty()
+        || instance.len() > 64
+        || !instance.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+    {
+        return Err(Error::ApiInput {
+            path: project_root.to_owned(),
+            message: "invalid prepared instance identity".into(),
+        });
+    }
+    Ok(prepared_input_root(project_root)?.join(format!("instance-{instance}")))
+}
+
+/// Reads an owner-resolved instance contract, refusing stale configuration or
+/// a changed executable template. This reader never expands output families.
+pub fn read_prepared_instance(
+    project_root: &Path,
+    instance: &str,
+    config: &serde_json::Value,
+    template: &PreparedContractFile,
+) -> Result<PreparedContract, Error> {
+    let directory = prepared_instance_dir(project_root, instance)?;
+    let contract = read_prepared_for(&directory, &template.selection, template.binary.as_deref())?;
+    let expected = PreparedInstance {
+        name: instance.to_owned(),
+        config: config.clone(),
+        template: template.runtime.clone(),
+    };
+    if contract.file.instance.as_ref() != Some(&expected) {
+        return Err(Error::ApiInput {
+            path: directory,
+            message: format!(
+                "prepared contract for {instance} does not match its current configuration/template; run `cargo phoxal prepare`"
+            ),
+        });
+    }
+    Ok(contract)
+}
+
+/// Publishes an SDK-resolved instance contract using the same pair publication
+/// and recovery boundary as reusable executable templates.
+pub fn write_prepared_instance(
+    project_root: &Path,
+    instance: &str,
+    config: &serde_json::Value,
+    template: &PreparedContractFile,
+    runtime: serde_json::Value,
+    descriptors: &FileDescriptorSet,
+) -> Result<bool, Error> {
+    let directory = prepared_instance_dir(project_root, instance)?;
+    let mut file = template.clone();
+    file.instance = Some(PreparedInstance {
+        name: instance.to_owned(),
+        config: config.clone(),
+        template: template.runtime.clone(),
+    });
+    file.runtime = runtime;
+    publish_prepared(&directory, &file, descriptors)
 }
 
 /// Sanitizes one readable key segment: lowercase letters, digits, and
@@ -235,18 +313,43 @@ pub fn prepared_key(selection: &PreparedSelection, binary: Option<&str>) -> Stri
     }
 }
 
-/// The prepared-contract directory of one selection under a project's
-/// `.phoxal/prepared/` root. Equivalent selections resolve to one
-/// directory, so repeated selections prepare once.
-#[must_use]
+/// Resolve the stable prepared-input root from ordinary Cargo configuration.
+///
+/// Command-line `--target-dir` and `--config` overrides affect compiler outputs
+/// only. This reader performs no Cargo invocation and never infers paths from
+/// `OUT_DIR`. Both preparation and ordinary build scripts use this resolver.
+pub fn prepared_input_root(project_root: &Path) -> Result<PathBuf, Error> {
+    let config =
+        cargo_config2::Config::load_with_cwd(project_root).map_err(|error| Error::ApiInput {
+            path: project_root.to_owned(),
+            message: format!("cannot resolve prepared-input Cargo configuration: {error}"),
+        })?;
+    let target = config
+        .build
+        .target_dir
+        .unwrap_or_else(|| project_root.join("target"));
+    // Multiple robots may share one Cargo target root. Relative source selections
+    // belong to their robot, so their prepared products must remain isolated.
+    use sha2::{Digest as _, Sha256};
+    let root = project_root.canonicalize().map_err(|source| Error::Path {
+        path: project_root.to_owned(),
+        source,
+    })?;
+    let identity = Sha256::digest(root.as_os_str().as_encoded_bytes());
+    let key = identity[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(target.join(PREPARED_ROOT).join(key))
+}
+
+/// The prepared-contract directory of one complete source selection.
 pub fn prepared_dir(
     project_root: &Path,
     selection: &PreparedSelection,
     binary: Option<&str>,
-) -> PathBuf {
-    project_root
-        .join(PREPARED_ROOT)
-        .join(prepared_key(selection, binary))
+) -> Result<PathBuf, Error> {
+    Ok(prepared_input_root(project_root)?.join(prepared_key(selection, binary)))
 }
 
 /// Reads one prepared contract and requires that its recorded complete
@@ -294,7 +397,10 @@ pub fn validate_prepared_key(
     contract_dir: &Path,
     file: &PreparedContractFile,
 ) -> Result<(), Error> {
-    let recorded = prepared_key(&file.selection, file.binary.as_deref());
+    let recorded = file.instance.as_ref().map_or_else(
+        || prepared_key(&file.selection, file.binary.as_deref()),
+        |instance| format!("instance-{}", instance.name),
+    );
     let actual = contract_dir
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -388,13 +494,22 @@ pub fn write_prepared(
     descriptors: &FileDescriptorSet,
 ) -> Result<bool, Error> {
     let file = PreparedContractFile {
+        instance: None,
         generation: CONTRACT_GENERATION,
         selection: selection.clone(),
         binary: binary.map(str::to_owned),
         executable: executable.clone(),
         runtime,
     };
-    validate_prepared_key(contract_dir, &file)?;
+    publish_prepared(contract_dir, &file, descriptors)
+}
+
+fn publish_prepared(
+    contract_dir: &Path,
+    file: &PreparedContractFile,
+    descriptors: &FileDescriptorSet,
+) -> Result<bool, Error> {
+    validate_prepared_key(contract_dir, file)?;
     serde_json::from_value::<PreparedRuntime>(file.runtime.clone()).map_err(|error| {
         Error::ApiInput {
             path: contract_dir.to_owned(),
@@ -424,6 +539,7 @@ pub fn write_prepared(
         old.generation == file.generation
             && old.selection == file.selection
             && old.binary == file.binary
+            && old.instance == file.instance
             && old.runtime == file.runtime
     }) && fs::read(readable_directory(contract_dir).join(DESCRIPTORS_FILE))
         .ok()
@@ -928,12 +1044,121 @@ mod tests {
     use super::*;
 
     #[test]
+    fn instance_products_share_source_without_config_collisions_and_refuse_staleness() {
+        let root = tempfile::tempdir().unwrap();
+        let source = PreparedContractFile {
+            instance: None,
+            generation: CONTRACT_GENERATION,
+            selection: PreparedSelection::Path {
+                path: "../motion".into(),
+            },
+            binary: None,
+            executable: PreparedExecutable {
+                package: "motion".into(),
+                version: Some("1.0.0".into()),
+            },
+            runtime: serde_json::json!({"inputs":[], "outputs":[{"name":"wheel_template"}]}),
+        };
+        let descriptors = FileDescriptorSet::default();
+        let front = serde_json::json!({"wheels":{"front":{}}});
+        let rear = serde_json::json!({"wheels":{"rear":{}}});
+        let resolved = |name: &str| serde_json::json!({"inputs":[],"outputs":[{"signature":{"endpoint":name}}]});
+        assert!(
+            write_prepared_instance(
+                root.path(),
+                "front_drive",
+                &front,
+                &source,
+                resolved("front_actuator"),
+                &descriptors
+            )
+            .unwrap()
+        );
+        assert!(
+            write_prepared_instance(
+                root.path(),
+                "rear_drive",
+                &rear,
+                &source,
+                resolved("rear_actuator"),
+                &descriptors
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            read_prepared_instance(root.path(), "front_drive", &front, &source)
+                .unwrap()
+                .file
+                .runtime,
+            resolved("front_actuator")
+        );
+        assert_eq!(
+            read_prepared_instance(root.path(), "rear_drive", &rear, &source)
+                .unwrap()
+                .file
+                .runtime,
+            resolved("rear_actuator")
+        );
+        assert!(
+            !write_prepared_instance(
+                root.path(),
+                "front_drive",
+                &front,
+                &source,
+                resolved("front_actuator"),
+                &descriptors
+            )
+            .unwrap()
+        );
+        assert!(read_prepared_instance(root.path(), "front_drive", &rear, &source).is_err());
+        assert!(
+            write_prepared_instance(
+                root.path(),
+                "front_drive",
+                &rear,
+                &source,
+                resolved("rear_actuator"),
+                &descriptors
+            )
+            .unwrap()
+        );
+        assert!(read_prepared_instance(root.path(), "front_drive", &rear, &source).is_ok());
+        let mut changed = source.clone();
+        changed.runtime["outputs"][0]["name"] = serde_json::json!("changed_template");
+        assert!(read_prepared_instance(root.path(), "front_drive", &rear, &changed).is_err());
+        assert!(read_prepared_instance(root.path(), "rear_drive", &rear, &source).is_ok());
+    }
+
+    #[test]
+    fn configured_target_store_is_shared_but_robot_inputs_remain_isolated() {
+        let home = tempfile::tempdir().expect("fixture");
+        let shared = home.path().join("shared-target");
+        let roots = [home.path().join("first"), home.path().join("second")];
+        for root in &roots {
+            fs::create_dir_all(root.join(".cargo")).expect("config directory");
+            fs::write(
+                root.join(".cargo/config.toml"),
+                format!("[build]\ntarget-dir = {:?}\n", shared.to_string_lossy()),
+            )
+            .expect("config");
+        }
+        let selection = PreparedSelection::Path {
+            path: "../provider".into(),
+        };
+        let first = prepared_dir(&roots[0], &selection, None).expect("first store");
+        let second = prepared_dir(&roots[1], &selection, None).expect("second store");
+        assert!(first.starts_with(shared.join(PREPARED_ROOT)));
+        assert!(second.starts_with(shared.join(PREPARED_ROOT)));
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn publication_changes_only_contract_content_and_recovers_interruption() {
         let home = tempfile::tempdir().expect("directory");
         let selection = PreparedSelection::Path {
             path: "../participant".into(),
         };
-        let dir = prepared_dir(home.path(), &selection, None);
+        let dir = prepared_dir(home.path(), &selection, None).expect("prepared directory");
         let mut provenance = PreparedExecutable {
             package: "participant".into(),
             version: Some("1.0.0".into()),
@@ -1098,6 +1323,7 @@ mod tests {
         // `sensor-a`, even when the directory name itself matches the
         // recorded (lossy) key.
         let file = PreparedContractFile {
+            instance: None,
             generation: CONTRACT_GENERATION,
             selection: path_selection("provider"),
             binary: Some("sensor_a".to_owned()),
@@ -1128,6 +1354,7 @@ mod tests {
     #[test]
     fn prepared_key_validation_rejects_directory_identity_mismatches() {
         let file = PreparedContractFile {
+            instance: None,
             generation: CONTRACT_GENERATION,
             selection: path_selection("components/ddsm115"),
             binary: None,
@@ -1151,6 +1378,7 @@ mod tests {
     fn contract_with_outputs(runtime_json: &str) -> PreparedContract {
         PreparedContract {
             file: PreparedContractFile {
+                instance: None,
                 generation: CONTRACT_GENERATION,
                 selection: path_selection("participant"),
                 binary: None,

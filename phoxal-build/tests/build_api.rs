@@ -40,10 +40,8 @@ fn empty_brain_robot_runtime_compiles_against_generated_empty_contract()
     let output = Command::new(cargo)
         .args(["build", "--offline", "--manifest-path"])
         .arg(robot.join("Cargo.toml"))
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"),
-        )
+        .arg("--target-dir")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"))
         .output()?;
     assert!(
         output.status.success(),
@@ -74,7 +72,7 @@ fn write_prepared_service(
         path: rel_path.to_owned(),
     };
     write_prepared_under(
-        phoxal_build::prepared_dir(robot_root, &identity, None),
+        phoxal_build::prepared_dir(robot_root, &identity, None)?,
         serde_json::json!({"kind": "path", "path": rel_path}),
         package,
         service,
@@ -212,13 +210,96 @@ fn scaffold_robot(
 fn build_robot(robot: &Path) -> Result<std::process::Output, Box<dyn std::error::Error>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Ok(Command::new(cargo)
+        .current_dir(robot)
         .args(["build", "--offline", "--manifest-path"])
         .arg(robot.join("Cargo.toml"))
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"),
-        )
+        .arg("--target-dir")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"))
         .output()?)
+}
+
+#[test]
+fn config_watch_and_package_cleanup_refresh_real_prepared_bindings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let robot = scaffold_robot(
+        directory.path(),
+        "  provider: { source: { path: ../provider } }\n",
+        "phoxal::api!();\nfn main() { println!(\"{}\", <api::operations::proof::watch::v1::Ask as phoxal::contracts::Operation>::METHOD.signature().request); }\n",
+    )?;
+    let manifest = robot.join("Cargo.toml");
+    fs::write(
+        &manifest,
+        fs::read_to_string(&manifest)?.replace("marker-proof-robot", "watch-reader-proof"),
+    )?;
+    fs::create_dir(robot.join(".cargo"))?;
+    let prepare = |request: &str| {
+        write_prepared_service(
+            &robot,
+            "../provider",
+            "proof.watch.v1",
+            "proof.watch.v1.Ask",
+            "ask",
+            request,
+            "proof.watch.v1.Response",
+        )
+    };
+    let invoke = |arguments: &[&str]| -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        Ok(Command::new(env!("CARGO"))
+            .current_dir(&robot)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .args(arguments)
+            .args(["--offline", "--target-dir"])
+            .arg(directory.path().join("compiler-output"))
+            .output()?)
+    };
+    let run = |expected: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let output = invoke(&["run", "--quiet"])?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout)?.trim(), expected);
+        Ok(())
+    };
+    prepare("proof.watch.v1.OldRequest")?;
+    run("proof.watch.v1.OldRequest")?;
+    fs::write(
+        robot.join(".cargo/config.toml"),
+        "[build]\ntarget-dir='new-inputs'\n",
+    )?;
+    let missing = invoke(&["build"])?;
+    assert!(!missing.status.success());
+    let diagnostic = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        diagnostic.contains("new-inputs") && diagnostic.contains("cargo phoxal prepare"),
+        "{diagnostic}"
+    );
+    prepare("proof.watch.v1.NewRequest")?;
+    run("proof.watch.v1.NewRequest")?;
+    fs::remove_file(robot.join(".cargo/config.toml"))?;
+    fs::remove_dir(robot.join(".cargo"))?;
+    run("proof.watch.v1.OldRequest")?;
+    fs::create_dir(robot.join(".cargo"))?;
+    fs::write(
+        robot.join(".cargo/config.toml"),
+        "[build]\ntarget-dir='new-inputs'\n",
+    )?;
+    prepare("proof.watch.v1.NewRequest")?;
+    run("proof.watch.v1.OldRequest")?; // Explicitly accepted cached-directory edge.
+    let cleaned = invoke(&["clean", "-p", "watch-reader-proof"])?;
+    assert!(cleaned.status.success());
+    run("proof.watch.v1.NewRequest")?;
+    let warm = invoke(&["build", "-vv"])?;
+    assert!(warm.status.success());
+    assert!(
+        String::from_utf8_lossy(&warm.stderr).contains("Fresh watch-reader-proof"),
+        "expected Fresh; Cargo -vv output:\n{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    Ok(())
 }
 
 /// Two provider instances of one contract beside a third provider sharing
@@ -235,6 +316,13 @@ fn shared_package_prefixes_and_two_instances_compile_one_operations_tree()
         "  alpha: { source: { path: ../provider-a } }\n  beta: { source: { path: ../provider-a } }\n  gamma: { source: { path: ../provider-b } }\n",
         "phoxal::api!();\n\n/// One contract naming both generated provider markers.\n#[phoxal::endpoints]\npub struct BrainApi {\n    #[phoxal::call]\n    ask: api::operations::proof::shared::v1::Ask,\n}\n\nfn main() {\n    let method = <api::operations::proof::shared::v1::Ask as phoxal::contracts::Operation>::METHOD;\n    assert_eq!(method.signature().service, \"proof.shared.v1.Ask\");\n    let _ = <api::operations::proof::other::v1::Ask as phoxal::contracts::Operation>::METHOD;\n}\n",
     )?;
+    fs::create_dir_all(robot.join(".cargo"))?;
+    fs::write(
+        robot.join(".cargo/config.toml"),
+        "[build]\ntarget-dir = \"inputs-target\"\n",
+    )?;
+    let input_root = phoxal_build::prepared_input_root(&robot)?;
+    assert!(input_root.starts_with(robot.join("inputs-target/phoxal/prepared")));
     write_prepared_service(
         &robot,
         "../provider-a",
@@ -259,6 +347,38 @@ fn shared_package_prefixes_and_two_instances_compile_one_operations_tree()
         "shared-prefix operations build failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    // Environment selects the stable input root even when normal configuration
+    // changes and a one-off compiler target directory is supplied.
+    fs::write(
+        robot.join(".cargo/config.toml"),
+        "[build]\ntarget-dir = \"other-inputs\"\n",
+    )?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(&cargo)
+        .current_dir(&robot)
+        .args(["build", "--offline", "--target-dir"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"))
+        .env("CARGO_TARGET_DIR", robot.join("inputs-target"))
+        .output()?;
+    assert!(
+        output.status.success(),
+        "environment input root with compiler override: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let missing = Command::new(cargo)
+        .current_dir(&robot)
+        .args(["build", "--offline", "--target-dir"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"))
+        .env("CARGO_TARGET_DIR", robot.join("not-prepared"))
+        .output()?;
+    assert!(!missing.status.success());
+    let diagnostic = String::from_utf8_lossy(&missing.stderr);
+    assert!(diagnostic.contains("not-prepared"), "{diagnostic}");
+    assert!(diagnostic.contains("cargo phoxal prepare"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("overrides relocate outputs only"),
+        "{diagnostic}"
     );
     Ok(())
 }
@@ -321,7 +441,7 @@ fn mixed_import_and_export_provider_compiles_cold() -> Result<(), Box<dyn std::e
     let identity = PreparedSelection::Path {
         path: "../provider-mixed".to_owned(),
     };
-    let dir = phoxal_build::prepared_dir(&robot, &identity, None);
+    let dir = phoxal_build::prepared_dir(&robot, &identity, None)?;
     fs::create_dir_all(&dir)?;
     let set = prost_types::FileDescriptorSet {
         file: vec![prost_types::FileDescriptorProto {
@@ -396,7 +516,7 @@ fn write_capability_drive_products(robot_root: &Path) -> Result<(), Box<dyn std:
     let identity = PreparedSelection::Path {
         path: "../drive".to_owned(),
     };
-    let dir = phoxal_build::prepared_dir(robot_root, &identity, None);
+    let dir = phoxal_build::prepared_dir(robot_root, &identity, None)?;
     fs::create_dir_all(&dir)?;
     // Both endpoints resolve through the SDK standard vocabulary, so the
     // descriptor closure carries nothing of its own.
@@ -426,13 +546,13 @@ fn write_capability_drive_products(robot_root: &Path) -> Result<(), Box<dyn std:
                 "max_items": null,
                 "max_bytes": 1024,
                 "max_age_ms": null,
-                "request_fqn": "phoxal.component.actuator.v1.ActuatorSetpoint",
+                "request_fqn": "phoxal.component.actuator.v1.ActuatorCommand",
                 "response_fqn": "google.protobuf.Empty",
                 "signature": {
                     "endpoint": "actuator",
                     "service": "phoxal.component.actuator.v1.Actuator",
                     "method": "actuator",
-                    "request": "phoxal.component.actuator.v1.ActuatorSetpoint",
+                    "request": "phoxal.component.actuator.v1.ActuatorCommand",
                     "response": "google.protobuf.Empty",
                     "shape": "call",
                     "retained_latest": false,
@@ -484,7 +604,7 @@ fn capability_standard_endpoints_compose_with_generated_call_markers_cold()
     let robot = scaffold_robot(
         root,
         "  drive: { source: { path: ../drive } }\n  advisor: { source: { path: ../advisor } }\n",
-        "phoxal::api!();\n\nuse phoxal::contracts::Queue;\n\n/// One brain contract composing both surfaces.\n#[phoxal::endpoints]\npub struct BrainApi {\n    #[phoxal::call]\n    ask: api::operations::proof::capcall::v1::Ask,\n\n    #[phoxal::input(max_items = 16, max_bytes = 512)]\n    encoder: Queue<::phoxal::contracts::component::encoder::EncoderSample>,\n}\n\nfn main() {\n    let method = <api::operations::proof::capcall::v1::Ask as phoxal::contracts::Operation>::METHOD;\n    assert_eq!(method.signature().service, \"proof.capcall.v1.Ask\");\n    // The generated drive module binds its observation and leased call\n    // against the same SDK standard vocabulary the authored field names.\n    let sample: phoxal::contracts::Observation<\n        ::phoxal::contracts::component::encoder::EncoderSample,\n    > = api::drive::encoder();\n    let _ = sample;\n    let setpoint: phoxal::contracts::CallMethod<\n        ::phoxal::contracts::component::actuator::ActuatorSetpoint,\n        ::phoxal::contracts::Empty,\n    > = api::drive::ACTUATOR;\n    let _ = setpoint;\n    let reexported: &::phoxal::contracts::component::encoder::EncoderSample =\n        &<api::drive::EncoderSample as Default>::default();\n    let _ = reexported;\n}\n",
+        "phoxal::api!();\n\nuse phoxal::contracts::Queue;\n\n/// One brain contract composing both surfaces.\n#[phoxal::endpoints]\npub struct BrainApi {\n    #[phoxal::call]\n    ask: api::operations::proof::capcall::v1::Ask,\n\n    #[phoxal::input(max_items = 16, max_bytes = 512)]\n    encoder: Queue<::phoxal::contracts::component::encoder::EncoderSample>,\n}\n\nfn main() {\n    let method = <api::operations::proof::capcall::v1::Ask as phoxal::contracts::Operation>::METHOD;\n    assert_eq!(method.signature().service, \"proof.capcall.v1.Ask\");\n    // The generated drive module binds its observation and leased call\n    // against the same SDK standard vocabulary the authored field names.\n    let sample: phoxal::contracts::Observation<\n        ::phoxal::contracts::component::encoder::EncoderSample,\n    > = api::drive::encoder();\n    let _ = sample;\n    let setpoint: phoxal::contracts::CallMethod<\n        ::phoxal::contracts::component::actuator::ActuatorCommand,\n        ::phoxal::contracts::Empty,\n    > = api::drive::ACTUATOR;\n    let _ = setpoint;\n    let reexported: &::phoxal::contracts::component::encoder::EncoderSample =\n        &<api::drive::EncoderSample as Default>::default();\n    let _ = reexported;\n}\n",
     )?;
     write_prepared_service(
         &robot,
@@ -529,7 +649,7 @@ fn synthetic_pinned_git_generator_fixture_compiles_cold() -> Result<(), Box<dyn 
         url: "https://example.invalid/provider.git".to_owned(),
         path: None,
     };
-    let dir = phoxal_build::prepared_dir(&robot, &identity, None);
+    let dir = phoxal_build::prepared_dir(&robot, &identity, None)?;
     write_prepared_under(
         dir,
         serde_json::json!({"kind": "git", "name": "provider-git", "revision": rev, "url": "https://example.invalid/provider.git", "path": null}),

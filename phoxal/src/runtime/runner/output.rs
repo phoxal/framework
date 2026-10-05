@@ -204,7 +204,7 @@ impl<R> ExecutionOutputAdapter<R> {
                 }
             }
         }
-        let mut receipts = empty_product_receipts::<R>()?;
+        let mut receipts = empty_product_receipts::<R>(self.generated_manifest.as_ref())?;
         transport::publish_batch(bus, self.instance.as_deref().unwrap_or_default(), &records)?;
         for record in &records {
             let Some((port, sequence, bytes)) = record.product_receipt() else {
@@ -232,6 +232,51 @@ impl<R> ExecutionOutputAdapter<R> {
                 valid_until_ns,
             })
             .collect();
+        Ok(())
+    }
+
+    fn validate_output_families(&self) -> crate::Result<()>
+    where
+        R: RegisteredRuntime,
+    {
+        for field in R::FIELDS.iter().filter(|field| field.family.is_some()) {
+            let manifest = self.generated_manifest.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("configured output family requires admitted instance contract")
+            })?;
+            let runtime = manifest
+                .artifacts
+                .get(&manifest.instance_id)
+                .ok_or_else(|| anyhow::anyhow!("configured output instance is absent"))?;
+            let expected: BTreeMap<_, _> = super::record_parts(runtime)
+                .1
+                .iter()
+                .filter(|output| output.family_template.as_deref() == field.port)
+                .filter_map(|output| output.signature.as_ref())
+                .map(|signature| (signature.endpoint.as_str(), signature))
+                .collect();
+            let mut accepted = std::collections::BTreeSet::new();
+            for record in self
+                .projections
+                .iter()
+                .filter(|record| record.field() == Some(field.name))
+            {
+                let binding = record.owned_binding();
+                if expected.get(binding.endpoint.as_str()).copied() != Some(&binding)
+                    || !accepted.insert(binding.endpoint)
+                {
+                    return Err(anyhow::anyhow!(
+                        "output family {} has an extra, duplicate or incompatible port",
+                        field.name
+                    ));
+                }
+            }
+            if expected.is_empty() || accepted.len() != expected.len() {
+                return Err(anyhow::anyhow!(
+                    "output family {} did not produce its complete configured membership",
+                    field.name
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1352,12 +1397,54 @@ where
 
 /// Close the declared roster even when a sample batch is empty, a state is
 /// unchanged, a projection is not due, or a setpoint is withdrawn.
-fn empty_product_receipts<R: RegisteredRuntime>()
--> crate::Result<BTreeMap<String, RuntimeProductReceipt>>
+fn empty_product_receipts<R: RegisteredRuntime>(
+    manifest: Option<&RuntimeLaunchManifest>,
+) -> crate::Result<BTreeMap<String, RuntimeProductReceipt>>
 where
     R::Inputs: InputSet,
     R::Outputs: OutputSet,
 {
+    if let Some(manifest) = manifest {
+        let runtime = manifest
+            .artifacts
+            .get(&manifest.instance_id)
+            .ok_or_else(|| anyhow::anyhow!("output receipt instance contract is absent"))?;
+        let (inputs, outputs) = super::record_parts(runtime);
+        let ports = outputs
+            .iter()
+            .filter(|output| {
+                output.signature.as_ref().is_some_and(|signature| {
+                    signature.shape == crate::artifact::MethodShape::Observation
+                        || signature.lease_valid_for_ms.is_some()
+                })
+            })
+            .filter_map(|output| output.port.as_ref())
+            .chain(
+                inputs
+                    .iter()
+                    .filter(|input| {
+                        input.delivery == crate::artifact::InputDelivery::CallIngress
+                            && input
+                                .signature
+                                .as_ref()
+                                .is_some_and(|signature| signature.lease_valid_for_ms.is_none())
+                    })
+                    .filter_map(|input| input.port.as_ref()),
+            );
+        return Ok(ports
+            .map(|port| {
+                (
+                    port.clone(),
+                    RuntimeProductReceipt {
+                        port: port.clone(),
+                        sequence: 0,
+                        items: 0,
+                        bytes: 0,
+                    },
+                )
+            })
+            .collect());
+    }
     use crate::runtime::outputs::OutputKind;
     <R::Outputs as OutputSet>::FIELDS
         .iter()
@@ -1448,6 +1535,7 @@ where
             &resolve_input_port,
             &source,
         )?);
+        self.validate_output_families()?;
         self.filter_state_projections(*context, false)?;
         Ok(())
     }
@@ -1496,6 +1584,7 @@ where
             &resolve_input_port,
             &source,
         )?);
+        self.validate_output_families()?;
         self.filter_state_projections(context, true)?;
         let records = std::mem::take(&mut self.projections);
         self.publish_records(records, true)?;
@@ -1784,6 +1873,127 @@ mod conflict_guard_tests {
         assert!(
             error.to_string().contains("conflicting staged writes"),
             "the refusal names the conflict, got {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod family_tests {
+    use super::*;
+    use crate::runtime::LaunchedRuntime;
+
+    #[phoxal::endpoints]
+    struct FamilyApi {
+        #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 64,
+            family = "/wheels", suffix = "_actuator", max_ports = 8)]
+        wheels: crate::contracts::Latest<crate::contracts::Empty>,
+    }
+
+    #[derive(serde::Deserialize, phoxal::Config)]
+    struct FamilyConfig {
+        wheels: std::collections::BTreeMap<String, ()>,
+    }
+
+    struct FamilyRuntime {
+        names: Vec<String>,
+    }
+
+    #[phoxal::runtime(contract = FamilyApi, period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
+    impl FamilyRuntime {
+        #[init]
+        fn initialize(config: FamilyConfig) -> crate::Result<Self> {
+            Ok(Self {
+                names: config.wheels.into_keys().collect(),
+            })
+        }
+        #[publish(wheels)]
+        fn wheels(&self) -> Vec<(String, Option<crate::contracts::Empty>)> {
+            self.names
+                .iter()
+                .map(|name| (name.clone(), Some(crate::contracts::Empty {})))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn configured_family_projection_refuses_incomplete_cut_before_acceptance() {
+        type Registered = phoxal_runtime_family_runtime::Adapter;
+        let record = FamilyRuntime::artifact_metadata().as_bytes();
+        let template: crate::artifact::RuntimeRecord =
+            serde_json::from_slice(&record[12..record.len() - 1]).unwrap();
+        let config = serde_json::json!({"wheels":{"front":null,"rear":null}});
+        let resolved = template.resolve_outputs(&config).unwrap();
+        let state =
+            FamilyRuntime::initialize(serde_json::from_value(config.clone()).unwrap()).unwrap();
+        let duration = crate::runtime::ExecutionDuration::from_millis(20);
+        let context = crate::runtime::StepContext::new(
+            crate::runtime::ExecutionTime::from_nanos(0),
+            duration,
+            duration,
+            0,
+            0,
+        );
+        let adapter = Registered::default();
+        let records = adapter
+            .encode_transport(&state, context, &|_| None, "motion")
+            .unwrap();
+        let mut output = ExecutionOutputAdapter::<Registered>::unbound();
+        output.generated_manifest = Some(RuntimeLaunchManifest {
+            root: std::path::PathBuf::new(),
+            robot_id: "robot".into(),
+            instance_id: "motion".into(),
+            executable: std::path::PathBuf::new(),
+            config,
+            connections: BTreeMap::new(),
+            requirement_destinations: BTreeMap::new(),
+            artifacts: BTreeMap::from([("motion".into(), resolved)]),
+            observation_providers: BTreeMap::new(),
+        });
+        output.projections = records.clone();
+        output.validate_output_families().unwrap();
+        let receipts =
+            empty_product_receipts::<Registered>(output.generated_manifest.as_ref()).unwrap();
+        assert_eq!(
+            receipts.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["front_actuator", "rear_actuator"]
+        );
+        assert!(receipts.values().all(|receipt| receipt.items == 0));
+        output.projections.pop();
+        assert!(
+            output
+                .validate_output_families()
+                .unwrap_err()
+                .to_string()
+                .contains("complete")
+        );
+        output.projections = vec![records[0].clone(), records[0].clone()];
+        assert!(
+            output
+                .validate_output_families()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+        let wrong = FamilyRuntime {
+            names: vec!["front".into(), "extra".into()],
+        };
+        output.projections = adapter
+            .encode_transport(&wrong, context, &|_| None, "motion")
+            .unwrap();
+        assert!(
+            output
+                .validate_output_families()
+                .unwrap_err()
+                .to_string()
+                .contains("extra")
+        );
+        let repeated = FamilyRuntime {
+            names: vec!["front".into(), "front".into()],
+        };
+        assert!(
+            adapter
+                .encode_transport(&repeated, context, &|_| None, "motion")
+                .is_err()
         );
     }
 }

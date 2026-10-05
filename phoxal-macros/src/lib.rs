@@ -13,7 +13,6 @@ mod inputs;
 mod message;
 mod outputs;
 mod runtime;
-mod scenario;
 
 use proc_macro::TokenStream;
 
@@ -56,15 +55,6 @@ pub fn endpoints(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn runtime(attr: TokenStream, item: TokenStream) -> TokenStream {
     runtime::expand_runtime(attr.into(), item.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Turn a function taking `&mut phoxal::scenario::Simulation` into a standard
-/// Rust test. See `phoxal::scenario` for the public surface.
-#[proc_macro_attribute]
-pub fn scenario(attr: TokenStream, item: TokenStream) -> TokenStream {
-    scenario::expand_scenario(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

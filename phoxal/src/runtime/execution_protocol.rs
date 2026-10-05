@@ -17,6 +17,7 @@ pub const REQUIRED_CAPABILITIES: &[&str] = &[
     "input-field-receipts",
     "publisher-provenance",
     "setpoint-withdrawal",
+    "public-leased-call-ingress",
     "closed-product-receipts",
     "initialized-state-barrier",
     "caller-directed-replies",

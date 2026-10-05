@@ -1,7 +1,7 @@
 //! Rust-authored `phoxal.execution.v1` wire contracts.
 
-/// Execution admission identity for the typed-enum decoding contract.
-pub const PROTOCOL: &str = "phoxal.execution.v1.r1";
+/// Execution admission identity, including normal public leased-call ingress.
+pub const PROTOCOL: &str = "phoxal.execution.v1.r2";
 
 /// The `ContractRequirement` wire contract.
 #[phoxal::message(package = "phoxal.execution.v1")]

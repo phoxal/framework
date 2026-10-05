@@ -1611,6 +1611,7 @@ fn output_metadata(name: &Ident, role: Role, options: &Options) -> TokenStream {
     let bootstrap = options.bootstrap;
     quote! {
         ::phoxal::runtime::outputs::OutputField {
+            family: None,
             name: stringify!(#name),
             kind: ::phoxal::runtime::outputs::OutputKind::#kind,
             port: #port,

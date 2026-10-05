@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::bootstrap::{SessionOffer, SessionOffers};
 
 /// The only public session protocol implemented by the first cutover.
-pub const SESSION_PROTOCOL: &str = "phoxal.session.v1.r1";
+pub const SESSION_PROTOCOL: &str = "phoxal.session.v1.r2";
 /// Maximum encoded bootstrap response size.
 pub const MAX_BOOTSTRAP_BYTES: usize = 16 * 1024;
 /// Maximum number of offered public session protocols.

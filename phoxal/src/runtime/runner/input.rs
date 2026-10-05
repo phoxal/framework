@@ -30,6 +30,8 @@ type GeneratedReplyControl = (
 
 pub(super) struct ExecutionInputAdapter<R> {
     pub(super) bus: Option<crate::runtime::connection::Connection>,
+    instance: Option<String>,
+    accepted_setpoint_replies: Vec<transport::PreparedOutput>,
     pub(super) subscriptions: Vec<BoundSubscription>,
     pub(super) command_high_watermarks: BTreeMap<(String, String, String), u64>,
     pub(super) external_ingress_high_watermarks: BTreeMap<String, u64>,
@@ -387,9 +389,12 @@ impl DeliveryQueue {
             if selected.len() > 1 {
                 selected.drain(..selected.len() - 1);
             }
-            // Latest and Setpoint remain available until replaced or expired.
-            // Keep the wire stamp so freshness is checked at every freeze.
-            if let Some(current) = selected.last() {
+            // Latest retains its wire stamp for freshness checks. Setpoints
+            // retain the decoded lease through managed inputs after acceptance,
+            // so the request is acknowledged once and its expiry never renews.
+            if self.input_kind == crate::runtime::input::InputKind::Latest
+                && let Some(current) = selected.last()
+            {
                 self.items.push_front(current.clone());
             }
         }
@@ -1039,6 +1044,8 @@ impl<R> ExecutionInputAdapter<R> {
     pub(super) fn unbound() -> Self {
         Self {
             bus: None,
+            instance: None,
+            accepted_setpoint_replies: Vec::new(),
             subscriptions: Vec::new(),
             command_high_watermarks: BTreeMap::new(),
             external_ingress_high_watermarks: BTreeMap::new(),
@@ -1299,6 +1306,7 @@ impl<R> ExecutionInputAdapter<R> {
             self.generated_reply_control = Some((cancel, expected, timeline));
         }
         self.command_ranks = command_ranks;
+        self.instance = Some(manifest.instance_id.clone());
         self.bus = Some(bus);
         self.subscriptions = subscriptions;
         Ok(())
@@ -1357,6 +1365,7 @@ impl<R> ExecutionInputAdapter<R> {
                 delivery: None,
             });
         }
+        self.instance = Some(instance.to_owned());
         self.bus = Some(bus);
         self.subscriptions = subscriptions;
         Ok(())
@@ -1420,7 +1429,11 @@ impl<R> ExecutionInputAdapter<R> {
         R: RegisteredRuntime,
         R::Inputs: TransportInputSet,
     {
-        if sample.metadata().wire_control()? != transport::WireControl::Data {
+        let control = sample.metadata().wire_control()?;
+        let leased = batch.input_kind == crate::runtime::input::InputKind::Setpoint;
+        if control != transport::WireControl::Data
+            && !(leased && control == transport::WireControl::Withdraw)
+        {
             return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
                 "command request used a stream control record".to_owned(),
             )));
@@ -1512,7 +1525,35 @@ impl<R> ExecutionInputAdapter<R> {
                 })
             })?;
         transport::validate_binding_identity(&batch.binding, signature)?;
-        transport::validate_request(signature, sample, batch.max_bytes)?;
+        if leased {
+            let maximum = signature
+                .lease
+                .filter(|lease| lease.valid_for_ms() > 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("public setpoint requires a positive contract lease")
+                })?;
+            if control == transport::WireControl::Withdraw {
+                anyhow::ensure!(
+                    sample.payload().is_empty(),
+                    "setpoint withdrawal carries a payload"
+                );
+            } else {
+                let issued = metadata.logical_time()?;
+                let expiry = metadata
+                    .expires_at_nanos
+                    .ok_or_else(|| anyhow::anyhow!("public setpoint has no expiry"))?;
+                let maximum_expiry = issued
+                    .checked_add_millis(maximum.valid_for_ms())
+                    .ok_or_else(|| anyhow::anyhow!("setpoint lease expiry overflow"))?;
+                anyhow::ensure!(
+                    expiry > issued.as_nanos() && expiry <= maximum_expiry.as_nanos(),
+                    "setpoint validity exceeds its contract lease"
+                );
+            }
+        }
+        if control == transport::WireControl::Data {
+            transport::validate_request(signature, sample, batch.max_bytes)?;
+        }
         Ok((ingress, source, caller, id))
     }
 
@@ -1660,6 +1701,7 @@ where
         }
         self.ensure_open()?;
         self.last_input_receipts.clear();
+        self.accepted_setpoint_replies.clear();
         let mut input_receipts = BTreeMap::<(String, String, String), RuntimeInputReceipt>::new();
         let mut inputs = R::Inputs::empty();
         for (field, value) in std::mem::take(&mut self.managed_inputs) {
@@ -1784,6 +1826,12 @@ where
         }
         let mut batches: Vec<CollectedInput> = Vec::new();
         for subscription in &self.subscriptions {
+            if subscription.input_kind == crate::runtime::input::InputKind::Latest {
+                <R::Inputs as crate::runtime::input::TransportInputSink>::bind_latest(
+                    &mut inputs,
+                    subscription.field,
+                )?;
+            }
             let samples = if let Some(delivery) = &subscription.delivery {
                 let mut queue = match delivery.queue.lock() {
                     Ok(queue) => queue,
@@ -1843,9 +1891,11 @@ where
                 receipt.items = receipt.items.saturating_add(1);
                 receipt.bytes = receipt.bytes.saturating_add(sample.payload().len() as u64);
             }
-            let has_retained_commands = subscription.input_kind
-                == crate::runtime::input::InputKind::Commands
-                && subscription.direction == InputDirection::Request
+            let has_retained_commands = matches!(
+                subscription.input_kind,
+                crate::runtime::input::InputKind::Commands
+                    | crate::runtime::input::InputKind::Setpoint
+            ) && subscription.direction == InputDirection::Request
                 && self
                     .future_commands
                     .get(subscription.field)
@@ -1854,10 +1904,9 @@ where
                 continue;
             }
             let effective_binding = subscription.binding.clone();
-            if let Some(batch) = batches
-                .iter_mut()
-                .find(|batch| batch.field == subscription.field)
-            {
+            if let Some(batch) = batches.iter_mut().find(|batch| {
+                batch.field == subscription.field && batch.direction == subscription.direction
+            }) {
                 batch.merge_source(&effective_binding, subscription.direction, samples)?;
             } else {
                 batches.push(CollectedInput {
@@ -1874,8 +1923,11 @@ where
         let current_boundary = _candidate.input_boundary();
         let mut future_updates = BTreeMap::new();
         for mut batch in batches {
-            if batch.input_kind == crate::runtime::input::InputKind::Commands
-                && batch.direction == InputDirection::Request
+            if matches!(
+                batch.input_kind,
+                crate::runtime::input::InputKind::Commands
+                    | crate::runtime::input::InputKind::Setpoint
+            ) && batch.direction == InputDirection::Request
             {
                 self.validate_future_command_admission(&batch)?;
                 let retained_before = self
@@ -1982,8 +2034,11 @@ where
             } else {
                 None
             };
-            let command_marks = if batch.input_kind == crate::runtime::input::InputKind::Commands
-                && batch.direction == InputDirection::Request
+            let command_marks = if matches!(
+                batch.input_kind,
+                crate::runtime::input::InputKind::Commands
+                    | crate::runtime::input::InputKind::Setpoint
+            ) && batch.direction == InputDirection::Request
             {
                 let mut marks = Vec::with_capacity(batch.samples.len());
                 let mut external_marks = Vec::new();
@@ -2104,6 +2159,32 @@ where
             } else {
                 None
             };
+            if batch.input_kind == crate::runtime::input::InputKind::Setpoint
+                && batch.direction == InputDirection::Request
+            {
+                let signature = <R::Inputs as TransportInputSet>::transport_fields()
+                    .iter()
+                    .find(|field| field.name == batch.field)
+                    .and_then(|field| field.signature)
+                    .ok_or_else(|| anyhow::anyhow!("setpoint has no generated signature"))?;
+                let instance = self
+                    .instance
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("setpoint has no target instance"))?;
+                for sample in &batch.samples {
+                    self.accepted_setpoint_replies
+                        .push(transport::PreparedOutput::reply(
+                            signature,
+                            &crate::contracts::Empty {},
+                            0,
+                            transport::reply_metadata_for_request(
+                                instance,
+                                _candidate.context(),
+                                sample.metadata(),
+                            )?,
+                        )?);
+                }
+            }
             <R::Inputs as TransportInputSet>::decode_transport_field_with_keys_at(
                 &mut inputs,
                 batch.field,
@@ -2167,7 +2248,8 @@ where
             .filter(|field| {
                 matches!(
                     field.kind,
-                    crate::runtime::input::InputKind::Read
+                    crate::runtime::input::InputKind::Setpoint
+                        | crate::runtime::input::InputKind::Read
                         | crate::runtime::input::InputKind::Request
                         | crate::runtime::input::InputKind::Operation
                 )
@@ -2178,6 +2260,18 @@ where
                 field.name,
             )?;
             self.managed_inputs.insert(field.name, value);
+        }
+        if !self.accepted_setpoint_replies.is_empty() {
+            transport::publish_batch(
+                self.bus
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("setpoint reply has no connection"))?,
+                self.instance
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("setpoint reply has no instance"))?,
+                &self.accepted_setpoint_replies,
+            )?;
+            self.accepted_setpoint_replies.clear();
         }
         Ok(())
     }
@@ -2245,6 +2339,7 @@ where
         self.managed_inputs.clear();
         self.observed_attempts.clear();
         self.last_input_receipts.clear();
+        self.accepted_setpoint_replies.clear();
         if let Some(correlations) = &self.generated_correlations {
             correlations
                 .lock()
@@ -2273,6 +2368,7 @@ where
         self.managed_inputs.clear();
         self.observed_attempts.clear();
         self.last_input_receipts.clear();
+        self.accepted_setpoint_replies.clear();
         for subscription in &self.subscriptions {
             if let Some(delivery) = &subscription.delivery {
                 let mut queue = match delivery.queue.lock() {

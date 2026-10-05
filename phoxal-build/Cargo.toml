@@ -12,6 +12,7 @@ repository.workspace = true
 include = ["src/**/*.rs", "Cargo.toml", "README.md"]
 
 [dependencies]
+cargo-config2 = "0.1.45"
 fs4 = { workspace = true }
 heck = { workspace = true }
 prost = { workspace = true }

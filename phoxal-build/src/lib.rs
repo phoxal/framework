@@ -21,8 +21,9 @@ pub use api::{BuildApiConfig, api};
 
 pub use prepared::{
     CONTRACT_FILE, CONTRACT_GENERATION, DESCRIPTORS_FILE, PREPARED_ROOT, PreparedContract,
-    PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_key,
-    read_descriptor_bytes, read_prepared, read_prepared_for, validate_prepared_key, write_prepared,
+    PreparedContractFile, PreparedExecutable, PreparedSelection, prepared_dir, prepared_input_root,
+    prepared_instance_dir, prepared_key, read_descriptor_bytes, read_prepared, read_prepared_for,
+    read_prepared_instance, validate_prepared_key, write_prepared, write_prepared_instance,
 };
 
 /// Rust path of a built-in payload identity in generated robot code.

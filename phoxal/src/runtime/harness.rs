@@ -77,11 +77,7 @@ where
 
     /// Stores one encoded state publication, keyed by its output field
     /// name; the generated view decodes it lazily in its accessor.
-    fn store_state_record(
-        view: &mut Self::HarnessView,
-        field: &'static str,
-        bytes: Option<Vec<u8>>,
-    );
+    fn store_state_record(view: &mut Self::HarnessView, field: &str, bytes: Option<Vec<u8>>);
 
     /// Takes the encoded reply for one call correlation, if it has been
     /// accepted.
@@ -114,7 +110,7 @@ where
 }
 
 pub(crate) struct HarnessPublication {
-    field: &'static str,
+    field: String,
     bytes: Option<Vec<u8>>,
 }
 
@@ -285,7 +281,11 @@ where
                 continue;
             }
             captured.push(HarnessPublication {
-                field,
+                field: if metadata.family.is_some() {
+                    record.owned_binding().endpoint
+                } else {
+                    field.to_owned()
+                },
                 bytes: (!record.is_withdrawal()).then(|| record.payload_bytes().to_vec()),
             });
         }
@@ -452,7 +452,7 @@ where
         for HarnessPublication { field, bytes } in
             driver.as_ops().state_records(context, &ports, true)?
         {
-            R::store_state_record(&mut view, field, bytes);
+            R::store_state_record(&mut view, &field, bytes);
         }
         Ok(Self {
             driver,
@@ -580,7 +580,7 @@ where
                     HarnessError::Terminal { source }
                 })?;
             for HarnessPublication { field, bytes } in records {
-                R::store_state_record(&mut self.view, field, bytes);
+                R::store_state_record(&mut self.view, &field, bytes);
             }
             self.previous_release = Some(self.next_release);
             self.next_release = ExecutionTime::from_nanos(next_cursor);
@@ -740,7 +740,7 @@ where
         self.outstanding.clear();
         self.completions.clear();
         for HarnessPublication { field, bytes } in records {
-            R::store_state_record(&mut self.view, field, bytes);
+            R::store_state_record(&mut self.view, &field, bytes);
         }
         self.next_release = self.now;
         self.previous_release = None;

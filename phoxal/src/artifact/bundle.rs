@@ -52,10 +52,6 @@ pub enum BundleManifest {
         /// Portable robot model resources retained for native simulation.
         #[serde(default)]
         model: Option<BundleModelAssets>,
-        /// The immutable controlled-simulation contract, when this bundle was
-        /// assembled for an independent simulator run.
-        #[serde(default)]
-        simulation: Option<BundleSimulation>,
     },
 }
 
@@ -433,6 +429,8 @@ pub struct AdmittedBundle {
     pub supervisor: BundleSupervisor,
     /// Artifact records keyed by artifact identity.
     pub artifacts: std::collections::BTreeMap<String, BundleArtifactRecord>,
+    /// Configuration-resolved contracts keyed by instance identity.
+    pub resolved_runtimes: std::collections::BTreeMap<String, RuntimeRecord>,
     /// Launch instances keyed by instance identity.
     pub instances: std::collections::BTreeMap<String, BundleInstance>,
     /// The execution graph keyed by consumer endpoint reference. Driver
@@ -467,7 +465,6 @@ impl AdmittedBundle {
             components,
             component_sources,
             model,
-            simulation,
         } = manifest;
         validate_segment(&robot_id, "robot_id")?;
         if target.is_empty() {
@@ -539,24 +536,20 @@ impl AdmittedBundle {
         if brain_count != 1 {
             return Err("bundle must contain exactly one brain instance".to_owned());
         }
-        let mut runtime_records = std::collections::BTreeMap::<&str, &RuntimeRecord>::new();
+        let mut resolved_runtimes = std::collections::BTreeMap::new();
         for (id, instance) in &instance_records {
             let artifact = &artifact_records[&instance.artifact];
             let runtime = &artifact.runtime;
             let RuntimeRecord::V0 { config_schema, .. } = runtime;
             validate_config_schema(id, &instance.config, config_schema)?;
-            runtime_records.insert(id.as_str(), runtime);
+            let effective = instance
+                .config
+                .value()
+                .cloned()
+                .or_else(|| effective_absent_config(config_schema))
+                .ok_or("missing effective configuration")?;
+            resolved_runtimes.insert(id.clone(), runtime.resolve_outputs(&effective)?);
         }
-        if simulation.is_some()
-            && instance_records
-                .values()
-                .any(|instance| instance.role == InstanceRole::Driver)
-        {
-            return Err(
-                "controlled simulation bundles must exclude physical driver instances".to_owned(),
-            );
-        }
-
         let mut component_records = std::collections::BTreeMap::new();
         for component in components {
             validate_segment(&component.instance, "component instance")?;
@@ -582,9 +575,6 @@ impl AdmittedBundle {
                 ));
             }
         }
-        if let Some(simulation) = simulation.as_ref() {
-            validate_simulation(simulation, &component_records)?;
-        }
         if let Some(model) = model.as_ref() {
             validate_relative_path(&model.entry, "model entry")?;
             if !model
@@ -599,53 +589,41 @@ impl AdmittedBundle {
             }
         }
 
-        let execution_connections = validate_connections(
-            connections,
-            &instance_records,
-            &runtime_records,
-            &component_records,
-            simulation.as_ref(),
-        )?;
+        let runtime_records = resolved_runtimes
+            .iter()
+            .map(|(id, runtime)| (id.as_str(), runtime))
+            .collect();
+        let execution_connections =
+            validate_connections(connections, &instance_records, &runtime_records)?;
         Ok(Self {
             robot_id,
             target,
             supervisor,
             artifacts: artifact_records,
+            resolved_runtimes,
             instances: instance_records,
             execution_connections,
             components: component_records,
             component_sources,
             model,
-            simulation,
+            simulation: None,
         })
     }
 
     /// Returns the runtime record one instance launches.
     pub fn instance_runtime(&self, instance: &str) -> Option<&RuntimeRecord> {
-        let record = self.instances.get(instance)?;
-        let artifact = self.artifacts.get(&record.artifact)?;
-        Some(&artifact.runtime)
+        self.resolved_runtimes.get(instance)
     }
 }
 
 /// Lowers the resolved connection list into the execution graph.
 ///
-/// Every endpoint is resolved against the applicable admitted runtime,
-/// or native contract before it enters the graph: a consumer must
-/// name one connectable input of its instance, a source must name one served
-/// method port of its producer, and the two must agree on the wire contract
-/// their roles imply. Consumers whose instance is present keep their sources.
-/// A driver input is delivered natively by actuation substitution, so its
-/// consumer entry is admitted only when the actuation bindings cover it and
-/// is then removed from the execution graph: native actuation replaces
-/// driver input delivery, so no nonexistent driver may appear in the
-/// receiver roster.
+/// Every connection resolves against its authored compiled endpoints.
+/// Native implementation selection never removes or replaces graph entries.
 fn validate_connections(
     connections: Vec<BundleConnection>,
     instances: &std::collections::BTreeMap<String, BundleInstance>,
     runtimes: &std::collections::BTreeMap<&str, &RuntimeRecord>,
-    components: &std::collections::BTreeMap<String, BundleComponent>,
-    simulation: Option<&BundleSimulation>,
 ) -> Result<std::collections::BTreeMap<EndpointReference, Vec<EndpointReference>>, String> {
     let mut graph = std::collections::BTreeMap::new();
     let mut consumers = std::collections::BTreeSet::new();
@@ -663,37 +641,10 @@ fn validate_connections(
         if connection.sources.is_empty() {
             return Err(format!("connection {consumer} has an empty source list"));
         }
-        let launchable = instances.contains_key(&consumer.instance);
-        if !launchable {
-            // A driver input is delivered natively by actuation substitution:
-            // the consumer must be a provider-owned driver whose every source
-            // is an actuation binding, and the entry never reaches process
-            // delivery, so no nonexistent driver appears in the receiver
-            // acknowledgement roster.
-            let simulation = simulation.ok_or_else(|| {
-                format!(
-                    "connection consumer {consumer} has neither an executable instance nor native substitution"
-                )
-            })?;
-            if !simulation
-                .providers
-                .iter()
-                .any(|provider| provider.service_instance == consumer.instance)
-            {
-                return Err(format!(
-                    "connection consumer {consumer} has no executable or native provider"
-                ));
-            }
-            for source in &connection.sources {
-                if !simulation.actuation_bindings.iter().any(|binding| {
-                    binding.service_instance == source.instance && binding.port == source.endpoint
-                }) {
-                    return Err(format!(
-                        "native substitution does not cover driver input `{consumer}`"
-                    ));
-                }
-            }
-            continue;
+        if !instances.contains_key(&consumer.instance) {
+            return Err(format!(
+                "connection consumer {consumer} has no authored instance"
+            ));
         }
         let runtime = runtimes
             .get(consumer.instance.as_str())
@@ -708,31 +659,10 @@ fn validate_connections(
         }
         let mut sources = Vec::with_capacity(connection.sources.len());
         for source in connection.sources {
-            let producer_launchable = instances.contains_key(&source.instance);
-            if !producer_launchable {
-                let simulation = simulation.ok_or_else(|| {
-                    format!("connection source {source} has no executable instance")
-                })?;
-                // A driver's outputs are served by the simulator's native
-                // observation providers and stay in the delivery graph.
-                if let Some(provider) = simulation.providers.iter().find(|provider| {
-                    provider.service_instance == source.instance && provider.port == source.endpoint
-                }) {
-                    check_provider_contract(input, provider)?;
-                    sources.push(source);
-                    continue;
-                }
-                // A driver input is delivered natively by actuation
-                // substitution; it never reaches process delivery.
-                let substituted = simulation.actuation_bindings.iter().any(|binding| {
-                    binding.service_instance == source.instance && binding.port == source.endpoint
-                });
-                if !substituted {
-                    return Err(format!(
-                        "connection source {source} has no executable or native substitution"
-                    ));
-                }
-                continue;
+            if !instances.contains_key(&source.instance) {
+                return Err(format!(
+                    "connection source {source} has no authored instance"
+                ));
             }
             let producer = runtimes
                 .get(source.instance.as_str())
@@ -770,14 +700,8 @@ fn validate_connections(
             check_wire_contract(&consumer, input, &source, output)?;
             sources.push(source);
         }
-        if sources.is_empty() {
-            // Every source was natively substituted; the driver input never
-            // reaches process delivery.
-            continue;
-        }
         graph.insert(consumer, sources);
     }
-    let _ = components;
     Ok(graph)
 }
 
@@ -894,34 +818,6 @@ fn check_wire_contract(
 }
 
 /// Checks one consumer input against a native simulation provider.
-fn check_provider_contract(
-    input: &InputRecord,
-    provider: &crate::artifact::bundle::BundleSimulationProvider,
-) -> Result<(), String> {
-    let payload = match input.delivery {
-        InputDelivery::LeasedValue => input.request_fqn.as_deref(),
-        InputDelivery::ObservationLatest | InputDelivery::ObservationHistory => {
-            input.response_fqn.as_deref()
-        }
-        InputDelivery::CallIngress => input.request_fqn.as_deref(),
-        InputDelivery::CallResult | InputDelivery::CallTarget | InputDelivery::CallCompletions => {
-            return Err(format!(
-                "a native provider feeds the private input role `{:?}`",
-                input.delivery
-            ));
-        }
-    };
-    if let Some(payload) = payload
-        && payload != provider.payload_fqn
-    {
-        return Err(format!(
-            "native provider {}/{} publishes `{}` but the consumer expects `{payload}`",
-            provider.service_instance, provider.port, provider.payload_fqn
-        ));
-    }
-    Ok(())
-}
-
 /// Validates one instance's effective configuration against its runtime's
 /// compiled JSON schema.
 ///
@@ -1029,6 +925,9 @@ pub fn validate_runtime_record(record: &RuntimeRecord, label: &str) -> Result<()
     }
     let mut output_names = std::collections::BTreeSet::new();
     for output in outputs.iter() {
+        if let Some(family) = &output.family {
+            family.validate(output)?;
+        }
         if !output_names.insert(output.name.as_str()) {
             return Err(format!(
                 "{label} runtime output `{}` is duplicated",
@@ -1133,7 +1032,7 @@ fn validate_signature_identity(signature: &MethodSignature) -> Result<(), String
 }
 
 /// Validates the immutable simulation contract against the component set.
-fn validate_simulation(
+pub(super) fn validate_simulation(
     simulation: &BundleSimulation,
     components: &std::collections::BTreeMap<String, BundleComponent>,
 ) -> Result<(), String> {
@@ -1325,6 +1224,8 @@ mod tests {
                 },
             ],
             outputs: vec![OutputRecord {
+                family: None,
+                family_template: None,
                 name: "actuators".to_owned(),
                 port: Some("actuators".to_owned()),
                 signature: Some(MethodSignature {
@@ -1358,6 +1259,8 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             inputs: Vec::new(),
             outputs: vec![OutputRecord {
+                family: None,
+                family_template: None,
                 name: "actuators".to_owned(),
                 port: Some("actuators".to_owned()),
                 signature: Some(MethodSignature {
@@ -1398,7 +1301,6 @@ mod tests {
             components: Vec::new(),
             component_sources: std::collections::BTreeMap::new(),
             model: None,
-            simulation: None,
         }
     }
 
@@ -1534,81 +1436,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicated_consumers_are_refused_even_when_natively_substituted() {
-        let simulation = BundleSimulation {
-            protocol: "phoxal.simulation.v1".to_owned(),
-            mode: "controlled".to_owned(),
-            model_identity: "model-digest".to_owned(),
-            quantum_ns: 10_000_000,
-            providers: vec![BundleSimulationProvider {
-                rate_microhertz: 100_000_000,
-                service_fqn: "fixture.Sensor".to_owned(),
-                method: "Sample".to_owned(),
-                service_instance: "imu".to_owned(),
-                port: "sample".to_owned(),
-                shape: MethodShape::Observation,
-                retained_latest: false,
-                lease_valid_for_ms: None,
-                input_fqn: "google.protobuf.Empty".to_owned(),
-                payload_fqn: "fixture.Imu".to_owned(),
-                max_message_bytes: 1_024,
-                max_buffered_items: 16,
-            }],
-            actuation_bindings: vec![BundleActuationBinding {
-                service_instance: "motion".to_owned(),
-                port: "actuators".to_owned(),
-                payload_fqn: "fixture.Actuators".to_owned(),
-                actuator_ids: vec!["motor".to_owned()],
-            }],
-        };
-        let mut value = manifest();
-        let BundleManifest::V0 {
-            artifacts,
-            instances,
-            connections,
-            components,
-            simulation: slot,
-            ..
-        } = &mut value;
-        artifacts.push({
-            let mut record = artifact(&"bb".repeat(32));
-            record.runtime = motion_runtime_record();
-            record
-        });
-        instances.push(BundleInstance {
-            id: "motion".to_owned(),
-            role: InstanceRole::Service,
-            artifact: "bb".repeat(32),
-            config: InstanceConfig::absent(),
-        });
-        components.push(BundleComponent {
-            instance: "imu".to_owned(),
-            driver: true,
-            package: "fixture-imu".to_owned(),
-            source: "local".to_owned(),
-            mount_site: "imu_mount".to_owned(),
-            definition: ComponentDocument::V0 {
-                model: super::super::document::ComponentModel {
-                    file: std::path::PathBuf::from("model.xml"),
-                    root_body: "root".to_owned(),
-                },
-                capabilities: std::collections::BTreeMap::new(),
-                assets: Vec::new(),
-            },
-        });
-        *slot = Some(simulation);
-        for _ in 0..2 {
-            connections.push(BundleConnection {
-                consumer: EndpointReference::parse("imu.actuator").expect("consumer"),
-                sources: vec![EndpointReference::parse("motion.actuators").expect("source")],
-            });
-        }
-        let error = AdmittedBundle::validate(value)
-            .expect_err("a duplicated native consumer entry is refused");
-        assert!(
-            error.contains("imu.actuator is duplicated"),
-            "unexpected refusal: {error}"
-        );
+    fn duplicate_consumers_are_refused_in_the_common_build() {
+        let (mut value, _) = native_common_fixture();
+        let BundleManifest::V0 { connections, .. } = &mut value;
+        connections.push(connections[0].clone());
+        let error = AdmittedBundle::validate(value).expect_err("duplicate authored input");
+        assert!(error.contains("imu.actuator is duplicated"), "{error}");
     }
 
     #[test]
@@ -1899,8 +1732,7 @@ mod tests {
         assert!(EndpointReference::parse("brain.Manual").is_err());
     }
 
-    #[test]
-    fn native_substitution_removes_driver_inputs_from_the_execution_graph() {
+    fn native_common_fixture() -> (BundleManifest, BundleSimulation) {
         let simulation = BundleSimulation {
             protocol: "phoxal.simulation.v1".to_owned(),
             mode: "controlled".to_owned(),
@@ -1923,8 +1755,8 @@ mod tests {
             actuation_bindings: vec![BundleActuationBinding {
                 service_instance: "motion".to_owned(),
                 port: "actuators".to_owned(),
-                payload_fqn: "fixture.Actuators".to_owned(),
-                actuator_ids: vec!["motor".to_owned()],
+                payload_fqn: "phoxal.component.actuator.v1.ActuatorCommand".to_owned(),
+                actuator_ids: vec!["imu.motor".to_owned()],
             }],
         };
         let mut value = manifest();
@@ -1933,12 +1765,20 @@ mod tests {
             instances,
             connections,
             components,
-            simulation: slot,
             ..
         } = &mut value;
         artifacts.push({
             let mut record = artifact(&"bb".repeat(32));
             record.runtime = motion_runtime_record();
+            let RuntimeRecord::V0 {
+                inputs, outputs, ..
+            } = &mut record.runtime;
+            inputs[1].request_fqn = Some("phoxal.component.actuator.v1.ActuatorCommand".into());
+            outputs[0]
+                .signature
+                .as_mut()
+                .expect("actuator signature")
+                .response = "phoxal.component.actuator.v1.ActuatorCommand".into();
             record
         });
         instances.push(BundleInstance {
@@ -1958,11 +1798,41 @@ mod tests {
                     file: std::path::PathBuf::from("model.xml"),
                     root_body: "root".to_owned(),
                 },
-                capabilities: std::collections::BTreeMap::new(),
+                capabilities: std::collections::BTreeMap::from([("motor".into(), serde_json::from_value(serde_json::json!({"kind": "motor", "target": {"kind": "actuator", "id": "motor"}})).expect("motor capability"))]),
                 assets: Vec::new(),
             },
         });
-        *slot = Some(simulation);
+        let mut driver = artifact(&"cc".repeat(32));
+        let mut driver_runtime = motion_runtime_record();
+        let RuntimeRecord::V0 {
+            inputs, outputs, ..
+        } = &mut driver_runtime;
+        inputs.retain(|input| input.name == "actuator");
+        inputs[0].request_fqn = Some("phoxal.component.actuator.v1.ActuatorCommand".into());
+        let mut sample = outputs[0].clone();
+        sample.name = "sample".into();
+        sample.port = Some("sample".into());
+        sample.max_bytes = Some(1024);
+        sample.max_items = Some(16);
+        sample.signature = Some(MethodSignature {
+            endpoint: "sample".into(),
+            service: "fixture.Sensor".into(),
+            method: "Sample".into(),
+            shape: MethodShape::Observation,
+            request: "google.protobuf.Empty".into(),
+            response: "fixture.Imu".into(),
+            retained_latest: false,
+            lease_valid_for_ms: None,
+        });
+        *outputs = vec![sample];
+        driver.runtime = driver_runtime;
+        artifacts.push(driver);
+        instances.push(BundleInstance {
+            id: "imu".into(),
+            role: InstanceRole::Driver,
+            artifact: "cc".repeat(32),
+            config: InstanceConfig::absent(),
+        });
         connections.push(BundleConnection {
             consumer: EndpointReference::parse("imu.actuator").expect("consumer"),
             sources: vec![EndpointReference::parse("motion.actuators").expect("source")],
@@ -1971,12 +1841,127 @@ mod tests {
             consumer: EndpointReference::parse("motion.measurements").expect("consumer"),
             sources: vec![EndpointReference::parse("imu.sample").expect("source")],
         });
-        let admitted = AdmittedBundle::validate(value).expect("substituted bundle admits");
-        assert_eq!(admitted.execution_connections.len(), 1);
+        (value, simulation)
+    }
+
+    #[test]
+    fn native_context_preserves_the_complete_authored_graph_and_validates_coverage() {
+        use crate::artifact::simulation_context::SimulationContext;
+        let (manifest, simulation) = native_common_fixture();
+        let bytes = serde_json::to_vec(&manifest).expect("manifest");
+        let original = AdmittedBundle::validate(manifest).expect("common build admits");
+        assert_eq!(original.execution_connections.len(), 2);
+        assert_eq!(original.instances["imu"].role, InstanceRole::Driver);
+        let context = SimulationContext::new(&bytes, simulation.clone());
+        let mut admitted = original.clone();
+        context
+            .clone()
+            .admit(&bytes, &mut admitted)
+            .expect("complete native implementation");
+        assert_eq!(
+            admitted.execution_connections,
+            original.execution_connections
+        );
+        assert_eq!(admitted.instances, original.instances);
         assert!(
-            admitted
-                .execution_connections
-                .contains_key(&EndpointReference::parse("motion.measurements").expect("key"))
+            context
+                .admit(b"different manifest", &mut original.clone())
+                .is_err()
+        );
+        let mut incomplete = simulation.clone();
+        incomplete.providers.clear();
+        assert!(
+            SimulationContext::new(&bytes, incomplete)
+                .admit(&bytes, &mut original.clone())
+                .is_err()
+        );
+        let mut wrong_contract = simulation;
+        wrong_contract.providers[0].max_message_bytes += 1;
+        let mut refused = original.clone();
+        assert!(
+            SimulationContext::new(&bytes, wrong_contract)
+                .admit(&bytes, &mut refused)
+                .is_err()
+        );
+        assert!(refused.simulation.is_none());
+        assert_eq!(
+            refused.execution_connections,
+            original.execution_connections
+        );
+    }
+    #[test]
+    fn native_actuator_membership_follows_disconnected_and_disjoint_authored_edges() {
+        use crate::artifact::simulation_context::{SimulationContext, actuator_routes};
+        let (mut disconnected, simulation) = native_common_fixture();
+        let BundleManifest::V0 { connections, .. } = &mut disconnected;
+        connections.retain(|connection| connection.consumer.instance != "imu");
+        let bytes = serde_json::to_vec(&disconnected).expect("manifest");
+        let mut admitted =
+            AdmittedBundle::validate(disconnected).expect("unwired motor is a valid graph");
+        assert!(actuator_routes(&admitted).expect("routes").is_empty());
+        let error = SimulationContext::new(&bytes, simulation.clone())
+            .admit(&bytes, &mut admitted)
+            .expect_err("cannot reconnect a disconnected motor through native membership");
+        assert!(error.contains("exactly follow authored"), "{error}");
+        assert!(admitted.simulation.is_none());
+
+        let (mut disjoint, mut native) = native_common_fixture();
+        let BundleManifest::V0 {
+            instances,
+            components,
+            connections,
+            ..
+        } = &mut disjoint;
+        let mut second_motion = instances
+            .iter()
+            .find(|instance| instance.id == "motion")
+            .expect("motion")
+            .clone();
+        second_motion.id = "motion2".into();
+        instances.push(second_motion);
+        let mut second_driver = instances
+            .iter()
+            .find(|instance| instance.id == "imu")
+            .expect("driver")
+            .clone();
+        second_driver.id = "imu2".into();
+        instances.push(second_driver);
+        let mut second_component = components[0].clone();
+        second_component.instance = "imu2".into();
+        components.push(second_component);
+        connections.push(BundleConnection {
+            consumer: EndpointReference::parse("imu2.actuator").expect("consumer"),
+            sources: vec![EndpointReference::parse("motion2.actuators").expect("source")],
+        });
+        let mut provider = native.providers[0].clone();
+        provider.service_instance = "imu2".into();
+        native.providers.push(provider);
+        let mut binding = native.actuation_bindings[0].clone();
+        binding.service_instance = "motion2".into();
+        binding.actuator_ids = vec!["imu2.motor".into()];
+        native.actuation_bindings.push(binding);
+        let bytes = serde_json::to_vec(&disjoint).expect("manifest");
+        let mut admitted = AdmittedBundle::validate(disjoint).expect("disjoint authored graph");
+        let routes = actuator_routes(&admitted).expect("routes");
+        assert_eq!(
+            routes[&EndpointReference::parse("motion.actuators").expect("source")],
+            std::collections::BTreeSet::from(["imu.motor".to_owned()])
+        );
+        assert_eq!(
+            routes[&EndpointReference::parse("motion2.actuators").expect("source")],
+            std::collections::BTreeSet::from(["imu2.motor".to_owned()])
+        );
+        SimulationContext::new(&bytes, native.clone())
+            .admit(&bytes, &mut admitted)
+            .expect("two distinct producers with disjoint motors are supported");
+        native.actuation_bindings[0]
+            .actuator_ids
+            .push("imu2.motor".into());
+        assert!(
+            SimulationContext::new(&bytes, native)
+                .admit(&bytes, &mut admitted)
+                .is_err(),
+            "a competing invented route cannot be added by a context"
         );
     }
 }

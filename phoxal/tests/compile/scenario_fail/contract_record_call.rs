@@ -18,7 +18,7 @@ const CALL: CallMethod<Request, Response> = CallMethod::new(
 );
 
 fn main() -> phoxal::Result<()> {
-    let mut sim = Simulation::from_context("record-call")?;
+    let mut sim = Simulation::new("scene.xml")?;
     let mut plan = sim.plan();
     let _ = plan.record(
         CALL.bind("service", Request {}),

@@ -69,6 +69,27 @@ struct Nested {
     batches: Vec<Collections>,
 }
 
+#[derive(Debug, serde::Deserialize, JsonSchema, phoxal::Config)]
+#[serde(rename_all = "snake_case")]
+enum WheelSide {
+    Left,
+    Right,
+}
+
+#[test]
+fn unit_enum_configuration_matches_serde_decoder() {
+    assert_schema_and_serde_agree::<WheelSide>(&[
+        json!("left"),
+        json!("right"),
+        json!(0),
+        Value::Null,
+        json!({"left": null}),
+        json!({"right": null}),
+        json!({"left": 1}),
+        json!({"left":null,"right":null}),
+    ]);
+}
+
 #[test]
 fn const_schema_matches_schemars_oracle_for_supported_surface() {
     assert_oracle::<FlatScalars>();

@@ -92,8 +92,8 @@ impl std::error::Error for ProgramError {}
 
 /// The schema version the bundle writes to disk. Bump only on
 /// backward-incompatible wire changes; this is the version a reader
-/// uses to decide whether to upgrade its decoder.
-pub const PROGRAM_SCHEMA_VERSION: u32 = 2;
+/// uses to refuse a different execution contract.
+pub const PROGRAM_SCHEMA_VERSION: u32 = 3;
 
 /// The native quantum of the simulator's discrete tick. The framework
 /// resolves a request's duration to a multiple of this quantum and
@@ -622,10 +622,10 @@ fn wire_step(step: &Step) -> WireStep {
             },
             Action::Withdraw {
                 target_instance,
-                producer_signature,
+                consumer_signature,
             } => WireAction::Withdraw {
                 target_instance: target_instance.clone(),
-                signature: producer_signature.clone(),
+                signature: consumer_signature.clone(),
             },
             Action::Command {
                 target_instance,

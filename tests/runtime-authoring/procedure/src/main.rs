@@ -12,13 +12,13 @@
 compile_error!("Phoxal supports Linux and macOS only");
 
 use phoxal::Result;
-use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget, Control};
+use phoxal::contracts::component::actuator::{ActuatorCommand, Control};
 use phoxal::runtime::Context;
 use phoxal::runtime::behavior::{ActionOutcome, Node, Tree, TreeStatus, action, sequence};
 
 #[phoxal::messages(package = "phoxal.tests.authoring.procedure.v1")]
 mod v1 {
-    use phoxal::contracts::component::actuator::ActuatorSetpoint;
+    use phoxal::contracts::component::actuator::ActuatorCommand;
     use phoxal::contracts::{Latest, Queue, RequestReply};
 
     /// A command to run one bounded procedure.
@@ -59,7 +59,7 @@ mod v1 {
     #[phoxal::endpoints]
     pub struct ProcedureApi {
         #[phoxal::output(projection = state, lease_ms = 100, max_bytes = 1_024)]
-        setpoint: Latest<ActuatorSetpoint>,
+        setpoint: Latest<ActuatorCommand>,
 
         #[phoxal::output(max_items = 64, max_bytes = 4_096)]
         stages: Queue<StageLog>,
@@ -171,7 +171,7 @@ impl ProcedureDriver {
     /// Projects the current stage's leased velocity command. A stopped,
     /// halted, or absent procedure always commands zero velocity.
     #[publish(setpoint)]
-    fn setpoint(&self) -> Option<ActuatorSetpoint> {
+    fn setpoint(&self) -> Option<ActuatorCommand> {
         let running = self
             .procedure
             .as_ref()
@@ -182,11 +182,8 @@ impl ProcedureDriver {
             STAGE_VELOCITIES_RADPS.len() - 1
         }
         .min(STAGE_VELOCITIES_RADPS.len() - 1);
-        Some(ActuatorSetpoint {
-            targets: vec![ActuatorTarget {
-                actuator_id: "procedure_joint".to_owned(),
-                control: Some(Control::VelocityRadps(STAGE_VELOCITIES_RADPS[index])),
-            }],
+        Some(ActuatorCommand {
+            control: Some(Control::VelocityRadps(STAGE_VELOCITIES_RADPS[index])),
         })
     }
 

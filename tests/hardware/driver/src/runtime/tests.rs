@@ -9,7 +9,7 @@ use phoxal::runtime::{ExecutionTime, Harness, ObservationStamp};
 use super::*;
 use crate::contract::FixtureObservation;
 use phoxal::contracts::MethodShape;
-use phoxal::contracts::component::actuator::{ActuatorSetpoint, ActuatorTarget};
+use phoxal::contracts::component::actuator::ActuatorCommand;
 use phoxal::runtime::{
     Sample,
     input::{Samples, Setpoint},
@@ -168,7 +168,7 @@ impl FixtureDevice {
         });
     }
 
-    fn input_setpoint(&self) -> Setpoint<ActuatorSetpoint> {
+    fn input_setpoint(&self) -> Setpoint<ActuatorCommand> {
         if !self.active_setpoint() {
             return Setpoint::withdrawn();
         }
@@ -176,11 +176,8 @@ impl FixtureDevice {
             .as_ref()
             .map_or_else(Setpoint::withdrawn, |offered| {
                 Setpoint::from_parts(
-                    ActuatorSetpoint {
-                        targets: vec![ActuatorTarget {
-                            actuator_id: "fixture_motor".to_owned(),
-                            control: Some(Control::VelocityRadps(offered.value.velocity_radps)),
-                        }],
+                    ActuatorCommand {
+                        control: Some(Control::VelocityRadps(offered.value.velocity_radps)),
                     },
                     offered.issued_at,
                     offered.valid_until,

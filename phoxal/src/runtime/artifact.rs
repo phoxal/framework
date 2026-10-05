@@ -318,6 +318,15 @@ impl RecordBuilder {
                 Some(port) => port,
                 None => panic!("provided method has no endpoint"),
             });
+            if let Some(family) = field.family {
+                self.push_str(",\"family\":{\"config_pointer\":");
+                self.push_quoted(family.config_pointer);
+                self.push_str(",\"suffix\":");
+                self.push_quoted(family.suffix);
+                self.push_str(",\"max_ports\":");
+                self.push_u64(family.max_ports);
+                self.push_byte(b'}');
+            }
             self.push_str(",\"port\":");
             match field.port {
                 Some(port) => self.push_quoted(port),
@@ -441,6 +450,7 @@ mod tests {
             response_type: None,
         };
         let reply = OutputField {
+            family: None,
             name: "private_reply_batch",
             kind: OutputKind::Reply,
             port: None,
@@ -458,6 +468,7 @@ mod tests {
             cancel_grace_ms: None,
         };
         let read = OutputField {
+            family: None,
             name: "private_projection_method",
             kind: OutputKind::Read,
             port: Some("read"),

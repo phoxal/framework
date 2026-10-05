@@ -1,4 +1,4 @@
-//! Function-based simulation fixture used by ordinary Rust tests.
+//! Typed simulation authoring for standalone scenario executables.
 
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use crate::contracts::OwnedMethodSignature;
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A simulation fixture scoped to one Rust test invocation.
+/// One explicitly selected scene used by a scenario executable.
 #[derive(Debug)]
 pub struct Simulation {
     test_identity: String,
@@ -20,34 +20,23 @@ pub struct Simulation {
 }
 
 impl Simulation {
-    /// Construct a fixture for an ordinary `#[test]` without using the
-    /// `#[phoxal::scenario]` convenience attribute.
-    pub fn from_context(test_identity: impl Into<String>) -> crate::Result<Self> {
-        Self::from_host_context(test_identity)
-    }
-
-    /// Construct the fixture from the immutable context installed by
-    /// `cargo phoxal test`.
-    pub fn from_host_context(test_identity: impl Into<String>) -> crate::Result<Self> {
-        let test_identity = test_identity.into();
-        if test_identity.trim().is_empty() {
-            return Err(crate::anyhow!("simulation test identity must not be empty"));
+    /// Select the scene for a standalone scenario executable.
+    pub fn new(scene: impl Into<PathBuf>) -> crate::Result<Self> {
+        let scene = scene.into();
+        if scene.as_os_str().is_empty() {
+            return Err(crate::anyhow!(
+                "a scenario must select its scene explicitly"
+            ));
         }
-        let scene = std::env::var_os(super::fixture_protocol::ENV_SCENE)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("simulation/scene.xml"));
+        let executable = std::env::current_exe()?;
+        let identity = executable
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| crate::anyhow!("scenario executable has no UTF-8 name"))?;
         Ok(Self {
-            test_identity,
+            test_identity: identity.to_owned(),
             scene,
         })
-    }
-
-    /// Select another scene for this test. Relative paths are resolved by the
-    /// run host against the owning robot project.
-    #[must_use]
-    pub fn with_scene(mut self, scene: impl Into<PathBuf>) -> Self {
-        self.scene = scene.into();
-        self
     }
 
     /// Begin one finite experiment.
@@ -65,18 +54,125 @@ impl Simulation {
 #[derive(Debug)]
 pub struct Plan {
     pub(crate) id: u64,
-    cursor: u32,
+    cursor: AuthoredTime,
+    action_times: Vec<AuthoredTime>,
+    pub(crate) assertions: Vec<BodyAssertion>,
     steps: Vec<Step>,
     captures: Vec<super::Capture>,
     next_action: u32,
     next_capture: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct AuthoredTime {
+    duration: Duration,
+    transitions: u32,
+}
+
+impl AuthoredTime {
+    fn boundary(self, quantum: super::Quantum) -> crate::Result<u32> {
+        let quantum_ns = u128::from(quantum.micros()) * 1_000;
+        let duration_ns = self.duration.as_nanos();
+        if !duration_ns.is_multiple_of(quantum_ns) {
+            return Err(crate::anyhow!(
+                "scenario time {:?} is not aligned to the native quantum of {} microseconds",
+                self.duration,
+                quantum.micros()
+            ));
+        }
+        u32::try_from(duration_ns / quantum_ns)
+            .ok()
+            .and_then(|boundary| boundary.checked_add(self.transitions))
+            .ok_or_else(|| crate::anyhow!("scenario transition count overflowed"))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BodyAssertion {
+    body: String,
+    time: AuthoredTime,
+    outcome: BodyOutcome,
+}
+
+#[derive(Clone, Debug)]
+enum BodyOutcome {
+    DisplacementAtLeast(f64),
+    SpeedAtMost(f64),
+}
+
+impl BodyAssertion {
+    pub(crate) fn verify(&self, run: &CompletedRun, quantum: super::Quantum) -> crate::Result<()> {
+        let capture = Capture::<NativeBodySample> {
+            plan_id: run.plan_id,
+            name: self.body.clone(),
+            policy: None,
+            encoding: CaptureEncoding::NativeBodyJson,
+            marker: PhantomData,
+        };
+        let history = run.body_history(&capture)?;
+        let boundary = u64::from(self.time.boundary(quantum)?);
+        let first = history
+            .first()
+            .ok_or_else(|| crate::anyhow!("body `{}` has no native evidence", self.body))?;
+        let sample = history
+            .iter()
+            .find(|sample| sample.value().boundary == boundary)
+            .ok_or_else(|| {
+                crate::anyhow!(
+                    "body `{}` has no native evidence at boundary {boundary}",
+                    self.body
+                )
+            })?;
+        let (measured, expected, passes, description) = match self.outcome {
+            BodyOutcome::DisplacementAtLeast(minimum) => {
+                let distance = sample
+                    .value()
+                    .position_m
+                    .iter()
+                    .zip(first.value().position_m)
+                    .take(2)
+                    .map(|(value, origin)| (value - origin).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                (
+                    distance,
+                    minimum,
+                    distance >= minimum,
+                    "displacement at least",
+                )
+            }
+            BodyOutcome::SpeedAtMost(maximum) => {
+                let speed = sample
+                    .value()
+                    .linear_velocity_mps
+                    .iter()
+                    .map(|value| value.powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                (speed, maximum, speed <= maximum, "speed at most")
+            }
+        };
+        if !measured.is_finite() || !passes {
+            return Err(crate::anyhow!(
+                "native body `{}` at boundary {boundary}: expected {description} {expected}, observed {measured}",
+                self.body
+            ));
+        }
+        eprintln!(
+            "scenario: native body `{}` at boundary {boundary}: {description} {expected}, observed {measured} - passed",
+            self.body
+        );
+        Ok(())
+    }
+}
+
 impl Plan {
     fn new() -> Self {
         Self {
             id: NEXT_PLAN_ID.fetch_add(1, Ordering::Relaxed),
-            cursor: 0,
+            cursor: AuthoredTime::default(),
+            action_times: Vec::new(),
+            assertions: Vec::new(),
             steps: Vec::new(),
             captures: Vec::new(),
             next_action: 0,
@@ -97,7 +193,8 @@ impl Plan {
             .ok_or_else(|| crate::anyhow!("scenario action count overflowed"))?;
         let label = format!("action-{index}");
         let action = operation.into_action(&label)?;
-        self.steps.push(Step::new(label, self.cursor, action));
+        self.steps.push(Step::new(label, 0, action));
+        self.action_times.push(self.cursor);
         Ok(ReplyTicket {
             plan_id: self.id,
             index,
@@ -155,39 +252,103 @@ impl Plan {
         })
     }
 
-    /// Advance the authored cursor by exactly `steps` native transitions.
-    pub fn wait_steps(&mut self, steps: u32) -> crate::Result<()> {
-        self.cursor = self
+    /// Require horizontal simulator-truth displacement from the initial position at the current time.
+    pub fn expect_displacement_at_least(
+        &mut self,
+        body: impl Into<String>,
+        metres: f64,
+    ) -> crate::Result<()> {
+        self.expect_body(
+            body.into(),
+            metres,
+            BodyOutcome::DisplacementAtLeast(metres),
+        )
+    }
+
+    /// Require simulator-truth linear speed at the current time to be within the bound.
+    pub fn expect_speed_at_most(
+        &mut self,
+        body: impl Into<String>,
+        metres_per_second: f64,
+    ) -> crate::Result<()> {
+        self.expect_body(
+            body.into(),
+            metres_per_second,
+            BodyOutcome::SpeedAtMost(metres_per_second),
+        )
+    }
+
+    fn expect_body(&mut self, body: String, bound: f64, outcome: BodyOutcome) -> crate::Result<()> {
+        if !bound.is_finite() || bound < 0.0 {
+            return Err(crate::anyhow!(
+                "native outcome bound must be finite and nonnegative"
+            ));
+        }
+        if !self
+            .assertions
+            .iter()
+            .any(|assertion| assertion.body == body)
+        {
+            self.record_body(body.clone())?;
+        }
+        self.assertions.push(BodyAssertion {
+            body,
+            time: self.cursor,
+            outcome,
+        });
+        Ok(())
+    }
+
+    /// Advance the authored timeline by simulated time.
+    /// The selected scene's probed quantum determines valid time boundaries.
+    pub fn advance(&mut self, duration: Duration) -> crate::Result<()> {
+        self.cursor.duration = self
             .cursor
+            .duration
+            .checked_add(duration)
+            .ok_or_else(|| crate::anyhow!("scenario duration overflowed"))?;
+        Ok(())
+    }
+
+    /// Advance by native transitions for low-level protocol qualification.
+    #[doc(hidden)]
+    pub fn wait_steps(&mut self, steps: u32) -> crate::Result<()> {
+        self.cursor.transitions = self
+            .cursor
+            .transitions
             .checked_add(steps)
             .ok_or_else(|| crate::anyhow!("scenario transition count overflowed"))?;
         Ok(())
     }
 
     pub(crate) fn compile(
-        self,
+        mut self,
         scene: PathBuf,
         quantum: super::Quantum,
         name: &str,
     ) -> crate::Result<(super::Program, u64)> {
-        if self.cursor == 0 {
+        let terminal = self.cursor.boundary(quantum)?;
+        for (step, time) in self.steps.iter_mut().zip(self.action_times) {
+            step.boundary = time.boundary(quantum)?;
+        }
+        if terminal == 0 {
             return Err(crate::anyhow!(
                 "scenario plan must contain at least one transition"
             ));
         }
-        if let Some(step) = self.steps.iter().find(|step| step.boundary >= self.cursor) {
+        if let Some(step) = self.steps.iter().find(|step| step.boundary >= terminal) {
             return Err(crate::anyhow!(
-                "scenario action `{}` is at terminal boundary {}; add the intended remaining simulation time with wait_steps",
+                "scenario action `{}` is at terminal boundary {}; add the intended remaining simulation time with advance",
                 step.label,
-                self.cursor,
+                terminal,
             ));
         }
         let nanos = u64::from(quantum.micros())
             .checked_mul(1_000)
-            .and_then(|value| value.checked_mul(u64::from(self.cursor)))
+            .and_then(|value| value.checked_mul(u64::from(terminal)))
             .ok_or_else(|| crate::anyhow!("scenario duration overflowed"))?;
         let _ = scene;
-        let steps = expand_lease_renewals(self.steps, self.cursor, quantum)?;
+        let steps = expand_lease_renewals(self.steps, terminal, quantum)?;
         let schedule = steps
             .into_iter()
             .map(|step| super::ScheduleEntry::at(step.boundary, step.action))
@@ -287,8 +448,8 @@ fn action_replaces_lease(
         } => target == target_instance && consumer_signature == signature,
         Action::Withdraw {
             target_instance: target,
-            producer_signature,
-        } => target == target_instance && producer_signature == signature,
+            consumer_signature,
+        } => target == target_instance && consumer_signature == signature,
         Action::Command { .. } => false,
     }
 }
@@ -761,6 +922,115 @@ mod tests {
             .filter(|step| step.label.starts_with(prefix))
             .map(|step| step.boundary)
             .collect()
+    }
+
+    #[test]
+    fn native_outcome_checks_use_the_requested_time_and_refuse_wrong_expectations() {
+        let samples = vec![
+            NativeBodySample {
+                boundary: 0,
+                position_m: [0.0; 3],
+                orientation_wxyz: [1.0, 0.0, 0.0, 0.0],
+                linear_velocity_mps: [0.0; 3],
+                angular_velocity_radps: [0.0; 3],
+            },
+            NativeBodySample {
+                boundary: 25,
+                position_m: [0.6, 0.0, 0.0],
+                orientation_wxyz: [1.0, 0.0, 0.0, 0.0],
+                linear_velocity_mps: [0.2, 0.0, 0.0],
+                angular_velocity_radps: [0.0; 3],
+            },
+            NativeBodySample {
+                boundary: 50,
+                position_m: [0.7, 0.0, 0.0],
+                orientation_wxyz: [1.0, 0.0, 0.0, 0.0],
+                linear_velocity_mps: [0.0; 3],
+                angular_velocity_radps: [0.0; 3],
+            },
+        ];
+        let run = CompletedRun::new(
+            1,
+            ScenarioRun::from_sealed(
+                Vec::new(),
+                BTreeMap::from([(
+                    "body".to_owned(),
+                    CaptureRecord::NativeBody(serde_json::to_vec(&samples).expect("samples")),
+                )]),
+                BTreeMap::new(),
+                None,
+                true,
+            ),
+        );
+        let quantum = Quantum::from_micros(10_000).expect("quantum");
+        let mut assertion = BodyAssertion {
+            body: "body".into(),
+            time: AuthoredTime {
+                duration: Duration::from_millis(250),
+                transitions: 0,
+            },
+            outcome: BodyOutcome::DisplacementAtLeast(0.5),
+        };
+        assertion.verify(&run, quantum).expect("displacement");
+        assertion.outcome = BodyOutcome::SpeedAtMost(0.03);
+        assert!(
+            assertion.verify(&run, quantum).is_err(),
+            "later stop must not satisfy earlier assertion"
+        );
+        assertion.time.duration = Duration::from_millis(500);
+        assertion
+            .verify(&run, quantum)
+            .expect("stopped at requested time");
+        assertion.outcome = BodyOutcome::DisplacementAtLeast(100.0);
+        assert!(assertion.verify(&run, quantum).is_err());
+        assertion.time.duration = Duration::from_millis(400);
+        assert!(
+            assertion
+                .verify(&run, quantum)
+                .expect_err("missing evidence")
+                .to_string()
+                .contains("no native evidence")
+        );
+    }
+
+    #[test]
+    fn simulated_duration_uses_the_probed_quantum_and_checks_alignment() {
+        let mut plan = Plan::new();
+        plan.advance(Duration::from_millis(250)).expect("advance");
+        let (program, _) = plan
+            .compile(
+                PathBuf::from("scene.xml"),
+                Quantum::from_micros(10_000).expect("quantum"),
+                "duration",
+            )
+            .expect("compile aligned time");
+        assert_eq!(program.transition_count(), 25);
+
+        let mut plan = Plan::new();
+        plan.advance(Duration::from_millis(251)).expect("advance");
+        let error = plan
+            .compile(
+                PathBuf::from("scene.xml"),
+                Quantum::from_micros(10_000).expect("quantum"),
+                "duration",
+            )
+            .expect_err("fractional native transition must refuse");
+        assert!(error.to_string().contains("not aligned"));
+    }
+
+    #[test]
+    fn simulated_time_refuses_overflow_instead_of_wrapping() {
+        let mut plan = Plan::new();
+        plan.advance(Duration::MAX).expect("first duration");
+        assert!(plan.advance(Duration::from_nanos(1)).is_err());
+        assert!(
+            plan.compile(
+                PathBuf::from("scene.xml"),
+                Quantum::from_micros(1).expect("quantum"),
+                "overflow"
+            )
+            .is_err()
+        );
     }
 
     #[test]

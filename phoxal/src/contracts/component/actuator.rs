@@ -17,21 +17,11 @@ mod v1 {
         TorqueNm(f64),
     }
 
-    /// One addressed actuator command.
-    pub struct ActuatorTarget {
-        /// The actuator's stable instance-qualified name.
+    /// One scalar actuator command; its destination is the authored connection.
+    pub struct ActuatorCommand {
+        /// Explicit control law, required by actuator admission.
         #[phoxal(tag = 1)]
-        pub actuator_id: String,
-        /// The control law applied to this target.
-        #[phoxal(tag = 2)]
         pub control: Option<Control>,
-    }
-
-    /// A complete set of actuator commands for one control period.
-    pub struct ActuatorSetpoint {
-        /// Every addressed target of this setpoint.
-        #[phoxal(tag = 1)]
-        pub targets: Vec<ActuatorTarget>,
     }
 }
 
@@ -41,19 +31,18 @@ pub use v1::*;
 mod tests {
     use prost::Name;
 
-    use super::{ActuatorSetpoint, ActuatorTarget, Control};
+    use super::{ActuatorCommand, Control};
     use crate::schema::MessageSchema;
 
     #[test]
     fn retains_public_protobuf_identity_and_schema() {
-        assert_eq!(ActuatorSetpoint::PACKAGE, "phoxal.component.actuator.v1");
-        assert_eq!(ActuatorSetpoint::NAME, "ActuatorSetpoint");
+        assert_eq!(ActuatorCommand::PACKAGE, "phoxal.component.actuator.v1");
+        assert_eq!(ActuatorCommand::NAME, "ActuatorCommand");
         assert_eq!(
-            ActuatorSetpoint::WIRE_NAME,
-            "phoxal.component.actuator.v1.ActuatorSetpoint"
+            ActuatorCommand::WIRE_NAME,
+            "phoxal.component.actuator.v1.ActuatorCommand"
         );
-        assert!(ActuatorSetpoint::retain_schema() > 0);
-        assert!(ActuatorTarget::retain_schema() > 0);
+        assert!(ActuatorCommand::retain_schema() > 0);
         assert!(<Control as MessageSchema>::retain_schema() > 0);
     }
 }

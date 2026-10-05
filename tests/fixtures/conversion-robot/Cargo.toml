@@ -1,0 +1,34 @@
+[package]
+name = "phoxal-conversion-robot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT"
+description = "SDK-owned typed conversion proof over the real world and navigation services."
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { version = "0.69.0", default-features = false, features = ["runtime", "session"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+libc = "0.2"
+tempfile = "3"
+
+[build-dependencies]
+phoxal = { version = "0.69.0", default-features = false, features = ["build"] }
+
+[lints.rust]
+warnings = "deny"
+
+[features]
+host-acceptance = []
+
+[[test]]
+name = "composition"
+path = "tests/composition.rs"
+required-features = ["host-acceptance"]

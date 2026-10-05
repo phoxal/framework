@@ -130,6 +130,7 @@ message OperationRequest {
   string timeline_id = 5;
   bytes payload = 6;
   uint32 timeout_ms = 7;
+  bool withdraw_setpoint = 8;
 }
 
 message OperationResponse {
