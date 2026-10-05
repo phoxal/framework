@@ -2191,11 +2191,15 @@ struct LocalRequirementInputs {
 
 #[derive(Default)]
 struct LocalRequirementState {
+    ask_sent: usize,
+    verify_sent: usize,
     ask: Option<crate::runtime::outputs::CallTicket<TransportResponse>>,
     verify: Option<crate::runtime::outputs::CallTicket<TransportResponse>>,
 }
 
 struct LocalRequirementRuntime {
+    round_limit: usize,
+    completed: Arc<std::sync::atomic::AtomicUsize>,
     response: Arc<Mutex<Option<u32>>>,
     verification: Arc<Mutex<Option<u32>>>,
 }
@@ -2223,13 +2227,16 @@ impl Runtime for LocalRequirementRuntime {
             let response = completion.into_result()?;
             *self.response.lock().expect("local requirement lock") = Some(response.value);
             state.ask = None;
-        } else if state.ask.is_none() {
+            self.completed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if state.ask.is_none() && state.ask_sent < self.round_limit {
             // The generated constructors' staging shape: the call carries
             // its own field's name through routing.
             state.ask = Some(outputs.send(
                 ctx,
                 GENERATED_TRANSPORT_METHOD.bind("ask", TransportRequest { value: 41 }),
             )?);
+            state.ask_sent += 1;
         }
         // Completions live in the single retained store (the first call
         // field), regardless of which field's call produced them, and are
@@ -2240,11 +2247,14 @@ impl Runtime for LocalRequirementRuntime {
             let response = completion.into_result()?;
             *self.verification.lock().expect("verification lock") = Some(response.value);
             state.verify = None;
-        } else if state.verify.is_none() {
+            self.completed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if state.verify.is_none() && state.verify_sent < self.round_limit {
             state.verify = Some(outputs.send(
                 ctx,
                 GENERATED_TRANSPORT_METHOD.bind("verify", TransportRequest { value: 41 }),
             )?);
+            state.verify_sent += 1;
         }
         Ok((state, outputs))
     }
@@ -2455,6 +2465,8 @@ async fn generated_local_requirement_resolves_through_the_graph_and_completes() 
     let verification = Arc::new(Mutex::new(None));
     let mut consumer = RuntimeRunner::new(
         LocalRequirementRuntime {
+            round_limit: 1,
+            completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             response: Arc::clone(&response),
             verification: Arc::clone(&verification),
         },
@@ -2556,6 +2568,8 @@ async fn a_two_field_exchange_drains_every_round_exactly_once() -> crate::Result
     // retained-mailbox accounting this exercises — item and byte charges
     // released by consumed completions — is proven directly and
     // deterministically by the retained-completion tests below.
+    // Each field has an explicit request budget. Independently progressing
+    // exchanges must not start a ninth round while the other catches up.
     const ROUNDS: usize = 8;
     let (owner, bus) = crate::runtime::connection::ConnectionOwner::open(
         crate::runtime::connection::ConnectionConfig::for_participant(
@@ -2585,8 +2599,11 @@ async fn a_two_field_exchange_drains_every_round_exactly_once() -> crate::Result
         .await?;
     let response = Arc::new(Mutex::new(None));
     let verification = Arc::new(Mutex::new(None));
+    let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut consumer = RuntimeRunner::new(
         LocalRequirementRuntime {
+            round_limit: ROUNDS,
+            completed: Arc::clone(&completed),
             response: Arc::clone(&response),
             verification: Arc::clone(&verification),
         },
@@ -2624,13 +2641,18 @@ async fn a_two_field_exchange_drains_every_round_exactly_once() -> crate::Result
     let mut tick = 0_u64;
     loop {
         tick = tick.saturating_add(1);
-        for provider in &mut providers {
+        for (index, provider) in providers.iter_mut().enumerate() {
+            // Deliberately let the first field advance while the second provider
+            // waits. The finite request budgets must hold despite this skew.
+            if index == 1 && tick <= 32 {
+                continue;
+            }
             provider.poll(ExecutionTime::from_nanos(tick * 1_000_000))?;
         }
         consumer.poll(ExecutionTime::from_nanos(tick * 1_000_000 + 500_000))?;
         let ask = ask_handled.load(std::sync::atomic::Ordering::Relaxed);
         let verify = verify_handled.load(std::sync::atomic::Ordering::Relaxed);
-        if ask >= ROUNDS && verify >= ROUNDS {
+        if completed.load(std::sync::atomic::Ordering::Relaxed) == 2 * ROUNDS {
             break;
         }
         assert!(
