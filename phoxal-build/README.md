@@ -19,3 +19,24 @@ Prepared contract publication and reading share the `phoxal-build` boundary.
 `write_prepared` receives source selection, executable provenance, runtime metadata, and standard descriptors.
 It owns serialization, a stable publication lock, coherent pair replacement, and interrupted-publication recovery.
 Unchanged contract and descriptor content preserves the prepared files even after an implementation-only rebuild.
+
+Prepared inputs are stored under `<normal Cargo target root>/phoxal/prepared/`.
+The CLI writer and ordinary Cargo/build-script/IDE reader use the same local Cargo configuration and environment resolver.
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, and hierarchical Cargo `build.target-dir` configuration select this root; absent configuration, it is the robot's `target/` directory.
+One-off `--target-dir` and command-line `--config` overrides relocate compiler and runnable outputs only, not prepared inputs.
+After changing normal configuration or environment, run `cargo phoxal prepare` again at the new location.
+Existing project-side `.cargo` directories are watched for config additions, legacy filename precedence, edits, and deletion.
+Environment changes and existing global Cargo config files are also tracked; Cargo's global cache tree is not recursively watched.
+Creating a previously absent configuration directory while reusing a compiler-output cache requires one-time recovery:
+
+```sh
+cargo phoxal prepare
+cargo clean -p <ROBOT_PACKAGE> --target-dir <AFFECTED_COMPILER_OUTPUT>
+```
+
+Use the affected output directory, including matching `--target <TRIPLE>` when the original build used one.
+Omit `--target-dir` when that output directory is already selected by normal configuration or environment.
+Clean only the robot package, then rebuild normally; subsequent unchanged builds remain fresh.
+Adding a previously absent global config file also needs this recovery because watching Cargo home would scan its mutable caches.
+A missing prepared selection reports the input-store path and that preparation command.
+Build scripts do not invoke Cargo or guess paths from `OUT_DIR`.

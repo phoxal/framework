@@ -34,7 +34,42 @@ pub fn api(_config: BuildApiConfig) -> Result<(), Error> {
     let out = std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .ok_or(Error::MissingEnvironment("OUT_DIR"))?;
+    for variable in [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_HOME",
+        "HOME",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+    for path in configuration_watch_paths(&package) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     generate(&package, &out, None)
+}
+
+fn configuration_watch_paths(package: &Path) -> BTreeSet<PathBuf> {
+    let mut paths = BTreeSet::new();
+    let cargo_home = cargo_config2::cargo_home_with_cwd(package);
+    for ancestor in package.ancestors() {
+        let directory = ancestor.join(".cargo");
+        if directory.is_dir() && cargo_home.as_ref() != Some(&directory) {
+            // An existing configuration directory catches additions, including
+            // the legacy config filename taking precedence over config.toml.
+            paths.insert(directory);
+        }
+    }
+    if let Some(directory) = cargo_home {
+        // Cargo home is also its mutable registry/git cache. Never recursively
+        // watch it or watch an absent file: both invalidate ordinary warm builds.
+        for filename in ["config", "config.toml"] {
+            let file = directory.join(filename);
+            if file.is_file() {
+                paths.insert(file);
+            }
+        }
+    }
+    paths
 }
 
 /// Validates an exact proposed robot API before its authored document is replaced.
@@ -70,13 +105,20 @@ struct Robot {
         dead_code,
         reason = "the key belongs to this document; the values are cargo-phoxal's to validate and resolve"
     )]
-    connections: BTreeMap<String, serde_yaml::Value>,
+    connections: Vec<AuthoredConnection>,
     #[serde(default)]
     #[allow(
         dead_code,
         reason = "the supervisor selection belongs to this document; cargo-phoxal resolves it"
     )]
     supervisor: Option<serde_yaml::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredConnection {
+    from: String,
+    to: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -291,35 +333,45 @@ fn assemble_units(
     }
     let mut connections = BTreeMap::new();
     if let Some(robot) = robot {
-        connections = robot
-            .connections
+        let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for connection in robot.connections {
+            grouped
+                .entry(connection.to)
+                .or_default()
+                .push(connection.from);
+        }
+        // Conversion discovery applies only to single-producer observations.
+        // Fan-in is validated by the compiled graph, never silently collapsed.
+        connections = grouped
             .into_iter()
-            .filter_map(|(consumer, source)| {
-                source.as_str().map(|source| (consumer, source.to_owned()))
+            .filter_map(|(consumer, mut sources)| {
+                (sources.len() == 1).then(|| (consumer, sources.remove(0)))
             })
             .collect();
         for (instance, selection) in robot.services {
-            add_selection(
+            let index = add_selection(
                 package,
                 &robot_path,
-                instance,
+                instance.clone(),
                 selection.source,
                 selection.binary.as_deref(),
+                selection.config.as_ref(),
                 &mut units,
-                &mut bindings,
             )?;
+            bindings.push((instance, index));
         }
         for (instance, component) in robot.robot.components {
             if component.driver.is_some() {
-                add_selection(
+                let index = add_selection(
                     package,
                     &robot_path,
-                    instance,
+                    instance.clone(),
                     component.source,
                     component.binary.as_deref(),
+                    component.config.as_ref(),
                     &mut units,
-                    &mut bindings,
                 )?;
+                bindings.push((instance, index));
             }
         }
     }
@@ -713,9 +765,9 @@ fn add_selection(
     instance: String,
     source: Source,
     binary: Option<&str>,
+    config: Option<&serde_yaml::Value>,
     units: &mut Vec<Unit>,
-    bindings: &mut Vec<(String, usize)>,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     if !identifier(&instance) {
         return Err(input(
             robot_path,
@@ -730,7 +782,7 @@ fn add_selection(
             format!("{instance} selects binary `{selected}` with an invalid name"),
         ));
     }
-    let (root, label, prepared_dir, selection_identity) = match source {
+    let (label, prepared_dir, selection_identity) = match source {
         Source::Git(GitSourceWrapper { git: ref source }) => {
             if !identifier(&source.name)
                 || source.url.trim().is_empty()
@@ -746,10 +798,6 @@ fn add_selection(
                     format!("{instance} needs a Git URL and complete commit"),
                 ));
             }
-            let tree = package_root
-                .join(".phoxal/git")
-                .join(&source.name)
-                .join(&source.rev);
             let identity = crate::prepared::PreparedSelection::Git {
                 name: source.name.clone(),
                 revision: source.rev.clone(),
@@ -760,9 +808,8 @@ fn add_selection(
                     .map(|path| path.to_string_lossy().into_owned()),
             };
             (
-                tree.clone(),
                 format!("{} @ {}", source.name, source.rev),
-                crate::prepared::prepared_dir(package_root, &identity, binary),
+                crate::prepared::prepared_dir(package_root, &identity, binary)?,
                 identity,
             )
         }
@@ -777,9 +824,8 @@ fn add_selection(
                 path: path.to_string_lossy().into_owned(),
             };
             (
-                package_root.join(path),
                 "local path".to_owned(),
-                crate::prepared::prepared_dir(package_root, &identity, binary),
+                crate::prepared::prepared_dir(package_root, &identity, binary)?,
                 identity,
             )
         }
@@ -789,8 +835,32 @@ fn add_selection(
         // compiled artifact; the brain binds through those products,
         // and only if the recorded complete identity — selection and
         // binary — is the one this selection asked for.
-        let contract =
+        let mut contract =
             crate::prepared::read_prepared_for(&prepared_dir, &selection_identity, binary)?;
+        if contract
+            .file
+            .runtime
+            .get("outputs")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|outputs| {
+                outputs
+                    .iter()
+                    .any(|output| output.get("family").is_some_and(|family| !family.is_null()))
+            })
+        {
+            let config = serde_json::to_value(config)
+                .map_err(|error| input(robot_path, error.to_string()))?;
+            contract = crate::prepared::read_prepared_instance(
+                package_root,
+                &instance,
+                &config,
+                &contract.file,
+            )?;
+            println!(
+                "cargo:rerun-if-changed={}",
+                crate::prepared::prepared_instance_dir(package_root, &instance)?.display()
+            );
+        }
         println!("cargo:rerun-if-changed={}", prepared_dir.display());
         let index = units.len();
         units.push(Unit {
@@ -799,13 +869,13 @@ fn add_selection(
             declaration: None,
             prepared: Some(contract),
         });
-        bindings.push((instance, index));
-        return Ok(());
+        return Ok(index);
     }
     Err(input(
-        &root,
+        &prepared_dir,
         format!(
-            "Phoxal contracts are not prepared for {instance} {label}. Run `cargo phoxal prepare` from the robot project root."
+            "Phoxal contracts are not prepared for {instance} {label} at {}. Run `cargo phoxal prepare` from the robot project root using the same normal Cargo configuration/environment. One-off target-directory overrides relocate outputs only.",
+            prepared_dir.display()
         ),
     ))
 }
@@ -1205,7 +1275,6 @@ mod tests {
     fn unprepared_self_selection_is_refused_instead_of_skipped() {
         let directory = tempfile::tempdir().expect("robot root");
         let mut units = Vec::new();
-        let mut bindings = Vec::new();
         let error = add_selection(
             directory.path(),
             &directory.path().join("robot.yaml"),
@@ -1214,13 +1283,12 @@ mod tests {
                 path: PathBuf::from("."),
             }),
             None,
+            None,
             &mut units,
-            &mut bindings,
         )
         .expect_err("a missing prepared participant cannot produce a partial API");
         assert!(error.to_string().contains("not prepared"));
         assert!(units.is_empty());
-        assert!(bindings.is_empty());
     }
 
     #[test]

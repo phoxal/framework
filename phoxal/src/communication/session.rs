@@ -305,6 +305,9 @@ pub struct OperationRequest {
     /// `timeout_ms`.
     #[phoxal(tag = 7)]
     pub timeout_ms: u32,
+    /// Explicit withdrawal of a positively leased call; never inferred from an empty payload.
+    #[phoxal(tag = 8)]
+    pub withdraw_setpoint: bool,
 }
 
 /// The `OperationResponse` wire contract.

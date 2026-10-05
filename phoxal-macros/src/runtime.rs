@@ -511,11 +511,11 @@ fn expand_inherent(
 
             fn store_state_record(
                 view: &mut Self::HarnessView,
-                field: &'static str,
+                field: &str,
                 bytes: ::std::option::Option<::std::vec::Vec<u8>>,
             ) {
                 match bytes {
-                    Some(bytes) => { view.state_records.insert(field, bytes); }
+                    Some(bytes) => { view.state_records.insert(field.to_owned(), bytes); }
                     None => { view.state_records.remove(field); }
                 }
             }

@@ -26,8 +26,6 @@ pub enum SimulationRunSpecification {
         simulator: SimulationApplicationReference,
         /// Canonical finite scenario program and its recorded identity.
         program: SimulationProgram,
-        /// Scenario-owned source bindings admitted for this run only.
-        bindings: Vec<SimulationBinding>,
         /// Observation and native evidence requested by the experiment.
         captures: Vec<SimulationCaptureRequirement>,
         /// Finite controlled-execution bounds.
@@ -57,14 +55,6 @@ impl SimulationRunSpecification {
     pub fn program(&self) -> &SimulationProgram {
         match self {
             Self::V0 { program, .. } => program,
-        }
-    }
-
-    /// Return the run-only source bindings.
-    #[must_use]
-    pub fn bindings(&self) -> &[SimulationBinding] {
-        match self {
-            Self::V0 { bindings, .. } => bindings,
         }
     }
 
@@ -125,22 +115,6 @@ pub struct SimulationProgram {
     pub bytes: Vec<u8>,
 }
 
-/// One run-only scenario source admitted against a concrete consumer.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SimulationBinding {
-    /// Runtime instance that consumes the generated method value.
-    pub target_instance: String,
-    /// Scenario source instance, normally `scenario`.
-    pub source_instance: String,
-    /// Generated method identity and cardinality-derived semantics.
-    pub signature: MethodSignature,
-    /// Largest encoded payload staged for this method.
-    pub max_message_bytes: u32,
-    /// Whether this source replaces an authored binding for this run.
-    pub replaces_authored_source: bool,
-}
-
 /// One observation or native-body requirement declared before admission.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
@@ -198,7 +172,6 @@ pub struct SimulationExecutionBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifact::MethodShape;
 
     #[test]
     fn run_specification_round_trips_without_a_bundle_scenario_record() {
@@ -219,22 +192,6 @@ mod tests {
             program: SimulationProgram {
                 bytes: vec![1, 2, 3],
             },
-            bindings: vec![SimulationBinding {
-                target_instance: "controller".to_owned(),
-                source_instance: "supervisor".to_owned(),
-                signature: MethodSignature {
-                    endpoint: "target".to_owned(),
-                    service: "phoxal.test.Controller".to_owned(),
-                    method: "Target".to_owned(),
-                    shape: MethodShape::Call,
-                    request: "phoxal.test.Target".to_owned(),
-                    response: "google.protobuf.Empty".to_owned(),
-                    retained_latest: false,
-                    lease_valid_for_ms: Some(100),
-                },
-                max_message_bytes: 3,
-                replaces_authored_source: true,
-            }],
             captures: Vec::new(),
             execution: SimulationExecutionBounds {
                 quantum_ns: 2_000_000,

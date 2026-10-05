@@ -26,12 +26,26 @@ pub enum RobotDocument {
         /// Explicit behavioral service instances.
         #[serde(default)]
         services: BTreeMap<String, ServiceSelection>,
-        /// Explicit local input to served-port connections.
+        /// Explicit directed endpoint connections.
         #[serde(default)]
-        connections: BTreeMap<String, ConnectionSources>,
+        connections: Vec<Connection>,
     },
 }
 impl RobotDocument {
+    /// Groups ordered producer endpoints by consuming endpoint for admission.
+    /// Duplicate edges remain present so validators can reject them.
+    #[must_use]
+    pub fn connection_sources(&self) -> BTreeMap<String, Vec<String>> {
+        let Self::V0 { connections, .. } = self;
+        let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for connection in connections {
+            grouped
+                .entry(connection.to.clone())
+                .or_default()
+                .push(connection.from.clone());
+        }
+        grouped
+    }
     /// Returns every instance identity available to a connection source.
     #[must_use]
     pub fn instance_ids(&self) -> BTreeSet<String> {
@@ -246,24 +260,14 @@ pub struct GitSourceSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
-/// One or more ordered producer endpoints for a local consuming input.
+/// One authored directed delivery edge between instance endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ConnectionSources {
-    /// A single producer endpoint.
-    One(String),
-    /// An ordered set of producer endpoints.
-    Many(Vec<String>),
-}
-impl ConnectionSources {
-    /// Returns the authored producer list without changing its order.
-    #[must_use]
-    pub fn as_slice(&self) -> &[String] {
-        match self {
-            Self::One(value) => std::slice::from_ref(value),
-            Self::Many(values) => values,
-        }
-    }
+#[serde(deny_unknown_fields)]
+pub struct Connection {
+    /// Served producer endpoint (or request target for call bindings).
+    pub from: String,
+    /// Consuming runtime endpoint.
+    pub to: String,
 }
 /// A parsed `instance.port` endpoint reference.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -323,6 +327,28 @@ mod tests {
     //! Round-trip and parse tests for the document DTO family.
     use super::*;
     #[test]
+    fn directed_connections_preserve_fan_in_and_duplicates_for_admission() {
+        let value = serde_json::json!({
+            "schema": "phoxal/robot/v0", "robot": {"id": "robot"},
+            "supervisor": {"source": {"path": "supervisor"}},
+            "connections": [
+                {"from": "first.events", "to": "brain.events"},
+                {"from": "second.events", "to": "brain.events"},
+                {"from": "first.events", "to": "brain.events"}
+            ]
+        });
+        let document: RobotDocument = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            document.connection_sources()["brain.events"],
+            ["first.events", "second.events", "first.events"]
+        );
+        assert_eq!(
+            serde_json::to_value(document).unwrap()["connections"],
+            value["connections"]
+        );
+    }
+
+    #[test]
     fn robot_document_round_trips() {
         let yaml = r#"
 schema: phoxal/robot/v0
@@ -343,7 +369,8 @@ services:
 supervisor:
   source: { path: ../supervisor }
 connections:
-  navigation.imu: imu.sample
+  - from: imu.sample
+    to: navigation.imu
 "#;
         let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let json = serde_json::to_string(&document).expect("serializes");

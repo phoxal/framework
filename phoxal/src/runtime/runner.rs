@@ -140,9 +140,9 @@ pub struct RuntimeLaunch {
         value_parser = parse_endpoint
     )]
     pub connect: String,
-    /// Simulation-only run specification admitted by the supervisor.
-    #[arg(long = "simulation-run", value_name = "PATH")]
-    pub simulation_run: Option<PathBuf>,
+    /// Command-owned native implementation context supplied only by a simulation supervisor.
+    #[arg(long, hide = true)]
+    pub simulation_context: Option<PathBuf>,
 }
 
 impl RuntimeLaunch {
@@ -174,19 +174,18 @@ pub struct RuntimeLaunchManifest {
     artifacts: BTreeMap<String, crate::artifact::RuntimeRecord>,
     observation_providers:
         BTreeMap<(String, String), crate::artifact::bundle::BundleSimulationProvider>,
-    scenario_producers: BTreeMap<(String, String), SourceScenarioProducer>,
 }
 
 impl RuntimeLaunchManifest {
     /// Open and admit one resolved `phoxal/bundle/v0` entry.
     pub fn open(root: impl AsRef<Path>, instance_id: &str) -> crate::Result<Self> {
-        Self::open_with_simulation_run(root, instance_id, None)
+        Self::open_with_native_context(root, instance_id, None)
     }
 
-    fn open_with_simulation_run(
+    fn open_with_native_context(
         root: impl AsRef<Path>,
         instance_id: &str,
-        simulation_run: Option<&Path>,
+        context: Option<&Path>,
     ) -> crate::Result<Self> {
         let root = root.as_ref().canonicalize().map_err(|source| {
             anyhow::anyhow!(RunnerError::BundleIo {
@@ -221,12 +220,24 @@ impl RuntimeLaunchManifest {
             })?;
         parse_identifier(instance_id)
             .map_err(|message| anyhow::anyhow!(RunnerError::BundleInvalid { message }))?;
-        let admitted =
+        let mut admitted =
             crate::artifact::bundle::AdmittedBundle::validate(manifest).map_err(|message| {
                 anyhow::anyhow!(RunnerError::BundleInvalid {
                     message: format!("invalid runtime bundle: {message}"),
                 })
             })?;
+        if let Some(path) = context {
+            let metadata = fs::symlink_metadata(path)?;
+            anyhow::ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "native context is not a regular file"
+            );
+            let record: crate::artifact::simulation_context::SimulationContext =
+                serde_json::from_slice(&read_bounded(path, 16 * 1024 * 1024)?)?;
+            record
+                .admit(&bytes, &mut admitted)
+                .map_err(anyhow::Error::msg)?;
+        }
         let host = crate::artifact::bundle::host_execution_target();
         if admitted.target != host {
             return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
@@ -293,20 +304,7 @@ impl RuntimeLaunchManifest {
             .value()
             .cloned()
             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-        let mut connections = admitted.execution_connections.clone();
-        let scenario_producers = load_simulation_bindings(simulation_run)?;
-        for producer in scenario_producers.values() {
-            connections.insert(
-                crate::artifact::bundle::EndpointReference {
-                    instance: producer.target_instance.clone(),
-                    endpoint: producer.signature.endpoint.clone(),
-                },
-                vec![crate::artifact::bundle::EndpointReference {
-                    instance: producer.source_instance.clone(),
-                    endpoint: producer.signature.endpoint.clone(),
-                }],
-            );
-        }
+        let connections = admitted.execution_connections.clone();
         let artifacts = admitted
             .instances
             .keys()
@@ -343,7 +341,6 @@ impl RuntimeLaunchManifest {
                     )
                 })
                 .collect(),
-            scenario_producers,
         })
     }
 
@@ -486,6 +483,13 @@ impl RuntimeLaunchManifest {
             ) {
                 return Ok(Vec::new());
             }
+            // An unwired observation is absent capability, not lost evidence.
+            // A wired source remains a bound subscription even without data.
+            if field.kind == super::input::InputKind::Latest
+                && !self.connections.contains_key(&consumer)
+            {
+                return Ok(Vec::new());
+            }
             let sources = self.connections.get(&consumer).ok_or_else(|| {
                 anyhow::anyhow!(RunnerError::BundleInvalid {
                     message: format!(
@@ -509,20 +513,7 @@ impl RuntimeLaunchManifest {
                     .observation_providers
                     .get(&(source_instance.clone(), source_port.clone()));
                 let (binding, source_max_bytes, source_max_items, source_request_max_bytes) =
-                    if let Some(producer) = self
-                        .scenario_producers
-                        .get(&(source_instance.clone(), source_port.clone()))
-                    {
-                        if direction != InputDirection::Publication {
-                            anyhow::bail!("scenario producer `{source}` cannot serve requests");
-                        }
-                        (
-                            producer.binding()?,
-                            Some(u64::from(producer.max_message_bytes)),
-                            Some(1),
-                            None,
-                        )
-                    } else if let Some(provider) = virtual_provider {
+                    if let Some(provider) = virtual_provider {
                         if direction != InputDirection::Publication {
                             anyhow::bail!("simulation provider `{source}` cannot serve requests");
                         }
@@ -690,8 +681,18 @@ impl RuntimeLaunchManifest {
                     caller_rank,
                 });
             }
+            if field.kind == super::input::InputKind::Setpoint && field.signature.is_some() {
+                routes.push(self.public_input_route(field)?);
+            }
             return Ok(routes);
         }
+        Ok(vec![self.public_input_route(field)?])
+    }
+
+    fn public_input_route(
+        &self,
+        field: &super::transport::InputTransportField,
+    ) -> crate::Result<ResolvedInputRoute> {
         let signature = field.signature.ok_or_else(|| {
             anyhow::anyhow!(RunnerError::BundleInvalid {
                 message: format!("non-graph input `{}` has no descriptor", field.name),
@@ -719,25 +720,21 @@ impl RuntimeLaunchManifest {
                 message: format!("Commands input `{}` has a zero transport bound", field.name),
             }));
         }
-        Ok(vec![ResolvedInputRoute {
+        Ok(ResolvedInputRoute {
             input_kind: field.kind,
             field: field.name,
-            target_endpoint: consumer.endpoint.clone(),
+            target_endpoint: signature.endpoint.to_owned(),
             binding: super::transport::MethodBinding::from_method(signature),
             source_instance: self.instance_id.clone(),
             source_port: signature.endpoint.to_owned(),
-            direction: if field.kind == super::input::InputKind::Commands {
-                InputDirection::Request
-            } else {
-                InputDirection::Publication
-            },
+            direction: InputDirection::Request,
             max_items,
             max_bytes,
             request_max_bytes: Some(max_bytes),
             caller_identity: None,
             caller_rank: None,
             admitted_sources: self.artifacts.keys().cloned().collect(),
-        }])
+        })
     }
 
     fn generated_call_route(
@@ -1143,10 +1140,10 @@ where
     R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
     let launch = RuntimeLaunch::parse()?;
-    let manifest = RuntimeLaunchManifest::open_with_simulation_run(
+    let manifest = RuntimeLaunchManifest::open_with_native_context(
         &launch.bundle_root,
         &launch.instance_id,
-        launch.simulation_run.as_deref(),
+        launch.simulation_context.as_deref(),
     )?;
     let config = manifest.decode_config::<R>()?;
     let participant = ParticipantId::new(launch.instance_id.clone())
@@ -1401,7 +1398,7 @@ async fn publish_execution<M: prost::Message>(
 }
 
 fn validate_execution_admission<R: RegisteredRuntime>(
-    _manifest: &RuntimeLaunchManifest,
+    manifest: &RuntimeLaunchManifest,
     request: &execution_wire::AdmitExecutionRequest,
     mode: execution_wire::ExecutionMode,
     expected_execution: &str,
@@ -1459,6 +1456,13 @@ fn validate_execution_admission<R: RegisteredRuntime>(
             );
         }
         execution_wire::ExecutionMode::Hardware => {
+            if !manifest.observation_providers.is_empty() {
+                return reject(
+                    "hardware execution cannot use native simulated components".to_owned(),
+                    Vec::new(),
+                );
+            }
+
             if request.quantum_ns != 0 {
                 return reject(
                     "hardware execution must not carry a simulation quantum".to_owned(),
@@ -1925,73 +1929,6 @@ fn enforce_process_boundary_with(
         terminate();
     }
     result
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SourceScenarioProducer {
-    target_instance: String,
-    source_instance: String,
-    signature: crate::artifact::MethodSignature,
-    max_message_bytes: u32,
-}
-
-impl SourceScenarioProducer {
-    fn binding(&self) -> crate::Result<super::transport::MethodBinding> {
-        if self.signature.shape != crate::artifact::MethodShape::Call
-            || !self
-                .signature
-                .lease_valid_for_ms
-                .is_some_and(|valid_for_ms| valid_for_ms > 0)
-        {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "simulation source `{}.{}` is not a leased generated call",
-                    self.source_instance, self.signature.endpoint
-                ),
-            }));
-        }
-        Ok(self.signature.clone())
-    }
-}
-
-fn load_simulation_bindings(
-    path: Option<&Path>,
-) -> crate::Result<BTreeMap<(String, String), SourceScenarioProducer>> {
-    let Some(path) = path else {
-        return Ok(BTreeMap::new());
-    };
-    let bytes = read_bounded(path, 16 * 1024 * 1024)?;
-    let specification: crate::artifact::simulation_run::SimulationRunSpecification =
-        serde_json::from_slice(&bytes).map_err(|source| {
-            anyhow::anyhow!(RunnerError::BundleJson {
-                path: path.to_owned(),
-                source,
-            })
-        })?;
-    let crate::artifact::simulation_run::SimulationRunSpecification::V0 { bindings, .. } =
-        specification;
-    let mut producers = BTreeMap::new();
-    for binding in bindings {
-        let key = (
-            binding.source_instance.clone(),
-            binding.signature.endpoint.clone(),
-        );
-        let producer = SourceScenarioProducer {
-            target_instance: binding.target_instance,
-            source_instance: binding.source_instance,
-            signature: binding.signature,
-            max_message_bytes: binding.max_message_bytes,
-        };
-        if producers.insert(key.clone(), producer).is_some() {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "simulation run contains duplicate source `{}.{}`",
-                    key.0, key.1
-                ),
-            }));
-        }
-    }
-    Ok(producers)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

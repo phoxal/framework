@@ -103,11 +103,6 @@ pub use phoxal_macros::{Config, endpoints, runtime};
 /// Rust-authored Protobuf message and contract-module declarations.
 pub use phoxal_macros::{message, messages};
 
-/// `#[phoxal::scenario]` attribute for function-based simulation tests.
-#[cfg(feature = "scenario")]
-#[cfg_attr(docsrs, doc(cfg(feature = "scenario")))]
-pub use phoxal_macros::scenario;
-
 #[cfg(feature = "runtime")]
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 

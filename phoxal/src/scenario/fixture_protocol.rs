@@ -1,5 +1,5 @@
-//! Invocation-scoped local protocol between simulation tests and
-//! `cargo phoxal test`.
+//! Invocation-scoped local protocol between scenario executables and
+//! `cargo phoxal scenario`.
 
 #![allow(missing_docs)]
 
@@ -14,10 +14,11 @@ use super::{
 };
 use crate::scenario::fixture::{CompletedRun, Plan};
 
-pub const PROTOCOL_VERSION: u32 = 2;
-pub const ENV_ENDPOINT: &str = "PHOXAL_TEST_FIXTURE_ENDPOINT";
-pub const ENV_PROJECT_ROOT: &str = "PHOXAL_TEST_PROJECT_ROOT";
-pub const ENV_SCENE: &str = "PHOXAL_TEST_SCENE";
+/// Standalone scenario-host invocation contract.
+/// Revision 3 replaces test-harness invocation and its environment identities.
+pub const PROTOCOL_VERSION: u32 = 4;
+pub const ENV_ENDPOINT: &str = "PHOXAL_SCENARIO_ENDPOINT";
+pub const ENV_PROJECT_ROOT: &str = "PHOXAL_SCENARIO_PROJECT_ROOT";
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -126,14 +127,14 @@ impl std::error::Error for RunFailure {}
 pub(crate) fn run(test_identity: &str, scene: &Path, plan: Plan) -> crate::Result<CompletedRun> {
     let endpoint = std::env::var_os(ENV_ENDPOINT).ok_or_else(|| {
         crate::anyhow!(
-            "simulation fixture has no command-scoped run host; execute this test with `cargo phoxal test`"
+            "simulation fixture has no command-scoped run host; execute this file with `cargo phoxal scenario <file>`"
         )
     })?;
     let endpoint = PathBuf::from(endpoint);
     {
         let mut stream = std::os::unix::net::UnixStream::connect(&endpoint).map_err(|error| {
             crate::anyhow!(
-                "cannot connect to cargo phoxal test run host at {}: {error}",
+                "cannot connect to cargo phoxal scenario run host at {}: {error}",
                 endpoint.display()
             )
         })?;
@@ -182,6 +183,7 @@ pub(crate) fn run(test_identity: &str, scene: &Path, plan: Plan) -> crate::Resul
         let quantum = Quantum::from_nanos(quantum_ns).ok_or_else(|| {
             crate::anyhow!("run host supplied unsupported quantum {quantum_ns} ns")
         })?;
+        let assertions = plan.assertions.clone();
         let (program, plan_id) = plan.compile(scene.to_owned(), quantum, test_identity)?;
         write_message(
             &mut stream,
@@ -205,7 +207,11 @@ pub(crate) fn run(test_identity: &str, scene: &Path, plan: Plan) -> crate::Resul
                     ));
                 }
                 let run = build_run(test_identity, &program, &report, cleanup_succeeded)?;
-                Ok(CompletedRun::new(plan_id, run))
+                let completed = CompletedRun::new(plan_id, run);
+                for assertion in assertions {
+                    assertion.verify(&completed, quantum)?;
+                }
+                Ok(completed)
             }
             HostMessage::Failed {
                 request_id: returned,

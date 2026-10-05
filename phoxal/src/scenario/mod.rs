@@ -1,8 +1,7 @@
 //! Scenario authoring and execution surface.
 //!
-//! Ordinary Rust tests construct a finite typed plan, execute it through the
-//! command-scoped run host, and use ordinary Rust assertions over the returned
-//! evidence.
+//! Standalone Rust executables construct typed plans and execute them through
+//! `cargo phoxal scenario`. Ordinary Rust tests do not require a scenario host.
 
 mod fixture;
 pub mod fixture_protocol;

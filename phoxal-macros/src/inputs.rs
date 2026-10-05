@@ -51,6 +51,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut transport_types = Vec::new();
     let mut sink_latest = Vec::new();
     let mut sink_clear_latest = Vec::new();
+    let mut sink_bind_latest = Vec::new();
     let mut expire_latest = Vec::new();
     let mut sink_samples = Vec::new();
     let mut sink_events = Vec::new();
@@ -218,9 +219,12 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 
         let sink = expand_transport_sink(kind, &field_name, &ty, &options, field)?;
         if kind == InputKind::Latest {
+            sink_bind_latest.push(quote! {
+                stringify!(#field_name) => { self.#field_name.bind(); Ok(()) }
+            });
             sink_clear_latest.push(quote! {
                 stringify!(#field_name) => {
-                    self.#field_name = ::phoxal::runtime::Latest::unavailable();
+                    self.#field_name.clear();
                     Ok(())
                 }
             });
@@ -256,6 +260,21 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 // to every field and each retains only its own tickets.
                 completion_fields.push(field_name.clone());
             }
+        }
+        if kind == InputKind::Setpoint {
+            let type_error = sink_type_error(&quote!(stringify!(#field_name)));
+            restore_managed.push(quote! {
+                stringify!(#field_name) => {
+                    self.#field_name = *value.downcast::<#ty>().map_err(|_| #type_error)?;
+                    Ok(())
+                }
+            });
+            take_managed.push(quote! {
+                stringify!(#field_name) => {
+                    Ok(::std::boxed::Box::new(::core::mem::take(&mut self.#field_name))
+                        as ::phoxal::runtime::input::TransportValue)
+                }
+            });
         }
         if matches!(
             kind,
@@ -536,6 +555,17 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     _ => Err(::phoxal::macro_support::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
                         detail: format!("input field `{field}` is not a latest value"),
                     })),
+                }
+            }
+
+            fn bind_latest(&mut self, field: &str) -> ::phoxal::Result<()> {
+                match field {
+                    #(#sink_bind_latest,)*
+                    _ => Err(::phoxal::macro_support::anyhow::anyhow!(
+                        ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                            detail: format!("input field `{field}` is not a latest value"),
+                        }
+                    )),
                 }
             }
 

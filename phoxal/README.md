@@ -2,7 +2,7 @@
 
 The Phoxal framework runtime, generated service contracts, and public session client live in this crate.
 
-Source preparation, Cargo orchestration, and immutable bundle assembly belong to the framework-owned `cargo-phoxal` package.
+Source preparation, Cargo orchestration, and immutable bundle assembly belong to the independently owned `cargo-phoxal` application.
 Native model composition belongs to the independent simulator application.
 The runtime consumes the completed bundle manifest and never parses `robot.yaml`, `component.yaml`, or native model source files.
 
@@ -16,35 +16,35 @@ A robot Runtime package uses the default feature set:
 
 ```toml
 [dependencies]
-phoxal = "0.68"
+phoxal = "0.69"
 ```
 
 An application attaching to a running execution:
 
 ```toml
 [dependencies]
-phoxal = { version = "0.68", default-features = false, features = ["session"] }
+phoxal = { version = "0.69", default-features = false, features = ["session"] }
 ```
 
-Scenario authoring belongs to the test tier, so a robot selects it as a dev dependency:
+Scenario authoring belongs to the scenario tier, so a robot selects it as a dev dependency:
 
 ```toml
 [dev-dependencies]
-phoxal = { version = "0.68", features = ["scenario"] }
+phoxal = { version = "0.69", features = ["scenario"] }
 ```
 
 A public contract consumer with no transport or runner takes the base profile:
 
 ```toml
 [dependencies]
-phoxal = { version = "0.68", default-features = false }
+phoxal = { version = "0.69", default-features = false }
 ```
 
 Prepared-product generation is selected in build dependencies only:
 
 ```toml
 [build-dependencies]
-phoxal = { version = "0.68", default-features = false, features = ["build"] }
+phoxal = { version = "0.69", default-features = false, features = ["build"] }
 ```
 
 The `runtime` profile is the default and provides the synchronous Runtime macros, typed inputs and outputs, runner, and required transport.
@@ -68,13 +68,13 @@ These types remain inert in the base profile and keep standard Protobuf wire ide
 The production SDK and build helper need no protoc or generated protocol source.
 Independent `.proto` declarations are test references only.
 Unknown enum numbers fail decoding rather than becoming a default value.
-Session bootstrap negotiates `phoxal.session.v1.r1`; execution and simulation declare their scoped revision 1 for this stricter decoding behavior.
+Session bootstrap negotiates `phoxal.session.v1.r2`; execution and simulation declare their scoped revision 2.
 Wire package identities remain `*.v1`, and artifact formats remain V0.
 Optional scalar zero values and empty strings retain presence, absent nested messages remain `None`, and repeated fields remain ordered vectors.
 The simulation provider's explicitly numeric `shape` field remains an integer with admission validation; it is not converted to an enum silently.
 `phoxal::build::api(BuildApiConfig::default())` reads exact prepared participant products in an ordinary robot build script.
 Place `phoxal::api!();` once at a binary or library crate root to attach its generated `api` module.
-The helper reads local prepared products only, so prepare selected registry or Git participants with `cargo phoxal prepare` before the first bare Cargo build.
+The helper reads local prepared products only, so prepare selected path or pinned Git participants with `cargo phoxal prepare` before the first bare Cargo build.
 The project compiler owns source preparation and project validation inside the `cargo-phoxal` package.
 When selected services use different observation payload types, place ordinary `From` or `TryFrom` implementations in the robot's `src/conversions.rs` and declare `mod conversions;`.
 The single `phoxal::api!()` attachment derives their bounded input/output endpoints from the prepared provider contracts and the authored graph.
@@ -82,6 +82,15 @@ Conversions execute in the brain's normal runtime invocation, preserving the ori
 Launch the authored brain with `phoxal::runtime::run::<runtime::Brain>()`.
 Brain-owned conversions can also run explicitly in an ordinary step over canonical provider inputs; `#[phoxal::output(stamped, max_bytes = ...)]` accepts a `phoxal::runtime::Sample` so forwarding preserves its original provenance.
 Required provider bindings must be prepared before compiling the complete consumer.
+
+A participant can declare a bounded family of leased scalar outputs when its admitted configuration determines the port names.
+For example, an output with `family = "/wheels", suffix = "_actuator", max_ports = 8` resolves one typed output for each key of that configuration object.
+The projection returns `Vec<(String, Option<Payload>)>` with every configured logical name; `None` withdraws that member's lease.
+The SDK resolves and validates the complete per-instance roster, including collisions with fixed ports, before admission.
+An invocation with missing, extra, duplicate, oversized, or incompatible members fails before committing any output from that candidate.
+This is coordinated invocation acceptance, not a guarantee of atomic multicast over the network.
+Preparation keeps one reusable executable template and separate configuration-bound instance contracts; generated APIs consume those resolved contracts.
+After changing a configuration that determines ports, run preparation before ordinary Cargo compilation; stale instance products refuse with an actionable diagnostic.
 
 
 Use <https://docs.rs/phoxal> as the authority for the published Rust API.

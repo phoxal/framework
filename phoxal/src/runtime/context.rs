@@ -391,6 +391,12 @@ impl<'a, T> Observation<'a, T> {
         }
     }
 
+    /// Whether the admitted graph supplies this input, including while unavailable.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.latest.is_connected()
+    }
+
     /// Returns the payload when it satisfies the endpoint's declared age
     /// bound at this invocation's time.
     #[must_use]

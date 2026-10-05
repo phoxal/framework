@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["tests/fixtures/conversion-robot"]
 # SDK libraries and small SDK-owned compile/runtime fixtures.
 members = [
     "phoxal-build",

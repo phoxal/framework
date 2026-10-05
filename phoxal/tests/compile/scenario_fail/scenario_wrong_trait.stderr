@@ -1,5 +1,0 @@
-error: the scenario argument type must be `Simulation`
- --> tests/compile/scenario_fail/scenario_wrong_trait.rs:6:31
-  |
-6 | fn wrong_fixture(_value: &mut String) -> phoxal::Result<()> {
-  |                               ^^^^^^

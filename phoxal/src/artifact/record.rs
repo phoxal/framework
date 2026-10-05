@@ -111,6 +111,12 @@ pub struct InputRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputRecord {
+    /// Bounded configuration-owned expansion of this typed output template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<super::output_family::OutputFamily>,
+    /// Source template of a resolved family member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_template: Option<String>,
     /// Public provided endpoint key.
     pub name: String,
     /// Public served port name.
@@ -195,6 +201,8 @@ mod tests {
                 response_max_items: None,
             }],
             outputs: vec![OutputRecord {
+                family: None,
+                family_template: None,
                 name: "output".to_owned(),
                 port: Some("output".to_owned()),
                 signature: Some(MethodSignature {

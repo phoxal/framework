@@ -281,7 +281,7 @@ const STANDARD_RANGE_MAX_ITEMS: u64 = 16;
 const STANDARD_RANGE_MAX_BYTES: u64 = 512;
 const STANDARD_GNSS_MAX_ITEMS: u64 = 8;
 const STANDARD_GNSS_MAX_BYTES: u64 = 8192;
-const ACTUATOR_SETPOINT: &str = "phoxal.component.actuator.v1.ActuatorSetpoint";
+const ACTUATOR_SETPOINT: &str = "phoxal.component.actuator.v1.ActuatorCommand";
 const ENCODER_SAMPLE: &str = "phoxal.robotics.v1.EncoderSample";
 const IMU_SAMPLE: &str = "phoxal.component.imu.v1.ImuSample";
 const ACCELEROMETER_SAMPLE: &str = "phoxal.component.imu.v1.AccelerometerSample";
@@ -793,7 +793,7 @@ mod tests {
             .expect("leased actuator input");
         assert_eq!(
             actuator.message,
-            "phoxal.component.actuator.v1.ActuatorSetpoint"
+            "phoxal.component.actuator.v1.ActuatorCommand"
         );
         assert_eq!(
             actuator
@@ -814,7 +814,7 @@ mod tests {
             .expect("standard resolution");
         assert_eq!(
             resolved.inputs[0].message.rust_path,
-            "::phoxal::contracts::component::actuator::ActuatorSetpoint"
+            "::phoxal::contracts::component::actuator::ActuatorCommand"
         );
         assert_eq!(
             resolved.outputs[0].message.rust_path,

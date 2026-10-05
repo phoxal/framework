@@ -66,23 +66,23 @@ pub const BUNDLE_CONTRACT: InterfaceContract = InterfaceContract {
 /// Current supervisor invocation interface.
 pub const SUPERVISOR_LAUNCH_CONTRACT: InterfaceContract = InterfaceContract {
     kind: InterfaceKind::SupervisorLaunch,
-    revision: 0,
+    revision: 1,
 };
 /// Current participant execution interface.
 pub const EXECUTION_PROTOCOL_CONTRACT: InterfaceContract = InterfaceContract {
     kind: InterfaceKind::Execution,
-    revision: 1,
+    revision: 2,
 };
 /// Current controlled simulation interface.
 pub const SIMULATION_PROTOCOL_CONTRACT: InterfaceContract = InterfaceContract {
     kind: InterfaceKind::Simulation,
-    revision: 1,
+    revision: 2,
 };
 
 /// Current simulator invocation and scene staging interface.
 pub const SIMULATOR_LAUNCH_CONTRACT: InterfaceContract = InterfaceContract {
     kind: InterfaceKind::SimulatorLaunch,
-    revision: 0,
+    revision: 1,
 };
 /// Current native installation command/status interface.
 /// Revision 1 supports independent native release selection through
@@ -344,7 +344,7 @@ mod tests {
             assert!(decode_application_contract(&bytes).is_none());
         }
         let changed = ApplicationContract {
-            launch: SUPERVISOR_LAUNCH_CONTRACT.with_revision(1),
+            launch: SUPERVISOR_LAUNCH_CONTRACT.with_revision(2),
             ..RECORD
         };
         let bytes = encode_application_contract(&changed);

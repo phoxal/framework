@@ -4,7 +4,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, LitStr, Type};
 
-/// Derive `phoxal::runtime::ConfigSchema` from a named struct using the same
+/// Derive configuration schemas for named structs and externally tagged
+/// enums containing configuration structs, using the same
 /// Serde attributes accepted by the Runtime configuration decoder.
 pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
@@ -28,6 +29,69 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
     let container = container.ok_or_else(|| {
         syn::Error::new_spanned(&input, "unable to parse Config with Serde's derive model")
     })?;
+
+    if let serde_derive_internals::ast::Data::Enum(variants) = &container.data {
+        if variants
+            .iter()
+            .all(|variant| matches!(variant.style, serde_derive_internals::ast::Style::Unit))
+        {
+            let names: Vec<_> = variants
+                .iter()
+                .map(|variant| variant.attrs.name().deserialize_name())
+                .collect();
+            let encoded = names
+                .iter()
+                .map(|name| serde_json_string(name))
+                .collect::<Vec<_>>()
+                .join(",");
+            let schema = LitStr::new(
+                &format!(
+                    "{{\"anyOf\":[{{\"type\":\"string\",\"enum\":[{encoded}]}},{{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"propertyNames\":{{\"enum\":[{encoded}]}},\"additionalProperties\":{{\"type\":\"null\"}}}}]}}"
+                ),
+                Span::call_site(),
+            );
+            return Ok(quote! {
+                impl ::phoxal::runtime::ConfigSchema for #struct_name {
+                    const SCHEMA_VALUE: ::phoxal::runtime::ConfigSchemaValue =
+                        ::phoxal::runtime::ConfigSchemaValue::new().push_str(#schema);
+                }
+            });
+        }
+        let mut fragments = vec![quote!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"oneOf\":["
+        )];
+        for (index, variant) in variants.iter().enumerate() {
+            if !matches!(variant.style, serde_derive_internals::ast::Style::Newtype) {
+                return Err(syn::Error::new_spanned(
+                    &input,
+                    "Config enum variants must contain one configuration struct",
+                ));
+            }
+            if index > 0 {
+                fragments.push(quote!(","));
+            }
+            let name = serde_json_string(variant.attrs.name().deserialize_name());
+            let prefix = LitStr::new(
+                &format!("{{\"type\":\"object\",\"properties\":{{{name}:"),
+                Span::call_site(),
+            );
+            let suffix = LitStr::new(
+                &format!("}},\"required\":[{name}],\"additionalProperties\":false}}"),
+                Span::call_site(),
+            );
+            let ty = variant.fields[0].ty;
+            fragments.push(quote!(#prefix));
+            fragments.push(quote!(<#ty as ::phoxal::runtime::ConfigSchema>::SCHEMA_JSON));
+            fragments.push(quote!(#suffix));
+        }
+        fragments.push(quote!("]}"));
+        return Ok(quote! {
+            impl ::phoxal::runtime::ConfigSchema for #struct_name {
+                const SCHEMA_VALUE: ::phoxal::runtime::ConfigSchemaValue =
+                    ::phoxal::runtime::ConfigSchemaValue::new() #(.push_str(#fragments))*;
+            }
+        });
+    }
 
     let serde_derive_internals::ast::Data::Struct(
         serde_derive_internals::ast::Style::Struct,
@@ -116,6 +180,20 @@ fn serde_json_string(value: &str) -> String {
 
 fn validate_config_serde_attributes(input: &DeriveInput) -> syn::Result<()> {
     SerdeAttrLocation::Container.validate(&input.attrs)?;
+    if let Data::Enum(data) = &input.data {
+        for variant in &data.variants {
+            SerdeAttrLocation::Field.validate(&variant.attrs)?;
+            for field in &variant.fields {
+                if !field.attrs.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "Config enum payload fields do not accept attributes",
+                    ));
+                }
+            }
+        }
+        return Ok(());
+    }
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             input,

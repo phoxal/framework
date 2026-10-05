@@ -198,7 +198,7 @@ pub enum Action {
     /// supplying a replacement.
     Withdraw {
         target_instance: String,
-        producer_signature: OwnedMethodSignature,
+        consumer_signature: OwnedMethodSignature,
     },
     /// Submit a request to a commands-style service and observe the
     /// correlation id through the controlled boundary. Advancement
@@ -281,16 +281,16 @@ impl Action {
     /// instance whose authority is being recalled.
     pub fn withdraw(
         target_instance: impl Into<String>,
-        producer_signature: impl Into<OwnedMethodSignature>,
+        consumer_signature: impl Into<OwnedMethodSignature>,
     ) -> Result<Self, PlanValidationError> {
-        let producer_signature = producer_signature.into();
+        let consumer_signature = consumer_signature.into();
         let target_instance = target_instance.into();
         if target_instance.is_empty() {
             return Err(PlanValidationError::EmptyTargetInstance {
                 constructor: "Action::withdraw",
             });
         }
-        if !producer_signature.permits_withdrawal() {
+        if !consumer_signature.permits_withdrawal() {
             return Err(PlanValidationError::WrongMethodContract {
                 step_label: target_instance,
                 detail: "method contract does not support this action",
@@ -298,7 +298,7 @@ impl Action {
         }
         Ok(Action::Withdraw {
             target_instance,
-            producer_signature,
+            consumer_signature,
         })
     }
 
@@ -396,14 +396,14 @@ impl Action {
             }
             Action::Withdraw {
                 target_instance,
-                producer_signature,
+                consumer_signature,
             } => {
                 if target_instance.is_empty() {
                     return Err(PlanValidationError::EmptyTargetInstance {
                         constructor: "Action::Withdraw",
                     });
                 }
-                if !producer_signature.permits_withdrawal() {
+                if !consumer_signature.permits_withdrawal() {
                     return Err(PlanValidationError::WrongMethodContract {
                         step_label: step_label.to_owned(),
                         detail: "method contract does not support this action",

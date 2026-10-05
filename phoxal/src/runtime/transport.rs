@@ -443,6 +443,48 @@ pub struct PreparedOutput {
 }
 
 impl PreparedOutput {
+    /// Stages one complete bounded family of configuration-named leased values.
+    /// Duplicate, unsafe and oversized members fail before returning any records.
+    /// The execution owner additionally compares membership to the admitted
+    /// instance contract before committing its invocation.
+    pub fn leased_family<T: ProstPayload>(
+        template: MethodSignature,
+        family: super::outputs::OutputFamily,
+        values: Vec<(String, Option<T>)>,
+        max_bytes: u64,
+        metadata: RuntimeWireMetadata,
+        field: &'static str,
+    ) -> crate::Result<Vec<Self>> {
+        if values.is_empty() || values.len() as u64 > family.max_ports {
+            return Err(crate::anyhow!(
+                "output family {field} has invalid membership size"
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut records = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            crate::artifact::bundle::validate_segment(&name, "output member")
+                .map_err(|error| crate::anyhow!(error))?;
+            let endpoint = format!("{name}{}", family.suffix);
+            crate::artifact::bundle::validate_segment(&endpoint, "output port")
+                .map_err(|error| crate::anyhow!(error))?;
+            if !seen.insert(endpoint.clone()) {
+                return Err(crate::anyhow!("output family {field} repeats {endpoint}"));
+            }
+            let mut record = match value {
+                Some(value) => Self::response(template, &value, max_bytes, metadata.clone())?,
+                None => Self::withdrawal(template, metadata.clone()),
+            }
+            .for_field(field);
+            let mut binding = MethodBinding::from(template);
+            binding.endpoint = endpoint.clone();
+            binding.method = endpoint;
+            record.retarget_binding(binding);
+            records.push(record);
+        }
+        Ok(records)
+    }
+
     /// Stage an already encoded ordinary publication.
     pub fn encoded_response(
         signature: MethodSignature,
@@ -788,6 +830,13 @@ impl PreparedOutput {
         match &self.endpoint {
             PreparedEndpoint::Signature(signature) => Some(signature),
             PreparedEndpoint::Binding(_) => None,
+        }
+    }
+
+    pub(crate) fn owned_binding(&self) -> MethodBinding {
+        match &self.endpoint {
+            PreparedEndpoint::Signature(signature) => MethodBinding::from(*signature),
+            PreparedEndpoint::Binding(binding) => binding.clone(),
         }
     }
 

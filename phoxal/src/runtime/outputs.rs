@@ -309,9 +309,22 @@ impl OutputKind {
     }
 }
 
+/// Compile-time bounds for one configured leased output family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputFamily {
+    /// Object-valued configuration pointer carrying logical member names.
+    pub config_pointer: &'static str,
+    /// Literal endpoint suffix.
+    pub suffix: &'static str,
+    /// Maximum complete membership size.
+    pub max_ports: u64,
+}
+
 /// Compile-time metadata for one collected output role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputField {
+    /// Configuration-owned port family, when this field is a template.
+    pub family: Option<OutputFamily>,
     /// Private Rust field or method name.
     pub name: &'static str,
     /// Output role.

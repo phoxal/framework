@@ -46,6 +46,7 @@ enum Endpoint {
         queued: bool,
         projection: bool,
         forwarded: bool,
+        family: Option<Family>,
         lease_ms: Option<LitInt>,
         max_items: Option<LitInt>,
         max_bytes: LitInt,
@@ -112,9 +113,33 @@ impl PayloadRef {
     }
 }
 
+struct Family {
+    pointer: LitStr,
+    suffix: LitStr,
+    max_ports: LitInt,
+    lease_ms: LitInt,
+}
+
+impl Family {
+    fn metadata(&self) -> TokenStream {
+        let Self {
+            pointer,
+            suffix,
+            max_ports,
+            ..
+        } = self;
+        quote!(::phoxal::runtime::outputs::OutputFamily {
+            config_pointer: #pointer, suffix: #suffix, max_ports: #max_ports,
+        })
+    }
+}
+
 /// Attribute values collected from one endpoint field.
 #[derive(Default)]
 struct FieldOptions {
+    family: Option<LitStr>,
+    suffix: Option<LitStr>,
+    max_ports: Option<LitInt>,
     lease_ms: Option<LitInt>,
     max_age_ms: Option<LitInt>,
     max_items: Option<LitInt>,
@@ -164,7 +189,13 @@ fn parse_options(attrs: &[syn::Attribute], role: &str) -> syn::Result<FieldOptio
                 }
                 Ok(literal)
             };
-            if meta.path.is_ident("lease_ms") {
+            if meta.path.is_ident("family") {
+                options.family = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("suffix") {
+                options.suffix = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("max_ports") {
+                options.max_ports = Some(integer(&meta)?);
+            } else if meta.path.is_ident("lease_ms") {
                 options.lease_ms = Some(integer(&meta)?);
             } else if meta.path.is_ident("max_age_ms") {
                 options.max_age_ms = Some(integer(&meta)?);
@@ -679,6 +710,7 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                 queued,
                 projection,
                 forwarded,
+                family,
                 lease_ms,
                 max_items,
                 max_bytes,
@@ -812,34 +844,61 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                     });
                     let endpoint_str = name.to_string();
                     harness_method_names.push(name.clone());
-                    harness_methods.push(quote! {
-                        /// The latest accepted publication for this retained state
-                        /// output, including its bootstrap publication. The value
-                        /// is decoded lazily from the accepted encoded record.
-                        pub fn #name(&self) -> ::std::option::Option<#anchored_message> {
-                            self.state_records
-                                .get(#endpoint_str)
-                                .and_then(|bytes| {
-                                    ::phoxal::runtime::transport::decode_prost(bytes).ok()
-                                })
-                        }
-                    });
-                    let (table_field, table_setter) =
-                        projection_table_entries(name, &anchored(message, 1), lease_ms.is_some());
+                    if let Some(family) = family {
+                        let suffix = &family.suffix;
+                        harness_methods.push(quote! {
+                            /// The latest accepted scalar publication for one logical member.
+                            pub fn #name(&self, member: &str) -> ::std::option::Option<#anchored_message> {
+                                self.state_records.get(&::std::format!("{}{}", member, #suffix))
+                                    .and_then(|bytes| ::phoxal::runtime::transport::decode_prost(bytes).ok())
+                            }
+                        });
+                    } else {
+                        harness_methods.push(quote! {
+                            /// The latest accepted publication for this retained state
+                            /// output, including its bootstrap publication. The value
+                            /// is decoded lazily from the accepted encoded record.
+                            pub fn #name(&self) -> ::std::option::Option<#anchored_message> {
+                                self.state_records
+                                    .get(#endpoint_str)
+                                    .and_then(|bytes| {
+                                        ::phoxal::runtime::transport::decode_prost(bytes).ok()
+                                    })
+                            }
+                        });
+                    }
+                    let (table_field, table_setter) = projection_table_entries(
+                        name,
+                        &anchored(message, 1),
+                        lease_ms.is_some(),
+                        family.is_some(),
+                    );
                     projection_table_fields.push(table_field);
                     projection_table_setters.push(table_setter);
                     projection_table_defaults.push(quote! { #name: ::std::option::Option::None });
                     encode_statements.push(encode_statement(
-                        name, &constant, lease_ms, max_bytes, *on_change,
+                        name,
+                        &constant,
+                        lease_ms,
+                        max_bytes,
+                        *on_change,
+                        family.as_ref(),
                     ));
                     binding_fields.push(binding_field_entry(
-                        name, &constant, lease_ms, max_bytes, *bootstrap, *on_change,
+                        name,
+                        &constant,
+                        lease_ms,
+                        max_bytes,
+                        *bootstrap,
+                        *on_change,
+                        family.as_ref(),
                     ));
                     port_checks.push(port_check_entry(
                         name,
                         &constant,
                         &anchored(message, 1),
                         lease_ms,
+                        family.is_some(),
                     ));
                 } else {
                     constants.push(quote! {
@@ -938,7 +997,7 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
                         if let ::std::option::Option::Some(value) = &outputs.#name {
                             let bytes = <#anchored_message as ::phoxal::contracts::ProstPayload>::
                                 encode_payload(#encoded_value)?;
-                            view.state_records.insert(#endpoint_str, bytes);
+                            view.state_records.insert(#endpoint_str.to_owned(), bytes);
                         }
                     });
                 }
@@ -1411,7 +1470,7 @@ pub(crate) fn expand_api(attr: TokenStream, item: TokenStream) -> syn::Result<To
             pub(crate) harness_id: u64,
             /// Encoded state publications keyed by output field name.
             pub(crate) state_records: ::std::collections::BTreeMap<
-                &'static str,
+                ::std::string::String,
                 ::std::vec::Vec<u8>,
             >,
             #(#harness_fields)*
@@ -2010,8 +2069,11 @@ fn projection_table_entries(
     name: &Ident,
     message: &Path,
     leased: bool,
+    family: bool,
 ) -> (TokenStream, TokenStream) {
-    let returns = if leased {
+    let returns = if family {
+        quote!(::std::vec::Vec<(::std::string::String, ::std::option::Option<#message>)>)
+    } else if leased {
         quote!(::std::option::Option<#message>)
     } else {
         quote!(#message)
@@ -2045,8 +2107,20 @@ fn encode_statement(
     lease_ms: &Option<LitInt>,
     max_bytes: &LitInt,
     on_change: bool,
+    family: Option<&Family>,
 ) -> TokenStream {
     let field = name.to_string();
+    if let Some(family) = family {
+        let metadata = family.metadata();
+        let lease = &family.lease_ms;
+        return quote! {
+            let values = table.#name.as_ref().ok_or_else(|| ::phoxal::anyhow!("output family projection is missing"))?(service, state);
+            records.extend(::phoxal::runtime::transport::PreparedOutput::leased_family(
+                #constant.signature(), #metadata, values, #max_bytes,
+                ::phoxal::runtime::transport::setpoint_metadata(source, context, sequence, #lease), #field,
+            )?);
+        };
+    }
     if let Some(lease) = lease_ms {
         quote! {
             {
@@ -2117,7 +2191,15 @@ fn binding_field_entry(
     max_bytes: &LitInt,
     bootstrap: bool,
     on_change: bool,
+    family: Option<&Family>,
 ) -> TokenStream {
+    let family = family.map_or_else(
+        || quote!(::std::option::Option::None),
+        |family| {
+            let value = family.metadata();
+            quote!(::std::option::Option::Some(#value))
+        },
+    );
     let (kind, port, valid_for_ms) = match lease_ms {
         Some(lease) => (
             quote!(Setpoint),
@@ -2132,6 +2214,7 @@ fn binding_field_entry(
     };
     quote! {
         ::phoxal::runtime::outputs::OutputField {
+            family: #family,
             name: stringify!(#name),
             kind: ::phoxal::runtime::outputs::OutputKind::#kind,
             port: ::std::option::Option::Some(#port.signature().endpoint),
@@ -2157,7 +2240,11 @@ fn port_check_entry(
     constant: &Ident,
     message: &Path,
     lease_ms: &Option<LitInt>,
+    family: bool,
 ) -> TokenStream {
+    if family {
+        return quote!();
+    }
     if lease_ms.is_some() {
         let check_name = format_ident!("__phoxal_setpoint_port_{}", name);
         quote! {
@@ -2213,6 +2300,14 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
         ));
     };
     let options = parse_options(&field.attrs, role)?;
+    if (options.family.is_some() || options.suffix.is_some() || options.max_ports.is_some())
+        && (role != "output" || split_wrapper(&field.ty)?.0 != "Latest")
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            "output families apply only to leased Latest<T> projections",
+        ));
+    }
     // Small-message capacities default to one bounded batch; an endpoint
     // that needs more declares its explicit override.
     let max_bytes = options.max_bytes.unwrap_or_else(default_max_bytes);
@@ -2329,6 +2424,7 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                     queued: true,
                     projection: false,
                     forwarded: false,
+                    family: None,
                     lease_ms: None,
                     max_items: Some(options.max_items.unwrap_or_else(default_max_items)),
                     max_bytes,
@@ -2348,6 +2444,49 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                     "only projected outputs carry lease_ms",
                 ));
             }
+            let family = if let Some(pointer) = options.family {
+                if !options.projection
+                    || options.lease_ms.is_none()
+                    || options.stamped
+                    || options.on_change
+                    || options.bootstrap
+                {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "an output family requires a leased state projection",
+                    ));
+                }
+                let suffix = options.suffix.ok_or_else(|| {
+                    syn::Error::new_spanned(field, "an output family requires suffix")
+                })?;
+                let max_ports = options.max_ports.ok_or_else(|| {
+                    syn::Error::new_spanned(field, "an output family requires max_ports")
+                })?;
+                if !(1..=64).contains(&max_ports.base10_parse::<u64>()?)
+                    || !pointer.value().starts_with('/')
+                {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "output family requires a JSON pointer and at most 64 ports",
+                    ));
+                }
+                Some(Family {
+                    pointer,
+                    suffix,
+                    max_ports,
+                    lease_ms: options.lease_ms.clone().ok_or_else(|| {
+                        syn::Error::new_spanned(field, "an output family requires lease_ms")
+                    })?,
+                })
+            } else {
+                if options.suffix.is_some() || options.max_ports.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "suffix and max_ports require family",
+                    ));
+                }
+                None
+            };
             Ok(Endpoint::Output {
                 name,
                 message: inner,
@@ -2356,6 +2495,7 @@ fn analyze_endpoint(field: &syn::Field, package: Option<&LitStr>) -> syn::Result
                 // publication is part of the endpoint semantic.
                 projection: options.projection || state,
                 forwarded: options.stamped,
+                family,
                 lease_ms: options.lease_ms,
                 max_items: None,
                 max_bytes,

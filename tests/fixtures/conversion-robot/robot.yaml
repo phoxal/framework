@@ -1,0 +1,22 @@
+schema: phoxal/robot/v0
+robot:
+  id: phoxal-conversion-robot
+  model: model/robot.xml
+brain: { binary: brain }
+services:
+  navigation:
+    source: { git: { name: phoxal-service-navigation, url: https://github.com/phoxal/services.git, rev: 38030e8fb96b782c7a2419d1176e7ecc05828865, path: navigation } }
+    config: { max_expansions_per_step: 32, goal_tolerance_m: 0.1 }
+  world:
+    source: { git: { name: phoxal-service-world, url: https://github.com/phoxal/services.git, rev: 38030e8fb96b782c7a2419d1176e7ecc05828865, path: world } }
+connections:
+  - from: brain.odometry
+    to: navigation.localization
+  - from: brain.odometry
+    to: world.pose
+  - from: world.revision
+    to: navigation.map
+  - from: world.revision
+    to: brain.world_status
+supervisor:
+  source: { git: { name: phoxal-supervisor, url: https://github.com/phoxal/supervisor.git, rev: 8237e88b0d3d64b2bb39ac35328dc9287a4faea7 } }

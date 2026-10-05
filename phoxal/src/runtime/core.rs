@@ -1088,6 +1088,59 @@ mod tests {
     use super::{ExecutionDuration, ExecutionTime, InitContext, StepContext};
 
     #[test]
+    fn configuration_choice_schema_matches_serde_and_rejects_unsupported_models() {
+        #[derive(Debug, serde::Deserialize, serde::Serialize, crate::Config)]
+        #[serde(deny_unknown_fields)]
+        struct Differential {
+            track_width_m: f64,
+            #[serde(default)]
+            calibrated: bool,
+        }
+        #[derive(Debug, serde::Deserialize, serde::Serialize, crate::Config)]
+        #[serde(rename_all = "snake_case")]
+        enum Drive {
+            Differential(Differential),
+        }
+        let schema: serde_json::Value =
+            serde_json::from_str(<Drive as super::ConfigSchema>::SCHEMA_JSON).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for (value, valid) in [
+            (
+                serde_json::json!({"differential": {"track_width_m": 0.52}}),
+                true,
+            ),
+            (
+                serde_json::json!({"differential": {"track_width_m": 0.52, "calibrated": true}}),
+                true,
+            ),
+            (
+                serde_json::json!({"ackermann": {"track_width_m": 0.52}}),
+                false,
+            ),
+            (serde_json::json!({"differential": {}}), false),
+            (
+                serde_json::json!({"differential": {"track_width_m": "bad"}}),
+                false,
+            ),
+            (
+                serde_json::json!({"differential": {"track_width_m": 0.52, "unknown": 1}}),
+                false,
+            ),
+            (
+                serde_json::json!({"differential": {"track_width_m": 0.52}, "other": {}}),
+                false,
+            ),
+        ] {
+            assert_eq!(validator.is_valid(&value), valid, "schema {value}");
+            assert_eq!(
+                serde_json::from_value::<Drive>(value.clone()).is_ok(),
+                valid,
+                "decoder {value}"
+            );
+        }
+    }
+
+    #[test]
     fn first_step_has_zero_elapsed_and_index() {
         let context = StepContext::first(
             ExecutionTime::from_nanos(7_000_000),
