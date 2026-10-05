@@ -1,7 +1,8 @@
 # Conversion qualification robot
 
 This robot executes ordinary Rust conversions inside the canonical brain runtime.
-Its process tests exercise source capture provenance, freshness, real conversion failure, and reset behavior with World and Navigation.
+Its process tests exercise World-to-Navigation delivery, source capture provenance, freshness, and execution shutdown.
+The SDK runner suite separately covers conversion failure and reset fencing over the real transport.
 Prepare and build its bundle before starting Cargo tests so the test process never recursively acquires its own Cargo build lock.
 
 ```sh

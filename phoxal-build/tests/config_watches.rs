@@ -18,6 +18,7 @@ fn cargo_at_home(
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env("CARGO_TERM_COLOR", "never")
         .args(arguments)
         .args(["--offline", "--target-dir"])
         .arg(root.join("compiler-output"))
