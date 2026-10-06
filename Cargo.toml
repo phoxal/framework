@@ -85,9 +85,9 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # `default-features = false`: `phoxal` carries one consumer profile per
 # supported role, and a member that inherits a default profile never says which
 # role it is. Every member below names its own.
-phoxal = { path = "phoxal", version = "0.69.0", default-features = false }
-phoxal-macros = { path = "phoxal-macros", version = "0.69.0" }
-phoxal-build = { path = "phoxal-build", version = "0.69.0" }
+phoxal = { path = "phoxal", version = "0.70.0", default-features = false }
+phoxal-macros = { path = "phoxal-macros", version = "0.70.0" }
+phoxal-build = { path = "phoxal-build", version = "0.70.0" }
 
 [workspace.lints.rust]
 unused = "warn"

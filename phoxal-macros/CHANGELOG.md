@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.69.0...phoxal-macros-v0.70.0) - 2026-10-06
+
+### Added
+
+- [**breaking**] preserve authored graphs and resolve named runtime outputs ([#532](https://github.com/phoxal/framework/pull/532))
+
 ## [0.67.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.66.0...phoxal-macros-v0.67.0) - 2026-08-20
 
 ### Added
