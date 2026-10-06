@@ -12,7 +12,7 @@ name = "brain"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { version = "0.69.0", default-features = false, features = ["runtime", "session"] }
+phoxal = { version = "0.70.0", default-features = false, features = ["runtime", "session"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
@@ -20,7 +20,7 @@ libc = "0.2"
 tempfile = "3"
 
 [build-dependencies]
-phoxal = { version = "0.69.0", default-features = false, features = ["build"] }
+phoxal = { version = "0.70.0", default-features = false, features = ["build"] }
 
 [lints.rust]
 warnings = "deny"
