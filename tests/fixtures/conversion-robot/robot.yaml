@@ -5,10 +5,10 @@ robot:
 brain: { binary: brain }
 services:
   navigation:
-    source: { git: { name: phoxal-service-navigation, url: https://github.com/phoxal/services.git, rev: 38030e8fb96b782c7a2419d1176e7ecc05828865, path: navigation } }
+    source: { git: { name: phoxal-service-navigation, url: https://github.com/phoxal/services.git, rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb, path: navigation } }
     config: { max_expansions_per_step: 32, goal_tolerance_m: 0.1 }
   world:
-    source: { git: { name: phoxal-service-world, url: https://github.com/phoxal/services.git, rev: 38030e8fb96b782c7a2419d1176e7ecc05828865, path: world } }
+    source: { git: { name: phoxal-service-world, url: https://github.com/phoxal/services.git, rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb, path: world } }
 connections:
   - from: brain.odometry
     to: navigation.localization
@@ -19,4 +19,4 @@ connections:
   - from: world.revision
     to: brain.world_status
 supervisor:
-  source: { git: { name: phoxal-supervisor, url: https://github.com/phoxal/supervisor.git, rev: 8237e88b0d3d64b2bb39ac35328dc9287a4faea7 } }
+  source: { git: { name: phoxal-supervisor, url: https://github.com/phoxal/supervisor.git, rev: 087da0b8a38f71c64601f2f9c1d5a39b306a6f3b } }
