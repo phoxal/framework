@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0](https://github.com/phoxal/framework/compare/phoxal-v0.69.0...phoxal-v0.70.0) - 2026-10-06
+
+### Added
+
+- [**breaking**] preserve authored graphs and resolve named runtime outputs ([#532](https://github.com/phoxal/framework/pull/532))
+
+### Other
+
+- bound independent two-field exchange rounds ([#533](https://github.com/phoxal/framework/pull/533))
+- *(release)* update package versions ([#521](https://github.com/phoxal/framework/pull/521))
+
 ## [0.69.0](https://github.com/phoxal/framework/compare/phoxal-v0.68.0...phoxal-v0.69.0) - 2026-10-04
 
 ### Added
