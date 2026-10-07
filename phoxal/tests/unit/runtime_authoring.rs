@@ -5424,6 +5424,13 @@ mod review9_regressions {
         assert!(refusal.is_err(), "the admission refusal faults the owner");
         drop(owner);
 
+        let rejected = phoxal_runtime_diary_brain::Adapter::new();
+        let state = rejected.init(&InitContext::new(ExecutionTime::default()), ())?;
+        let _ = rejected.step(&context(0, 0), state, &inputs)?;
+        rejected.discarded();
+        assert!(rejected.behavior_diary().accepted().is_empty());
+        assert!(!rejected.behavior_diary().overflowed());
+
         // The same adapter hooks the owner drives, exercised where the
         // post-rejection sink is readable: the first candidate is
         // accepted and publishes one record, the second candidate's
@@ -5433,6 +5440,8 @@ mod review9_regressions {
         let state = adapter.init(&InitContext::new(ExecutionTime::default()), ())?;
         let (state, _outputs) = adapter.step(&context(0, 0), state, &inputs)?;
         adapter.accepted();
+        let retained = adapter.behavior_diary().accepted();
+        let prior_loss = adapter.behavior_diary().overflowed();
         let (state, _outputs) = adapter.step(&context(10, 1), state, &inputs)?;
         let _ = state;
         adapter.discarded();
@@ -5446,9 +5455,11 @@ mod review9_regressions {
             sink[0].invocation, 0,
             "only the previously accepted record remains"
         );
-        assert!(
-            !adapter.behavior_diary().overflowed(),
-            "the refusal is not an observer loss"
+        assert_eq!(sink, retained, "discard preserves the full accepted record");
+        assert_eq!(
+            adapter.behavior_diary().overflowed(),
+            prior_loss,
+            "discard adds no loss beyond prior acceptance outbox saturation"
         );
         Ok(())
     }

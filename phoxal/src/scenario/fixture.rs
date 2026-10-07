@@ -229,7 +229,15 @@ impl Plan {
         })
     }
 
-    /// Record native truth for one named simulator body.
+    /// Record the simulator's physical root-body evidence under a capture name.
+    ///
+    /// The current host labels root terminal samples with the first native-body
+    /// capture name; it does not resolve arbitrary descendant body names or query
+    /// a different native body.
+    /// Position is the physical root-body origin in world coordinates, not a
+    /// footprint frame or center of mass. Orientation is a body-to-world unit
+    /// quaternion ordered [w, x, y, z]. Both velocity vectors use world axes,
+    /// with linear velocity evaluated at that same physical body origin.
     pub fn record_body(
         &mut self,
         body: impl Into<String>,

@@ -42,6 +42,7 @@ A missing prepared selection reports the input-store path and that preparation c
 Build scripts do not invoke Cargo or guess paths from `OUT_DIR`.
 
 Robot API generation consumes the exact tool-prepared resolved composition and its immutable contract/descriptor snapshot.
+Brain and services are inside the robot section alongside components; all source selections are concrete because the tool has already resolved named references.
 It never rereads robot.yaml or implements layer composition.
 Selected authored files are watched and checked for freshness; edits require cargo phoxal prepare again.
 Each tool command chooses its own file selection, while ordinary Cargo reads the last successfully prepared composition.

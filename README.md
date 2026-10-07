@@ -11,6 +11,9 @@ Full four-wheel native qualification belongs to [robot-rover](https://github.com
 ## Robot authoring
 
 A robot selects its supervisor and participants through `robot.yaml`.
+The robot section owns id, model, brain, services and components, while supervisor and optional named sources stay top-level.
+The developer tool resolves source references after composition; SDK prepared readers consume concrete selections only.
+This nested grouping describes current source development, not the published SDK 0.71.0 prepared reader; it requires matching source-built developer tooling until owner delivery.
 The supervisor uses the same local path or pinned Git source selection as participants and is acquired independently of the robot's Rust library dependencies.
 Prepare the selections with `cargo phoxal prepare`, then use the ordinary Cargo build and test workflow.
 The build helper reads the exact resolved prepared composition, local component capabilities, and prepared contracts; it never acquires packages or invokes Cargo.

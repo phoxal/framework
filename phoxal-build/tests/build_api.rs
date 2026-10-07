@@ -16,7 +16,7 @@ fn empty_brain_robot_runtime_compiles_against_generated_empty_contract()
     // An authored runtime with an empty endpoint contract still compiles.
     fs::write(
         robot.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot: { id: proof-empty-brain }\nsupervisor: { source: { path: ../supervisor } }\n",
+        "schema: phoxal/robot/v0\nrobot:\n  id: proof-empty-brain\nsupervisor: { source: { path: ../supervisor } }\n",
     )?;
     let framework = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phoxal");
     fs::write(
@@ -184,12 +184,16 @@ fn scaffold_robot(
     services: &str,
     main_body: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let services = services
+        .lines()
+        .map(|line| format!("  {line}\n"))
+        .collect::<String>();
     let robot = directory.join("robot");
     fs::create_dir_all(robot.join("src"))?;
     fs::write(
         robot.join("robot.yaml"),
         format!(
-            "schema: phoxal/robot/v0\nrobot: {{ id: marker-proof }}\nsupervisor: {{ source: {{ path: ../supervisor }} }}\nservices:\n{services}"
+            "schema: phoxal/robot/v0\nrobot:\n  id: marker-proof\n  services:\n{services}supervisor: {{ source: {{ path: ../supervisor }} }}\n"
         ),
     )?;
     let framework = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phoxal");

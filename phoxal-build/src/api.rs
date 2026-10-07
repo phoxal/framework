@@ -81,20 +81,6 @@ fn configuration_watch_paths(package: &Path) -> BTreeSet<PathBuf> {
 struct Robot {
     schema: String,
     robot: RobotSection,
-    /// The brain's explicit binary selection; consumed by cargo-phoxal,
-    /// carried here so generation accepts the same document.
-    #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "carrier field of the robot document; cargo-phoxal resolves the brain target"
-    )]
-    brain: Option<RuntimeSelection>,
-    #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "the key belongs to this document; the values are cargo-phoxal's to validate and resolve"
-    )]
-    services: BTreeMap<String, Selection>,
     #[serde(default)]
     #[allow(
         dead_code,
@@ -111,6 +97,20 @@ struct RobotSection {
     #[serde(default)]
     #[allow(dead_code, reason = "native model carrier; consumed by cargo-phoxal")]
     model: Option<PathBuf>,
+    /// The brain's explicit binary selection; consumed by cargo-phoxal,
+    /// carried here so generation accepts the same document.
+    #[serde(default)]
+    #[allow(
+        dead_code,
+        reason = "carrier field of the robot document; cargo-phoxal resolves the brain target"
+    )]
+    brain: Option<RuntimeSelection>,
+    #[serde(default)]
+    #[allow(
+        dead_code,
+        reason = "the key belongs to this document; the values are cargo-phoxal's to validate and resolve"
+    )]
+    services: BTreeMap<String, Selection>,
     #[serde(default)]
     components: BTreeMap<String, Component>,
 }
@@ -323,6 +323,7 @@ fn assemble_units(
     if let Some(robot) = robot {
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (instance, bindings) in robot
+            .robot
             .services
             .iter()
             .map(|(id, service)| (id.as_str(), &service.bindings))
@@ -332,7 +333,13 @@ fn assemble_units(
                     .as_ref()
                     .map(|driver| (id.as_str(), &driver.bindings))
             }))
-            .chain(robot.brain.iter().map(|brain| ("brain", &brain.bindings)))
+            .chain(
+                robot
+                    .robot
+                    .brain
+                    .iter()
+                    .map(|brain| ("brain", &brain.bindings)),
+            )
         {
             for (endpoint, sources) in bindings {
                 grouped.insert(format!("{instance}.{endpoint}"), sources.clone());
@@ -346,7 +353,7 @@ fn assemble_units(
                 (sources.len() == 1).then(|| (consumer, sources.remove(0)))
             })
             .collect();
-        for (instance, selection) in robot.services {
+        for (instance, selection) in robot.robot.services {
             let index = add_selection(
                 package,
                 instance.clone(),
