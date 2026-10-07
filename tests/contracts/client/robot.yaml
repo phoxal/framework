@@ -1,10 +1,10 @@
 schema: phoxal/robot/v0
 robot:
   id: contract-client
-services:
-  provider:
-    source:
-      path: provider
+  services:
+    provider:
+      source:
+        path: provider
 supervisor:
   source:
     git:

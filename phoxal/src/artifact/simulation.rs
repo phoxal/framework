@@ -117,13 +117,13 @@ pub enum SimulatorTerminalEvidence {
 pub struct NativeBodySample {
     /// Native simulation boundary at which the sample was captured.
     pub boundary: u64,
-    /// Root-body position in metres.
+    /// Physical root-body origin in world coordinates, in metres, not footprint or COM.
     pub position_m: [f64; 3],
-    /// Root-body orientation as a unit quaternion `(w, x, y, z)`.
+    /// Body-to-world unit quaternion in `(w, x, y, z)` order.
     pub orientation_wxyz: [f64; 4],
-    /// Root-body linear velocity in metres per second.
+    /// World-axis linear velocity at the physical body origin, in metres per second.
     pub linear_velocity_mps: [f64; 3],
-    /// Root-body angular velocity in radians per second.
+    /// World-axis angular velocity in radians per second.
     pub angular_velocity_radps: [f64; 3],
 }
 

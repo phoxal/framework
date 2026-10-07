@@ -1,4 +1,4 @@
-//! Authored-file document DTOs.
+//! Resolved robot and component document DTOs.
 //!
 //! Owns the inert `RobotDocument` and `ComponentDocument` records plus
 //! their declared DTO closure (capabilities, native targets, services,
@@ -9,7 +9,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-/// A parsed and validated `robot.yaml` document.
+/// A strict resolved robot composition with concrete source selections.
+///
+/// The developer tool merges authored files and resolves named references first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum RobotDocument {
@@ -18,18 +20,8 @@ pub enum RobotDocument {
     V0 {
         /// Robot identity, physical model, and component instances.
         robot: RobotSection,
-        /// Optional explicit binary selection for a multi-binary root package.
-        #[serde(
-            default,
-            deserialize_with = "deserialize_present",
-            skip_serializing_if = "Option::is_none"
-        )]
-        brain: Option<BrainSelection>,
         /// The supervisor application selection.
         supervisor: SupervisorSelection,
-        /// Explicit behavioral service instances.
-        #[serde(default)]
-        services: BTreeMap<String, ServiceSelection>,
     },
 }
 impl RobotDocument {
@@ -37,12 +29,10 @@ impl RobotDocument {
     /// Duplicate edges remain present so validators can reject them.
     #[must_use]
     pub fn connection_sources(&self) -> BTreeMap<String, Vec<String>> {
-        let Self::V0 {
-            robot,
-            services,
-            brain,
-            ..
-        } = self;
+        let Self::V0 { robot, .. } = self;
+        let RobotSection {
+            services, brain, ..
+        } = robot;
         let mut grouped = BTreeMap::new();
         for (instance, bindings) in services
             .iter()
@@ -65,11 +55,12 @@ impl RobotDocument {
     #[must_use]
     pub fn binding_path(&self, consumer: &str) -> String {
         let (instance, endpoint) = consumer.split_once('.').unwrap_or((consumer, ""));
-        let Self::V0 { services, .. } = self;
+        let Self::V0 { robot, .. } = self;
+        let services = &robot.services;
         let prefix = if instance == "brain" {
-            "brain".to_owned()
+            "robot.brain".to_owned()
         } else if services.contains_key(instance) {
-            format!("services.{instance}")
+            format!("robot.services.{instance}")
         } else {
             format!("robot.components.{instance}.driver")
         };
@@ -80,12 +71,10 @@ impl RobotDocument {
         let Some((instance, endpoint)) = consumer.split_once('.') else {
             return false;
         };
-        let Self::V0 {
-            robot,
-            services,
-            brain,
-            ..
-        } = self;
+        let Self::V0 { robot, .. } = self;
+        let RobotSection {
+            services, brain, ..
+        } = robot;
         let bindings = if instance == "brain" {
             &mut brain.get_or_insert_with(BrainSelection::default).bindings
         } else if let Some(service) = services.get_mut(instance) {
@@ -105,9 +94,8 @@ impl RobotDocument {
     /// Returns every instance identity available to a connection source.
     #[must_use]
     pub fn instance_ids(&self) -> BTreeSet<String> {
-        let Self::V0 {
-            robot, services, ..
-        } = self;
+        let Self::V0 { robot, .. } = self;
+        let services = &robot.services;
         let mut ids = services.keys().cloned().collect::<BTreeSet<_>>();
         ids.extend(robot.components.keys().cloned());
         ids.insert("brain".to_owned());
@@ -146,7 +134,7 @@ pub struct BrainSelection {
     #[serde(default, deserialize_with = "deserialize_bindings")]
     pub bindings: BTreeMap<String, Vec<String>>,
 }
-/// Robot-level model and component composition.
+/// Robot identity, physical composition and behavioral runtimes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobotSection {
@@ -155,6 +143,16 @@ pub struct RobotSection {
     /// Native robot model path, relative to the robot root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<PathBuf>,
+    /// Optional explicit binary selection for a multi-binary root package.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub brain: Option<BrainSelection>,
+    /// Explicit behavioral service instances.
+    #[serde(default)]
+    pub services: BTreeMap<String, ServiceSelection>,
     /// Mounted component instances.
     #[serde(default)]
     pub components: BTreeMap<String, ComponentInstance>,
@@ -439,9 +437,9 @@ mod tests {
     #[test]
     fn directed_connections_preserve_fan_in_and_duplicates_for_admission() {
         let value = serde_json::json!({
-            "schema": "phoxal/robot/v0", "robot": {"id": "robot"},
+            "schema": "phoxal/robot/v0", "robot": {"id": "robot", "brain": {"bindings": {"events": ["first.events", "second.events", "first.events"]}}},
             "supervisor": {"source": {"path": "supervisor"}},
-            "brain": {"bindings": {"events": ["first.events", "second.events", "first.events"]}}
+
 
         });
         let document: RobotDocument = serde_json::from_value(value.clone()).unwrap();
@@ -450,8 +448,8 @@ mod tests {
             ["first.events", "second.events", "first.events"]
         );
         assert_eq!(
-            serde_json::to_value(document).unwrap()["brain"],
-            value["brain"]
+            serde_json::to_value(document).unwrap()["robot"]["brain"],
+            value["robot"]["brain"]
         );
     }
 
@@ -470,15 +468,15 @@ robot:
       driver:
         config:
           rate_hz: 100
-services:
-  navigation:
-    source:
-      path: ../navigation
-    config:
-      gain: 1.5
-    bindings:
-      imu:
-      - imu.sample
+  services:
+    navigation:
+      source:
+        path: ../navigation
+      config:
+        gain: 1.5
+      bindings:
+        imu:
+        - imu.sample
 supervisor:
   source:
     path: ../supervisor
@@ -498,11 +496,11 @@ robot:
     imu:
       source: { path: ../imu }
       mount_site: imu_mount
+  services:
+    navigation:
+      source: { path: ../navigation }
 supervisor:
   source: { path: ../supervisor }
-services:
-  navigation:
-    source: { path: ../navigation }
 "#;
         let document: RobotDocument = serde_yaml::from_str(yaml).expect("parses");
         let ids = document.instance_ids();
