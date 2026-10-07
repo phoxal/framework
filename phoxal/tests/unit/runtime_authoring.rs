@@ -5486,6 +5486,9 @@ mod review9_regressions {
         // its first step observes an empty accepted ring.
         owner.reset(ExecutionTime::default(), ())?;
         owner.accept(&context(20, 0), &inputs)?;
+        // An independent local ring exercise must not erase the runtime
+        // callback observation captured by this reset assertion.
+        exercise_accepted_ring_bound()?;
         let observed = OBSERVED.lock().unwrap_or_else(|e| e.into_inner());
         let (_, accepted_len, _) = observed.last().copied().unwrap_or((0, 1, false));
         assert_eq!(
@@ -5500,7 +5503,10 @@ mod review9_regressions {
     /// the retained records at the bound, and makes the overflow visible.
     #[test]
     fn the_accepted_ring_is_bounded_with_visible_overflow() -> phoxal::Result<()> {
-        OBSERVED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        exercise_accepted_ring_bound()
+    }
+
+    fn exercise_accepted_ring_bound() -> phoxal::Result<()> {
         // A tree that keeps running for many invocations: a wait gated on
         // the invocation index, then a delay.
         let mut tree = sequence([
