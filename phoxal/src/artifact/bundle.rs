@@ -758,7 +758,7 @@ fn check_wire_contract(
                     "connection {consumer} <- {source} leases from a non-observation method"
                 ));
             }
-            if !signature.lease_valid_for_ms.is_some_and(|lease| lease > 0) {
+            if signature.lease_valid_for_ms.is_none_or(|lease| lease == 0) {
                 return Err(format!(
                     "connection {consumer} <- {source} leases from a method without a positive lease"
                 ));

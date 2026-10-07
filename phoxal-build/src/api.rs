@@ -16,7 +16,7 @@ use crate::manifest::{self, ResolvedMessage, ResolvedService};
 /// Configuration for the package-local API build helper.
 ///
 /// The empty configuration is intentional. Package and source selection come
-/// only from Cargo's build environment and the authored `robot.yaml`.
+/// only from Cargo's build environment and the exact prepared composition.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BuildApiConfig {
@@ -72,11 +72,6 @@ fn configuration_watch_paths(package: &Path) -> BTreeSet<PathBuf> {
     paths
 }
 
-/// Validates an exact proposed robot API before its authored document is replaced.
-pub fn validate_project_api(package: &Path, robot_source: &[u8], out: &Path) -> Result<(), Error> {
-    generate(package, out, Some(robot_source))
-}
-
 /// The robot document as generation consumes it: the same authored surface
 /// the SDK's artifact DTO validates, with carrier fields the generator does
 /// not read kept as opaque values. Both parsers reject unknown fields so a
@@ -93,7 +88,7 @@ struct Robot {
         dead_code,
         reason = "carrier field of the robot document; cargo-phoxal resolves the brain target"
     )]
-    brain: Option<serde_yaml::Value>,
+    brain: Option<RuntimeSelection>,
     #[serde(default)]
     #[allow(
         dead_code,
@@ -103,22 +98,9 @@ struct Robot {
     #[serde(default)]
     #[allow(
         dead_code,
-        reason = "the key belongs to this document; the values are cargo-phoxal's to validate and resolve"
-    )]
-    connections: Vec<AuthoredConnection>,
-    #[serde(default)]
-    #[allow(
-        dead_code,
         reason = "the supervisor selection belongs to this document; cargo-phoxal resolves it"
     )]
     supervisor: Option<serde_yaml::Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthoredConnection {
-    from: String,
-    to: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -137,22 +119,20 @@ struct RobotSection {
 #[serde(deny_unknown_fields)]
 struct Component {
     source: Source,
-    #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "component selection carrier; consumed by cargo-phoxal"
-    )]
-    binary: Option<String>,
-    #[allow(dead_code, reason = "native mount carrier; consumed by cargo-phoxal")]
+    #[allow(dead_code, reason = "native mount carrier")]
     mount_site: String,
     #[serde(default)]
-    driver: Option<serde_yaml::Value>,
+    driver: Option<RuntimeSelection>,
+}
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RuntimeSelection {
     #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "component configuration carrier; consumed by cargo-phoxal"
-    )]
+    binary: Option<String>,
+    #[serde(default)]
     config: Option<serde_yaml::Value>,
+    #[serde(default)]
+    bindings: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -171,6 +151,8 @@ struct Selection {
         reason = "service configuration carrier; consumed by cargo-phoxal"
     )]
     config: Option<serde_yaml::Value>,
+    #[serde(default)]
+    bindings: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -275,15 +257,21 @@ fn assemble_units(
     let mut units = Vec::<Unit>::new();
     let mut bindings = Vec::<(String, usize)>::new();
     let robot_path = package.join("robot.yaml");
-    let robot_source = if robot_path.exists() || robot_override.is_some() {
-        let source = match robot_override {
+    let mut product_root = None;
+    let robot_source = if robot_path.exists()
+        || robot_override.is_some()
+        || crate::prepared::prepared_input_root(package)?
+            .join("composition.json")
+            .is_file()
+    {
+        Some(match robot_override {
             Some(source) => source.to_vec(),
-            None => read(&robot_path)?,
-        };
-        if emit_changes && robot_path.is_file() {
-            println!("cargo:rerun-if-changed={}", robot_path.display());
-        }
-        Some(source)
+            None => {
+                let (source, products) = crate::composition::read_composition(package)?;
+                product_root = Some(products);
+                source
+            }
+        })
     } else {
         None
     };
@@ -334,11 +322,21 @@ fn assemble_units(
     let mut connections = BTreeMap::new();
     if let Some(robot) = robot {
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for connection in robot.connections {
-            grouped
-                .entry(connection.to)
-                .or_default()
-                .push(connection.from);
+        for (instance, bindings) in robot
+            .services
+            .iter()
+            .map(|(id, service)| (id.as_str(), &service.bindings))
+            .chain(robot.robot.components.iter().filter_map(|(id, component)| {
+                component
+                    .driver
+                    .as_ref()
+                    .map(|driver| (id.as_str(), &driver.bindings))
+            }))
+            .chain(robot.brain.iter().map(|brain| ("brain", &brain.bindings)))
+        {
+            for (endpoint, sources) in bindings {
+                grouped.insert(format!("{instance}.{endpoint}"), sources.clone());
+            }
         }
         // Conversion discovery applies only to single-producer observations.
         // Fan-in is validated by the compiled graph, never silently collapsed.
@@ -351,25 +349,25 @@ fn assemble_units(
         for (instance, selection) in robot.services {
             let index = add_selection(
                 package,
-                &robot_path,
                 instance.clone(),
                 selection.source,
                 selection.binary.as_deref(),
                 selection.config.as_ref(),
                 &mut units,
+                product_root.as_deref(),
             )?;
             bindings.push((instance, index));
         }
         for (instance, component) in robot.robot.components {
-            if component.driver.is_some() {
+            if let Some(driver) = component.driver {
                 let index = add_selection(
                     package,
-                    &robot_path,
                     instance.clone(),
                     component.source,
-                    component.binary.as_deref(),
-                    component.config.as_ref(),
+                    driver.binary.as_deref(),
+                    driver.config.as_ref(),
                     &mut units,
+                    product_root.as_deref(),
                 )?;
                 bindings.push((instance, index));
             }
@@ -761,13 +759,15 @@ fn generate(package: &Path, out: &Path, robot_override: Option<&[u8]>) -> Result
 #[allow(clippy::type_complexity)]
 fn add_selection(
     package_root: &Path,
-    robot_path: &Path,
     instance: String,
     source: Source,
     binary: Option<&str>,
     config: Option<&serde_yaml::Value>,
     units: &mut Vec<Unit>,
+    product_root: Option<&Path>,
 ) -> Result<usize, Error> {
+    let robot_file = package_root.join("robot.yaml");
+    let robot_path = robot_file.as_path();
     if !identifier(&instance) {
         return Err(input(
             robot_path,
@@ -809,7 +809,10 @@ fn add_selection(
             };
             (
                 format!("{} @ {}", source.name, source.rev),
-                crate::prepared::prepared_dir(package_root, &identity, binary)?,
+                match product_root {
+                    Some(root) => root.join(crate::prepared::prepared_key(&identity, binary)),
+                    None => crate::prepared::prepared_dir(package_root, &identity, binary)?,
+                },
                 identity,
             )
         }
@@ -825,7 +828,10 @@ fn add_selection(
             };
             (
                 "local path".to_owned(),
-                crate::prepared::prepared_dir(package_root, &identity, binary)?,
+                match product_root {
+                    Some(root) => root.join(crate::prepared::prepared_key(&identity, binary)),
+                    None => crate::prepared::prepared_dir(package_root, &identity, binary)?,
+                },
                 identity,
             )
         }
@@ -850,16 +856,17 @@ fn add_selection(
         {
             let config = serde_json::to_value(config)
                 .map_err(|error| input(robot_path, error.to_string()))?;
-            contract = crate::prepared::read_prepared_instance(
-                package_root,
+            let directory = match product_root {
+                Some(root) => root.join(format!("instance-{instance}")),
+                None => crate::prepared::prepared_instance_dir(package_root, &instance)?,
+            };
+            contract = crate::prepared::read_prepared_instance_at(
+                &directory,
                 &instance,
                 &config,
                 &contract.file,
             )?;
-            println!(
-                "cargo:rerun-if-changed={}",
-                crate::prepared::prepared_instance_dir(package_root, &instance)?.display()
-            );
+            println!("cargo:rerun-if-changed={}", directory.display());
         }
         println!("cargo:rerun-if-changed={}", prepared_dir.display());
         let index = units.len();
@@ -1277,7 +1284,6 @@ mod tests {
         let mut units = Vec::new();
         let error = add_selection(
             directory.path(),
-            &directory.path().join("robot.yaml"),
             "self_source".into(),
             Source::Path(PathSource {
                 path: PathBuf::from("."),
@@ -1285,6 +1291,7 @@ mod tests {
             None,
             None,
             &mut units,
+            None,
         )
         .expect_err("a missing prepared participant cannot produce a partial API");
         assert!(error.to_string().contains("not prepared"));

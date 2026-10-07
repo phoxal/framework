@@ -6,4 +6,8 @@ services:
     source:
       path: provider
 supervisor:
-  source: { package: {name: phoxal-supervisor, version: 0.0.0-dev.8} }
+  source:
+    git:
+      name: phoxal-supervisor
+      url: https://github.com/phoxal/supervisor.git
+      rev: 087da0b8a38f71c64601f2f9c1d5a39b306a6f3b

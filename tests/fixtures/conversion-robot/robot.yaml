@@ -2,21 +2,40 @@ schema: phoxal/robot/v0
 robot:
   id: phoxal-conversion-robot
   model: model/robot.xml
-brain: { binary: brain }
+brain:
+  binary: brain
+  bindings:
+    world_status:
+    - world.revision
 services:
   navigation:
-    source: { git: { name: phoxal-service-navigation, url: https://github.com/phoxal/services.git, rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb, path: navigation } }
-    config: { max_expansions_per_step: 32, goal_tolerance_m: 0.1 }
+    source:
+      git:
+        name: phoxal-service-navigation
+        url: https://github.com/phoxal/services.git
+        rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb
+        path: navigation
+    config:
+      max_expansions_per_step: 32
+      goal_tolerance_m: 0.1
+    bindings:
+      localization:
+      - brain.odometry
+      map:
+      - world.revision
   world:
-    source: { git: { name: phoxal-service-world, url: https://github.com/phoxal/services.git, rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb, path: world } }
-connections:
-  - from: brain.odometry
-    to: navigation.localization
-  - from: brain.odometry
-    to: world.pose
-  - from: world.revision
-    to: navigation.map
-  - from: world.revision
-    to: brain.world_status
+    source:
+      git:
+        name: phoxal-service-world
+        url: https://github.com/phoxal/services.git
+        rev: 14aa9a7a5250c85622b5c8a640636d202e7f60bb
+        path: world
+    bindings:
+      pose:
+      - brain.odometry
 supervisor:
-  source: { git: { name: phoxal-supervisor, url: https://github.com/phoxal/supervisor.git, rev: 087da0b8a38f71c64601f2f9c1d5a39b306a6f3b } }
+  source:
+    git:
+      name: phoxal-supervisor
+      url: https://github.com/phoxal/supervisor.git
+      rev: 087da0b8a38f71c64601f2f9c1d5a39b306a6f3b

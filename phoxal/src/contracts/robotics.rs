@@ -1,8 +1,23 @@
 //! Shared physical and robotics vocabulary for Phoxal contracts.
 //!
-//! Contains the producer-independent odometry product and the shared
-//! domain validation of the robotics vocabulary. It starts no runtime,
+//! Contains producer-independent planar motion setpoints, odometry products,
+//! and shared domain validation. It starts no runtime,
 //! transport, hardware driver, or simulator.
+
+/// Desired planar velocity in the robot body frame.
+///
+/// Producers share this semantic payload independently of the selected
+/// motion service. Arming, authority, limits, and arbitration remain owned
+/// by the consuming runtime rather than this velocity vocabulary.
+#[phoxal::message(package = "phoxal.robotics.v1")]
+pub struct MotionSetpoint {
+    /// Forward velocity along the body x axis, in metres per second.
+    #[phoxal(tag = 1)]
+    pub linear_x_mps: f64,
+    /// Counter-clockwise yaw rate around the body z axis, in radians per second.
+    #[phoxal(tag = 2)]
+    pub angular_z_radps: f64,
+}
 
 /// One integrated planar odometry state.
 ///
@@ -77,7 +92,7 @@ pub(crate) fn validate_optional_finite(
 mod tests {
     use prost::Name;
 
-    use super::OdometryState;
+    use super::{MotionSetpoint, OdometryState};
     use crate::schema::MessageSchema;
 
     #[test]
@@ -86,5 +101,12 @@ mod tests {
         assert_eq!(OdometryState::NAME, "OdometryState");
         assert_eq!(OdometryState::WIRE_NAME, "phoxal.robotics.v1.OdometryState");
         assert!(OdometryState::retain_schema() > 0);
+        assert_eq!(MotionSetpoint::PACKAGE, "phoxal.robotics.v1");
+        assert_eq!(MotionSetpoint::NAME, "MotionSetpoint");
+        assert_eq!(
+            MotionSetpoint::WIRE_NAME,
+            "phoxal.robotics.v1.MotionSetpoint"
+        );
+        assert!(MotionSetpoint::retain_schema() > 0);
     }
 }

@@ -810,10 +810,10 @@ fn step_signature(method: &ImplItemFn) -> syn::Result<()> {
 /// Validates one `#[handle]` signature and returns whether it mutably
 /// borrows the context, plus its payload and output types.
 fn handle_signature(method: &ImplItemFn) -> syn::Result<(bool, Type, syn::ReturnType)> {
-    if !method
+    if method
         .sig
         .receiver()
-        .is_some_and(|receiver| receiver.reference.is_some())
+        .is_none_or(|receiver| receiver.reference.is_none())
     {
         return Err(syn::Error::new_spanned(
             &method.sig,

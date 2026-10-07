@@ -55,6 +55,8 @@ The supervisor executable owns its host implementation privately and consumes th
 
 `#[phoxal::message]` and `#[phoxal::endpoints]` define runnable package contracts in Rust.
 `phoxal::contracts` contains stable shared robotics, geometry, and component vocabulary; service-specific records remain with their owner.
+`phoxal::contracts::robotics::MotionSetpoint` carries planar body-frame forward velocity and counter-clockwise yaw rate independently of the consuming service.
+Motion control modes, arm/disarm, authority, limits, and emergency policy belong to the Motion service.
 An input payload that crosses a process boundary uses `#[phoxal::message]`, even when it is private to the consumer and needs no authored package or version.
 An algorithm-only struct that never crosses that boundary remains ordinary Rust.
 Exported payloads and the endpoint struct share one package declaration in `#[phoxal::messages(package = "owner.v1")] mod v1 { ... }`; a provided operation's identity defaults to that package plus its UpperCamelCase field name, while a call always names the provider's operation explicitly.
@@ -101,3 +103,10 @@ This repository's source and documentation are the authority for implementation,
 
 AGPL-3.0-only.
 A commercial license is available; see the repository root.
+
+## Explicit fixture dependencies
+
+Tests that need an external input dependency can pass a fixture-owned registered adapter to `Harness::with_runtime`.
+It uses the same serialized owner, generated endpoint view, complete output admission and explicit-time scheduler as `Harness::new`, including reset and pending-call fencing.
+Keep injected input and orchestration inside the test fixture, delegate the real runtime dispatch and projections, and leave participant configuration unchanged.
+Production runtime initialization does not inspect ambient test selectors.

@@ -51,6 +51,7 @@ fn the_complete_schema_closure_is_extractable_without_execution() {
         "proof.v1.Control.phoxal_envelope",
         // The imported SDK vocabulary survives linking into the final
         // artifact through the referencing contract.
+        "phoxal.robotics.v1.MotionSetpoint",
         "phoxal.robotics.v1.EncoderSample",
         "phoxal.robotics.v1.RangeSample",
         // Nested SDK geometry and the additional component vocabularies
@@ -133,4 +134,35 @@ fn protocol_descriptors_are_extractable_without_executing_the_binary() {
         extracted,
         phoxal::communication::file_descriptor_set().unwrap()
     );
+}
+
+#[test]
+#[ignore = "requires explicitly supplied source-built runtime artifacts"]
+fn external_runtime_frames_retain_complete_cross_crate_schema_closures() {
+    let paths = std::env::var_os("PHOXAL_SCHEMA_PROOF_ARTIFACTS")
+        .expect("provide runtime artifact paths with the platform path separator");
+    let paths: Vec<_> = std::env::split_paths(&paths).collect();
+    assert!(!paths.is_empty());
+    for path in paths {
+        let bytes = std::fs::read(&path).expect("external runtime artifact");
+        let records: Vec<_> = schema_sections(&bytes)
+            .iter()
+            .flat_map(|section| phoxal::schema::decode_section(section).expect("schema frames"))
+            .collect();
+        assert!(
+            !records.is_empty(),
+            "{} has no schema records",
+            path.display()
+        );
+        let descriptors = phoxal::schema::assemble_file_descriptors(&records)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let pool = prost_reflect::DescriptorPool::decode(descriptors.encode_to_vec().as_slice())
+            .expect("complete standard descriptors");
+        println!(
+            "{}: {} records, {} descriptor files",
+            path.display(),
+            records.len(),
+            pool.files().len()
+        );
+    }
 }
