@@ -8,7 +8,7 @@ The build helper reads local files only and does not fetch or build another part
 
 Services and brains declare their endpoints with Rust macros in their executable packages.
 Component capabilities in `component.yaml` provide standard endpoints; component-specific endpoints are authored in Rust.
-`robot.yaml` selects participants and connects their ports, and the robot package provides ordinary Rust conversions for differently typed latest observations.
+The tool resolves selected robot files into one strict composition with consumer-owned bindings, and the robot package provides ordinary Rust conversions for differently typed latest observations.
 
 Production messages, including the SDK protocols, are authored with `#[phoxal::message]` or `#[phoxal::messages]`.
 Their compiler-resolved schema records provide standard Protobuf descriptors.
@@ -40,3 +40,9 @@ Clean only the robot package, then rebuild normally; subsequent unchanged builds
 Adding a previously absent global config file also needs this recovery because watching Cargo home would scan its mutable caches.
 A missing prepared selection reports the input-store path and that preparation command.
 Build scripts do not invoke Cargo or guess paths from `OUT_DIR`.
+
+Robot API generation consumes the exact tool-prepared resolved composition and its immutable contract/descriptor snapshot.
+It never rereads robot.yaml or implements layer composition.
+Selected authored files are watched and checked for freshness; edits require cargo phoxal prepare again.
+Each tool command chooses its own file selection, while ordinary Cargo reads the last successfully prepared composition.
+Atomic publication selects a coherent snapshot, so concurrent ordinary reads cannot combine different compositions.

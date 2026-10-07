@@ -184,7 +184,16 @@ pub fn read_prepared_instance(
     template: &PreparedContractFile,
 ) -> Result<PreparedContract, Error> {
     let directory = prepared_instance_dir(project_root, instance)?;
-    let contract = read_prepared_for(&directory, &template.selection, template.binary.as_deref())?;
+    read_prepared_instance_at(&directory, instance, config, template)
+}
+
+pub(crate) fn read_prepared_instance_at(
+    directory: &Path,
+    instance: &str,
+    config: &serde_json::Value,
+    template: &PreparedContractFile,
+) -> Result<PreparedContract, Error> {
+    let contract = read_prepared_for(directory, &template.selection, template.binary.as_deref())?;
     let expected = PreparedInstance {
         name: instance.to_owned(),
         config: config.clone(),
@@ -192,7 +201,7 @@ pub fn read_prepared_instance(
     };
     if contract.file.instance.as_ref() != Some(&expected) {
         return Err(Error::ApiInput {
-            path: directory,
+            path: directory.to_owned(),
             message: format!(
                 "prepared contract for {instance} does not match its current configuration/template; run `cargo phoxal prepare`"
             ),
@@ -504,7 +513,7 @@ pub fn write_prepared(
     publish_prepared(contract_dir, &file, descriptors)
 }
 
-fn publish_prepared(
+pub(crate) fn publish_prepared(
     contract_dir: &Path,
     file: &PreparedContractFile,
     descriptors: &FileDescriptorSet,
@@ -1405,7 +1414,7 @@ mod tests {
                             "endpoint": "manual",
                             "service": "phoxal.motion.v1.MotionApi",
                             "shape": "call",
-                            "request": "phoxal.motion.v1.MotionIntent",
+                            "request": "phoxal.robotics.v1.MotionSetpoint",
                             "response": "google.protobuf.Empty",
                             "retained_latest": true,
                             "lease_valid_for_ms": 100
@@ -1435,7 +1444,7 @@ mod tests {
                 response,
                 lease_valid_for_ms: Some(100),
             } if name == "manual"
-                && request == "phoxal.motion.v1.MotionIntent"
+                && request == "phoxal.robotics.v1.MotionSetpoint"
                 && response == "google.protobuf.Empty"
         ));
         assert!(matches!(

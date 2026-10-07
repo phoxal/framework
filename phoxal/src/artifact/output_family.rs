@@ -39,8 +39,8 @@ impl OutputFamily {
         if signature.shape != MethodShape::Observation
             || signature.request != "google.protobuf.Empty"
             || !signature.retained_latest
-            || !signature.lease_valid_for_ms.is_some_and(|lease| lease > 0)
-            || !output.max_bytes.is_some_and(|bytes| bytes > 0)
+            || signature.lease_valid_for_ms.is_none_or(|lease| lease == 0)
+            || output.max_bytes.is_none_or(|bytes| bytes == 0)
             || output.max_items.is_some_and(|items| items != 1)
         {
             return Err("output family must be a bounded canonical leased observation".into());

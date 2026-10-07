@@ -451,6 +451,7 @@ fn assembled_descriptors_agree_with_the_protoc_reference() {
         <AuthoredControl as MessageSchema>::RECORD.to_decoded(),
         <AuthoredControl as OneofSchema>::RECORD.to_decoded(),
         <AuthoredTelemetry as MessageSchema>::RECORD.to_decoded(),
+        ::phoxal::contracts::robotics::MotionSetpoint::RECORD.to_decoded(),
         ::phoxal::contracts::component::encoder::EncoderSample::RECORD.to_decoded(),
         ::phoxal::contracts::component::range::RangeSample::RECORD.to_decoded(),
         ::phoxal::contracts::geometry::Point3::RECORD.to_decoded(),
@@ -481,6 +482,7 @@ fn assembled_descriptors_agree_with_the_protoc_reference() {
         "proof.v1.Mode",
         "proof.v1.Reason",
         "proof.v1.Telemetry",
+        "phoxal.robotics.v1.MotionSetpoint",
         "phoxal.robotics.v1.EncoderSample",
         "phoxal.geometry.v1.Pose",
         "phoxal.geometry.v1.Twist",
@@ -523,4 +525,22 @@ fn assembled_descriptors_agree_with_the_protoc_reference() {
 fn descriptor_pool_from(set: FileDescriptorSet) -> prost_reflect::DescriptorPool {
     prost_reflect::DescriptorPool::decode(set.encode_to_vec().as_slice())
         .expect("descriptor pool decodes")
+}
+
+#[test]
+fn shared_motion_setpoint_matches_independent_protobuf_encoding() {
+    let authored = ::phoxal::contracts::robotics::MotionSetpoint {
+        linear_x_mps: 0.75,
+        angular_z_radps: -0.5,
+    };
+    let reference = phoxal::robotics::v1::MotionSetpoint {
+        linear_x_mps: 0.75,
+        angular_z_radps: -0.5,
+    };
+    assert_eq!(authored.encode_to_vec(), reference.encode_to_vec());
+    assert_eq!(
+        ::phoxal::contracts::robotics::MotionSetpoint::decode(reference.encode_to_vec().as_slice())
+            .unwrap(),
+        authored
+    );
 }

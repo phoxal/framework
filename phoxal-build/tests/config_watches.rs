@@ -116,10 +116,6 @@ fn scaffold(root: &Path, package: &str) -> Result<(), Box<dyn std::error::Error>
             env!("CARGO_MANIFEST_DIR")
         ),
     )?;
-    fs::write(
-        root.join("robot.yaml"),
-        "schema: phoxal/robot/v0\nrobot: { id: watch-proof }\n",
-    )?;
     fs::write(root.join("src/main.rs"), "fn main() {}\n")?;
     fs::write(
         root.join("build.rs"),

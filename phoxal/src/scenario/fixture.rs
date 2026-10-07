@@ -886,7 +886,7 @@ mod tests {
             "Manual",
             "motion/manual",
             crate::contracts::MethodShape::Call,
-            "phoxal.motion.v1.MotionIntent",
+            "phoxal.robotics.v1.MotionSetpoint",
             "google.protobuf.Empty",
             false,
             Some(100),

@@ -857,28 +857,37 @@ fn expand_struct(options: MessageOptions, mut item: ItemStruct) -> syn::Result<T
         mod #module {
             use super::#struct_name;
 
+            // Name the slice before borrowing it from the record: Rust 1.88
+            // cannot promote the nested conditional field-type initializer.
+            const FIELDS: &[::phoxal::schema::FieldRecord<'static>] = &[#(#schema_fields),*];
             const RECORD: ::phoxal::schema::SchemaRecord<'static> =
                 ::phoxal::schema::SchemaRecord::Message(::phoxal::schema::MessageRecord {
                     package: #package_nested,
                     name: #schema_name,
-                    fields: &[#(#schema_fields),*],
+                    fields: FIELDS,
                 });
 
             #[used]
             #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_schema"))]
             #[cfg_attr(target_os = "linux", unsafe(link_section = ".phoxal_schema"))]
-            static FRAME: [u8; ::phoxal::schema::encoded_len(&RECORD)] = {
+            static FRAME: ([u8; ::phoxal::schema::encoded_len(&RECORD)], fn() -> usize) = ({
                 let mut bytes = [0_u8; ::phoxal::schema::encoded_len(&RECORD)];
                 ::phoxal::schema::write_frame(&RECORD, &mut bytes);
                 bytes
-            };
+            }, retain_dependencies);
+
+            // A retained frame must retain its referenced definitions even
+            // when the containing runtime never calls retain_schema.
+            fn retain_dependencies() -> usize {
+                0 #(+ #retention)*
+            }
 
             impl ::phoxal::schema::MessageSchema for #struct_name {
                 const RECORD: ::phoxal::schema::SchemaRecord<'static> = RECORD;
                 const WIRE_NAME: &'static str = #wire_nested;
 
                 fn retain_schema() -> usize {
-                    let mut size = ::std::hint::black_box(&FRAME).len();
+                    let mut size = ::std::hint::black_box(&FRAME).0.len();
                     #(
                         size += #retention;
                     )*
@@ -1534,39 +1543,49 @@ fn expand_payload_enum(options: MessageOptions, item: ItemEnum) -> syn::Result<T
                     ],
                 });
 
+            // Variant types also contain conditional message/enum references.
+            const VARIANTS: &[::phoxal::schema::FieldRecord<'static>] = &[#(#variant_records),*];
             const ONEOF_RECORD: ::phoxal::schema::SchemaRecord<'static> =
                 ::phoxal::schema::SchemaRecord::Oneof(::phoxal::schema::OneofRecord {
                     package: #package_nested,
                     message: #schema_name,
                     field: #envelope_lit,
-                    variants: &[#(#variant_records),*],
+                    variants: VARIANTS,
                 });
 
             #[used]
             #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_schema"))]
             #[cfg_attr(target_os = "linux", unsafe(link_section = ".phoxal_schema"))]
-            static MESSAGE_FRAME: [u8; ::phoxal::schema::encoded_len(&MESSAGE_RECORD)] = {
+            static MESSAGE_FRAME: ([u8; ::phoxal::schema::encoded_len(&MESSAGE_RECORD)], fn() -> usize) = ({
                 let mut bytes = [0_u8; ::phoxal::schema::encoded_len(&MESSAGE_RECORD)];
                 ::phoxal::schema::write_frame(&MESSAGE_RECORD, &mut bytes);
                 bytes
-            };
+            }, retain_dependencies);
 
             #[used]
             #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_schema"))]
             #[cfg_attr(target_os = "linux", unsafe(link_section = ".phoxal_schema"))]
-            static ONEOF_FRAME: [u8; ::phoxal::schema::encoded_len(&ONEOF_RECORD)] = {
+            static ONEOF_FRAME: ([u8; ::phoxal::schema::encoded_len(&ONEOF_RECORD)], fn() -> usize) = ({
                 let mut bytes = [0_u8; ::phoxal::schema::encoded_len(&ONEOF_RECORD)];
                 ::phoxal::schema::write_frame(&ONEOF_RECORD, &mut bytes);
                 bytes
-            };
+            }, retain_dependencies);
+
+            // Keep the envelope, variant table and payload closure together
+            // across archive extraction and section garbage collection.
+            fn retain_dependencies() -> usize {
+                ::std::hint::black_box(&MESSAGE_FRAME).0.len()
+                    + ::std::hint::black_box(&ONEOF_FRAME).0.len()
+                    #(+ #variant_retention)*
+            }
 
             impl ::phoxal::schema::MessageSchema for #enum_name {
                 const RECORD: ::phoxal::schema::SchemaRecord<'static> = MESSAGE_RECORD;
                 const WIRE_NAME: &'static str = #wire_nested;
 
                 fn retain_schema() -> usize {
-                    let mut size = ::std::hint::black_box(&MESSAGE_FRAME).len();
-                    size += ::std::hint::black_box(&ONEOF_FRAME).len();
+                    let mut size = ::std::hint::black_box(&MESSAGE_FRAME).0.len();
+                    size += ::std::hint::black_box(&ONEOF_FRAME).0.len();
                     #(
                         size += #variant_retention;
                     )*
@@ -1579,7 +1598,7 @@ fn expand_payload_enum(options: MessageOptions, item: ItemEnum) -> syn::Result<T
                 const RECORD: ::phoxal::schema::SchemaRecord<'static> = ONEOF_RECORD;
 
                 fn retain_schema() -> usize {
-                    ::std::hint::black_box(&ONEOF_FRAME).len()
+                    ::std::hint::black_box(&ONEOF_FRAME).0.len()
                 }
             }
         }

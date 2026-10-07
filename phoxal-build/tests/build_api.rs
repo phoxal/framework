@@ -36,6 +36,7 @@ fn empty_brain_robot_runtime_compiles_against_generated_empty_contract()
         "phoxal::api!();\n\n/// A contract with no endpoints.\n#[phoxal::endpoints]\npub struct BrainApi {}\nstruct Brain;\n#[phoxal::runtime(contract = BrainApi, period_ms = 20)]\nimpl Brain {\n    #[init]\n    fn new(_config: ()) -> phoxal::Result<Self> { Ok(Brain) }\n    #[step]\n    fn advance(&mut self, _ctx: &mut phoxal::runtime::Context<'_, Self>) -> phoxal::Result<()> { Ok(()) }\n}\nfn main() -> phoxal::Result<()> { phoxal::runtime::run::<Brain>() }\n",
     )?;
 
+    publish_robot(&robot)?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
         .args(["build", "--offline", "--manifest-path"])
@@ -79,7 +80,8 @@ fn write_prepared_service(
         endpoint,
         request,
         response,
-    )
+    )?;
+    publish_robot(robot_root)
 }
 
 fn write_prepared_under(
@@ -208,6 +210,7 @@ fn scaffold_robot(
 }
 
 fn build_robot(robot: &Path) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    publish_robot(robot)?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Ok(Command::new(cargo)
         .current_dir(robot)
@@ -378,7 +381,7 @@ fn shared_package_prefixes_and_two_instances_compile_one_operations_tree()
     assert!(diagnostic.contains("not-prepared"), "{diagnostic}");
     assert!(diagnostic.contains("cargo phoxal prepare"), "{diagnostic}");
     assert!(
-        diagnostic.contains("overrides relocate outputs only"),
+        diagnostic.contains("missing prepared composition"),
         "{diagnostic}"
     );
     Ok(())
@@ -667,5 +670,24 @@ fn synthetic_pinned_git_generator_fixture_compiles_cold() -> Result<(), Box<dyn 
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
+}
+
+fn publish_robot(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let path = root.join("robot.yaml");
+    let bytes = fs::read(&path)?;
+    let document: serde_json::Value = serde_yaml::from_slice(&bytes)?;
+    let store = phoxal_build::prepared_input_root(root)?;
+    let directories = if store.is_dir() {
+        fs::read_dir(&store)?
+            .map(|entry| Ok(entry?.path()))
+            .collect::<Result<Vec<_>, std::io::Error>>()?
+            .into_iter()
+            .filter(|path| path.join(phoxal_build::CONTRACT_FILE).is_file())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    phoxal_build::publish_composition(root, &document, &[(path, bytes)], &directories)?;
     Ok(())
 }

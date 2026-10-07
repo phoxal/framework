@@ -10,13 +10,14 @@ compile_error!("Phoxal supports Linux and macOS only");
 use std::path::PathBuf;
 
 mod api;
+mod composition;
 mod conversions;
+pub use composition::publish_composition;
 mod manifest;
 mod prepared;
 mod schema_impls;
 mod typed;
 
-pub use api::validate_project_api;
 pub use api::{BuildApiConfig, api};
 
 pub use prepared::{

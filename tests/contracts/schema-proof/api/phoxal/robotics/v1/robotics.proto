@@ -15,3 +15,9 @@ message RangeSample {
   double max_range_m = 3;
   bool valid = 4;
 }
+
+// Shared planar body-frame velocity, independent of the consuming service.
+message MotionSetpoint {
+  double linear_x_mps = 1;
+  double angular_z_radps = 2;
+}

@@ -442,7 +442,32 @@ where
         );
         let config = serde_json::to_value(config)
             .map_err(|error| crate::anyhow!("harness configuration is not encodable: {error}"))?;
-        let mut driver = R::harness_driver(config, now)?;
+        let driver = R::harness_driver(config, now)?;
+        Self::from_driver(driver, now)
+    }
+
+    /// Initializes an explicit fixture-owned adapter using the same owner,
+    /// admission, endpoint view, and scheduler as the ordinary harness.
+    /// Runtime configuration still uses the registered configuration schema.
+    pub fn with_runtime<A>(service: A, config: A::Config) -> crate::Result<Self>
+    where
+        A: RegisteredRuntime<Inputs = R::Inputs, Outputs = R::Outputs> + Send + Sync + 'static,
+        A::State: Send,
+    {
+        let now = ExecutionTime::default();
+        let owner = RuntimeOwner::new(service, now, config)?;
+        Self::from_driver(
+            HarnessDriver {
+                owner: Box::new(owner),
+            },
+            now,
+        )
+    }
+
+    fn from_driver(
+        mut driver: HarnessDriver<R::Inputs, R::Outputs>,
+        now: ExecutionTime,
+    ) -> crate::Result<Self> {
         let owner_id = HARNESS_OWNERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut view = R::HarnessView::default();
         R::bind_harness(&mut view, owner_id);

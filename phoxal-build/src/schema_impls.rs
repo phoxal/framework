@@ -17,6 +17,10 @@ use prost_reflect::{Cardinality, DescriptorPool, EnumDescriptor, Kind, MessageDe
 /// locally instead of assuming the SDK provides it.
 const SDK_TYPES: &[(&str, &str)] = &[
     (
+        "phoxal.robotics.v1.MotionSetpoint",
+        "::phoxal::contracts::robotics::MotionSetpoint",
+    ),
+    (
         "phoxal.robotics.v1.OdometryState",
         "::phoxal::contracts::robotics::OdometryState",
     ),
