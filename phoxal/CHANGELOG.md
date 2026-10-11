@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.1](https://github.com/phoxal/framework/compare/phoxal-v0.72.0...phoxal-v0.72.1) - 2026-10-11
+
+### Added
+
+- share finite simulation report records ([#542](https://github.com/phoxal/framework/pull/542))
+
 ## [0.72.0](https://github.com/phoxal/framework/compare/phoxal-v0.71.0...phoxal-v0.72.0) - 2026-10-07
 
 ### Added
