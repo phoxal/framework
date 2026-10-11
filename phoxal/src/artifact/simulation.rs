@@ -50,12 +50,12 @@ pub enum SimulationRunReport<Terminal = SimulatorTerminalEvidence> {
         simulator: SimulatorArtifactSummary,
         /// Compiled simulation bundle path.
         bundle: PathBuf,
-        /// Explicit router namespace.
-        scope: String,
-        /// Explicit supervisor identity.
-        supervisor_id: String,
-        /// Explicit finite run identity.
-        run_id: String,
+        /// Router namespace supplied to the run, or absent in failure evidence.
+        scope: Option<String>,
+        /// Supervisor identity supplied to the run, or absent in failure evidence.
+        supervisor_id: Option<String>,
+        /// Finite run identity supplied to the run, or absent in failure evidence.
+        run_id: Option<String>,
         /// Whether the supervisor survived startup readiness.
         supervisor_ready: bool,
         /// Whether the simulator emitted the required provider-contract terminal
@@ -227,9 +227,9 @@ mod tests {
                 executable: PathBuf::from("/app/phoxal-simulator"),
             },
             bundle: PathBuf::from("/build"),
-            scope: "robot/simulation".to_owned(),
-            supervisor_id: "supervisor".to_owned(),
-            run_id: "run-1".to_owned(),
+            scope: Some("robot/simulation".to_owned()),
+            supervisor_id: Some("supervisor".to_owned()),
+            run_id: Some("run-1".to_owned()),
             supervisor_ready: true,
             provider_contract_verified: true,
             simulator_exit_code: Some(0),
@@ -275,6 +275,34 @@ mod tests {
         assert_eq!(serde_json::to_value(&report).expect("serializes"), expected);
         let decoded: SimulationRunReport = serde_json::from_value(expected).expect("deserializes");
         assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn finite_run_report_preserves_each_absent_identity_as_explicit_null() {
+        for field in ["scope", "supervisor_id", "run_id"] {
+            let report: SimulationRunReport = run_report(None);
+            let mut value = serde_json::to_value(&report).expect("serializes");
+            value[field] = serde_json::Value::Null;
+            let decoded: SimulationRunReport =
+                serde_json::from_value(value.clone()).expect("absent identity deserializes");
+            assert_eq!(serde_json::to_value(&decoded).expect("serializes"), value);
+            assert!(
+                decoded.success(),
+                "identity validation belongs to the runtime"
+            );
+            let mut failed = value;
+            failed["simulator_exit_code"] = serde_json::json!(1);
+            let failed: SimulationRunReport =
+                serde_json::from_value(failed).expect("failure decodes");
+            assert!(!failed.success());
+        }
+        let mut value = serde_json::to_value(run_report::<SimulatorTerminalEvidence>(None))
+            .expect("serializes");
+        for field in ["scope", "supervisor_id", "run_id"] {
+            value[field] = serde_json::Value::Null;
+        }
+        let decoded: SimulationRunReport = serde_json::from_value(value.clone()).expect("decodes");
+        assert_eq!(serde_json::to_value(decoded).expect("serializes"), value);
     }
 
     #[test]
