@@ -22,8 +22,9 @@
 //!   stays in `cargo-phoxal`.
 //! - [`simulation`](crate::artifact::simulation) owns `SimulatorTerminalEvidence`, `NativeBodySample`,
 //!   `ScenarioExecutionReport`, `ScenarioStepEvidence`,
-//!   `ScenarioCaptureEvidence`. Process orchestration stays in
-//!   `cargo-phoxal`.
+//!   `ScenarioCaptureEvidence`, `SimulationRunReport` and `SimulationCleanup`.
+//!   Native execution and cleanup stay with the simulator; source preparation
+//!   and delegation stay with developer tooling.
 //! - [`simulation_run`](crate::artifact::simulation_run) owns the experiment
 //!   specification that references an immutable bundle. Run hosting stays in
 //!   `cargo-phoxal`.
