@@ -2,19 +2,101 @@
 //!
 //! These are the records that flow off the simulator's stdout/stderr or
 //! through the scenario control channel and are then consumed by the
-//! supervisor, the SDK, and scenario authors. They contain no
-//! process-orchestration state and no provisioned executable paths; they
-//! describe observed evidence only.
+//! supervisor, the SDK, and scenario authors. They retain observed paths,
+//! artifact provenance and evidence without provisioning executables or
+//! managing processes.
 //!
-//! Process orchestration (`SimulationRunOptions`, `SimulationRunReport`,
-//! `SimulationCleanup`, simulator provisioning, child-process management)
-//! stays with the simulator integration in `cargo-phoxal`.
+//! Finite run reports and cleanup records are passive observations shared by
+//! the simulator producer and developer-tool consumer. The simulator owns
+//! native execution and process cleanup; developer tooling owns source
+//! preparation and delegation. Neither policy moves into these records.
 
 #![deny(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
+
+use super::installation::SimulatorArtifactSummary;
 
 use serde::{Deserialize, Serialize};
+
+/// Bounded cleanup evidence for a local simulation process pair.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimulationCleanup {
+    /// Whether the supervisor was asked to stop.
+    pub supervisor_stop_requested: bool,
+    /// Whether the supervisor exited before the cleanup deadline.
+    pub supervisor_exited: bool,
+    /// Whether a forced kill was required.
+    pub supervisor_killed: bool,
+    /// Human-readable cleanup diagnostic, if cleanup was incomplete.
+    pub error: Option<String>,
+}
+
+/// Terminal evidence retained by one local finite simulation run.
+///
+/// The default terminal is the shared consumer view. A producer may select its
+/// richer terminal type, including a borrowed terminal for serialization,
+/// preserving application-owned evidence without widening the SDK record.
+/// Optional fields serialize explicitly as null when absent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "schema")]
+pub enum SimulationRunReport<Terminal = SimulatorTerminalEvidence> {
+    /// The first simulation-run report generation.
+    #[serde(rename = "phoxal/simulation-run/v0")]
+    V0 {
+        /// Canonical scene resource path.
+        scene: PathBuf,
+        /// Exact simulator artifact used.
+        simulator: SimulatorArtifactSummary,
+        /// Compiled simulation bundle path.
+        bundle: PathBuf,
+        /// Explicit router namespace.
+        scope: String,
+        /// Explicit supervisor identity.
+        supervisor_id: String,
+        /// Explicit finite run identity.
+        run_id: String,
+        /// Whether the supervisor survived startup readiness.
+        supervisor_ready: bool,
+        /// Whether the simulator emitted the required provider-contract terminal
+        /// evidence for the finite run.
+        provider_contract_verified: bool,
+        /// Simulator exit code, or none when it terminated by signal.
+        simulator_exit_code: Option<i32>,
+        /// Wall time spent inside the simulator process for this finite run.
+        simulator_wall_time_ns: u64,
+        /// Complete simulator standard output.
+        simulator_stdout: String,
+        /// Complete simulator standard error.
+        simulator_stderr: String,
+        /// Bounded supervisor cleanup evidence.
+        cleanup: SimulationCleanup,
+        /// Runtime-observed scenario evidence, when this was a scenario run.
+        scenario: Option<ScenarioExecutionReport>,
+        /// Parsed terminal evidence emitted by the native simulator.
+        terminal: Option<Terminal>,
+    },
+}
+
+impl<Terminal> SimulationRunReport<Terminal> {
+    /// Whether the simulator exited successfully and cleanup completed.
+    #[must_use]
+    pub fn success(&self) -> bool {
+        let Self::V0 {
+            simulator_exit_code,
+            cleanup,
+            supervisor_ready,
+            provider_contract_verified,
+            ..
+        } = self;
+        *simulator_exit_code == Some(0)
+            && cleanup.error.is_none()
+            && cleanup.supervisor_exited
+            && !cleanup.supervisor_killed
+            && *supervisor_ready
+            && *provider_contract_verified
+    }
+}
 
 /// Aggregate scenario evidence for a single supervised run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -133,6 +215,194 @@ mod tests {
     //! future internal refactor of these records.
 
     use super::*;
+
+    fn run_report<Terminal>(terminal: Option<Terminal>) -> SimulationRunReport<Terminal> {
+        SimulationRunReport::V0 {
+            scene: PathBuf::from("/scene.xml"),
+            simulator: SimulatorArtifactSummary {
+                package: "phoxal-simulator".to_owned(),
+                version: "0.2.4".to_owned(),
+                binary: "phoxal-simulator".to_owned(),
+                source: "installed-application".to_owned(),
+                executable: PathBuf::from("/app/phoxal-simulator"),
+            },
+            bundle: PathBuf::from("/build"),
+            scope: "robot/simulation".to_owned(),
+            supervisor_id: "supervisor".to_owned(),
+            run_id: "run-1".to_owned(),
+            supervisor_ready: true,
+            provider_contract_verified: true,
+            simulator_exit_code: Some(0),
+            simulator_wall_time_ns: 123,
+            simulator_stdout: "raw stdout\n".to_owned(),
+            simulator_stderr: "raw stderr\n".to_owned(),
+            cleanup: SimulationCleanup {
+                supervisor_stop_requested: true,
+                supervisor_exited: true,
+                supervisor_killed: false,
+                error: None,
+            },
+            scenario: None,
+            terminal,
+        }
+    }
+
+    #[test]
+    fn finite_run_report_preserves_exact_v0_fields_and_nulls() {
+        let mut report: SimulationRunReport = run_report(None);
+        let SimulationRunReport::V0 {
+            simulator_exit_code,
+            ..
+        } = &mut report;
+        *simulator_exit_code = None;
+        let expected = serde_json::json!({
+            "schema": "phoxal/simulation-run/v0",
+            "scene": "/scene.xml",
+            "simulator": {
+                "package": "phoxal-simulator", "version": "0.2.4",
+                "binary": "phoxal-simulator", "source": "installed-application",
+                "executable": "/app/phoxal-simulator"
+            },
+            "bundle": "/build", "scope": "robot/simulation",
+            "supervisor_id": "supervisor", "run_id": "run-1",
+            "supervisor_ready": true, "provider_contract_verified": true,
+            "simulator_exit_code": null, "simulator_wall_time_ns": 123,
+            "simulator_stdout": "raw stdout\n", "simulator_stderr": "raw stderr\n",
+            "cleanup": { "supervisor_stop_requested": true, "supervisor_exited": true,
+                "supervisor_killed": false, "error": null },
+            "scenario": null, "terminal": null
+        });
+        assert_eq!(serde_json::to_value(&report).expect("serializes"), expected);
+        let decoded: SimulationRunReport = serde_json::from_value(expected).expect("deserializes");
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn finite_run_report_preserves_rich_borrowed_terminal_and_stdout() {
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        struct RichTerminal {
+            #[serde(flatten)]
+            evidence: SimulatorTerminalEvidence,
+            native_bindings: serde_json::Value,
+            provenance: serde_json::Value,
+            presentation: serde_json::Value,
+            model_identity: String,
+        }
+        let terminal = RichTerminal {
+            evidence: SimulatorTerminalEvidence::V0 {
+                provider_contract_verified: true,
+                outcome: "success".to_owned(),
+                completed_steps: 2,
+                requested_steps: 2,
+                quantum_ns: 10_000_000,
+                execution_id: "execution".to_owned(),
+                timeline_id: "timeline".to_owned(),
+                native_body: vec![NativeBodySample {
+                    boundary: 2,
+                    position_m: [1.0, 2.0, 3.0],
+                    orientation_wxyz: [1.0, 0.0, 0.0, 0.0],
+                    linear_velocity_mps: [0.5, 0.0, 0.0],
+                    angular_velocity_radps: [0.0; 3],
+                }],
+            },
+            native_bindings: serde_json::json!({"wheel": {"actuator": ["left", "right"]}}),
+            provenance: serde_json::json!({"engine": {"sha256": "engine-hash"}}),
+            presentation: serde_json::json!({"mode": "headless", "samples": [1, 2]}),
+            model_identity: "model-hash".to_owned(),
+        };
+        let stdout = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&terminal).expect("terminal serializes")
+        );
+        let mut borrowed = run_report(Some(&terminal));
+        let SimulationRunReport::V0 {
+            simulator_stdout,
+            scenario,
+            ..
+        } = &mut borrowed;
+        *simulator_stdout = stdout.clone();
+        *scenario = Some(ScenarioExecutionReport::V0 {
+            scenario_name: "drive".to_owned(),
+            steps: Vec::new(),
+            captures: Vec::new(),
+            command_replies: BTreeMap::from([("reset".to_owned(), vec![0, 255])]),
+        });
+        let value = serde_json::to_value(&borrowed).expect("borrowed report serializes");
+        assert_eq!(
+            value["terminal"],
+            serde_json::to_value(&terminal).expect("terminal serializes")
+        );
+        assert_eq!(value["simulator_stdout"], stdout);
+        assert_eq!(
+            value["terminal"]["native_bindings"]["wheel"]["actuator"],
+            serde_json::json!(["left", "right"])
+        );
+        assert_eq!(
+            value["terminal"]["provenance"]["engine"]["sha256"],
+            "engine-hash"
+        );
+        assert_eq!(
+            value["terminal"]["presentation"]["samples"],
+            serde_json::json!([1, 2])
+        );
+        assert_eq!(value["terminal"]["model_identity"], "model-hash");
+        let owned: SimulationRunReport<RichTerminal> =
+            serde_json::from_value(value.clone()).expect("rich report deserializes");
+        assert_eq!(
+            serde_json::to_value(&owned).expect("owned report serializes"),
+            value
+        );
+        let narrow: SimulationRunReport =
+            serde_json::from_value(value).expect("consumer view deserializes");
+        assert!(narrow.success());
+        let SimulationRunReport::V0 {
+            simulator_stdout,
+            terminal: decoded,
+            ..
+        } = narrow;
+        assert_eq!(simulator_stdout, stdout);
+        assert_eq!(decoded, Some(terminal.evidence));
+    }
+
+    #[test]
+    fn finite_run_success_preserves_exit_and_cleanup_predicate() {
+        let success: SimulationRunReport = run_report(None);
+        assert!(success.success());
+        let mut report = success.clone();
+        let SimulationRunReport::V0 { cleanup, .. } = &mut report;
+        cleanup.supervisor_stop_requested = false;
+        assert!(
+            report.success(),
+            "stop request is evidence, not a success prerequisite"
+        );
+        for code in [None, Some(1), Some(-1)] {
+            let mut report = success.clone();
+            let SimulationRunReport::V0 {
+                simulator_exit_code,
+                ..
+            } = &mut report;
+            *simulator_exit_code = code;
+            assert!(!report.success());
+        }
+        for failure in 0..5 {
+            let mut report = success.clone();
+            let SimulationRunReport::V0 {
+                cleanup,
+                supervisor_ready,
+                provider_contract_verified,
+                ..
+            } = &mut report;
+            match failure {
+                0 => cleanup.supervisor_exited = false,
+                1 => cleanup.supervisor_killed = true,
+                2 => cleanup.error = Some(String::new()),
+                3 => *supervisor_ready = false,
+                4 => *provider_contract_verified = false,
+                _ => unreachable!(),
+            }
+            assert!(!report.success());
+        }
+    }
 
     #[test]
     fn native_body_sample_round_trips() {
