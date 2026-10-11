@@ -236,11 +236,7 @@ mod tests {
         let setpoint = harness
             .setpoint()
             .expect("the projection leases a setpoint");
-        match setpoint
-            .targets
-            .first()
-            .and_then(|target| target.control.as_ref())
-        {
+        match setpoint.control.as_ref() {
             Some(phoxal::contracts::component::actuator::Control::VelocityRadps(value)) => *value,
             _ => panic!("the projection leases a velocity"),
         }

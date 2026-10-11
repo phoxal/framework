@@ -74,15 +74,9 @@ impl HardwareFixtureDriver {
         self.applied_velocity_radps = ctx
             .actuator()
             .valid()
-            .and_then(|setpoint| {
-                setpoint
-                    .targets
-                    .iter()
-                    .find(|target| target.actuator_id == "fixture_motor")
-                    .and_then(|target| match target.control.as_ref() {
-                        Some(Control::VelocityRadps(value)) => Some(*value),
-                        _ => None,
-                    })
+            .and_then(|command| match command.control.as_ref() {
+                Some(Control::VelocityRadps(value)) => Some(*value),
+                _ => None,
             })
             .unwrap_or(0.0);
         for sample in ctx.acquired().items() {

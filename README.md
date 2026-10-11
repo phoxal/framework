@@ -48,14 +48,22 @@ The SDK unit lane is prepare-free:
 cargo test --locked -p phoxal -p phoxal-build -p phoxal-macros --lib
 cargo test --locked -p phoxal --test unit --test runtime_behavior_observers
 cargo test --locked -p phoxal --test compile --features scenario
+cargo test --locked -p phoxal-hardware-driver-fixture -p phoxal-procedure-fixture
 cargo fmt --all -- --check
 cargo clippy --locked -p phoxal -p phoxal-build -p phoxal-macros --all-targets --features phoxal/scenario -- -D warnings
+cargo clippy --locked -p phoxal-hardware-driver-fixture -p phoxal-procedure-fixture --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked -p phoxal -p phoxal-build -p phoxal-macros --no-deps --features phoxal/scenario
 ```
 
 Small compiled fixtures under `tests/` retain the SDK's authoring, standard-contract, and generated-client acceptance.
 Fixtures importing another participant need the public tool's preparation first; they are not prerequisites of the prepare-free unit lane.
-For the generated-client fixture, run `cargo phoxal prepare` in `tests/contracts/client` before compiling or running that client.
+Root workspace builds and RustRover sync evaluate the generated-client fixture's build script.
+Its one-time preparation must therefore run inside that fixture directory, never at the workspace root, before any `cargo build --workspace --all-targets` or IDE sync of this checkout:
+
+```sh
+(cd tests/contracts/client && cargo phoxal prepare)
+cargo build --workspace --all-targets
+```
 The provider in that fixture is a minimal SDK-only executable, not an official service implementation.
 The `standard-plus-custom` warm-edit test builds its own cold scratch project and compares regenerated contracts through a real Cargo build.
 Supervisor process tests and tool acquisition/compiler tests live with those applications.
